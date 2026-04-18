@@ -682,16 +682,6 @@ class FCMService extends GetxService {
     }
   }
 
-  /// Schedule delivery acknowledgment for messages received via FCM (static version for background handler)
-  static void _scheduleDeliveryAcknowledgmentStatic(
-      String messageId, String senderId) {
-    debugPrint(
-        '📤 Scheduling delivery acknowledgment (static) for message: $messageId');
-
-    // Store the acknowledgment request in SharedPreferences for later processing
-    _storeAcknowledgmentRequestStatic(messageId, senderId);
-  }
-
   /// Store acknowledgment request for later processing (static version)
   static void _storeAcknowledgmentRequestStatic(
       String messageId, String senderId) async {
