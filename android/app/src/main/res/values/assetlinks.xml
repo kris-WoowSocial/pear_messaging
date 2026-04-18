@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="assetlinks_json">
+        [{
+            "relation": ["delegate_permission/common.handle_all_urls"],
+            "target": {
+                "namespace": "android_app",
+                "package_name": "com.pear.messaging.pear_messaging",
+                "sha256_cert_fingerprints":
+                ["YOUR_SHA256_CERTIFICATE_FINGERPRINT_HERE"]
+            }
+        }]
+    </string>
+</resources>

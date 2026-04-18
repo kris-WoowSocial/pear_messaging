@@ -1,0 +1,1 @@
+[{"relation": ["delegate_permission/common.handle_all_urls"], "target": {"namespace": "android_app", "package_name": "com.vant.chat", "sha256_cert_fingerprints": ["30:E0:27:45:C0:A9:F8:3D:F6:84:AC:79:DF:BA:CE:D0:CC:3F:DD:9E:AB:BC:6E:11:79:B2:76:0C:95:33:AA:93"]}}]
