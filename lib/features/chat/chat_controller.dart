@@ -163,6 +163,7 @@ class ChatController extends GetxController with WidgetsBindingObserver {
       });
     });
     _isScreenActive = true;
+    debugPrint('📱 ChatController.onInit: _isScreenActive set to true');
 
     // Register lifecycle observer to detect app background/foreground
     WidgetsBinding.instance.addObserver(this);
@@ -380,6 +381,13 @@ class ChatController extends GetxController with WidgetsBindingObserver {
   /// Mark all unread messages from this chat as read
   Future<void> _markMessagesAsRead() async {
     debugPrint('📖 Marking messages as read...');
+    debugPrint('📖 Total messages in chat: ${messages.length}');
+
+    // Debug: Show all message statuses
+    for (final msg in messages) {
+      debugPrint(
+          '📖 Message ${msg.id}: isMe=${msg.isMe}, status=${msg.status}');
+    }
 
     // Find all unread messages from the recipient in this chat
     final unreadMessages = messages
@@ -398,6 +406,11 @@ class ChatController extends GetxController with WidgetsBindingObserver {
       debugPrint('📖 Marking message as read: ${message.id}');
 
       try {
+        // Check original status before updating to determine if we should send read acknowledgment
+        final originalStatus = message.status;
+        debugPrint(
+            '📖 Original message status: ${message.id} -> $originalStatus');
+
         // Update in storage first
         await _storageService.updateMessageStatus(
             message.id, MessageStatus.read);
@@ -420,11 +433,14 @@ class ChatController extends GetxController with WidgetsBindingObserver {
 
         // Send read acknowledgment to sender for delivered messages
         // This ensures sender sees blue checkmarks even if message was delivered while app was in background
-        if (messages.any((msg) =>
-            msg.id == message.id && msg.status == MessageStatus.delivered)) {
+        // Check original status BEFORE it was updated to read
+        if (originalStatus == MessageStatus.delivered) {
           debugPrint(
-              '📖 Sending read acknowledgment for delivered message: ${message.id}');
+              '📖 Sending read acknowledgment for delivered message: ${message.id} to recipient: $recipientDeviceId');
           _socketService.sendReadAck(message.id, recipientDeviceId);
+        } else {
+          debugPrint(
+              '📖 Not sending read acknowledgment for message ${message.id} - original status: $originalStatus');
         }
       } catch (e) {
         debugPrint('❌ Error marking message as read: ${message.id}, $e');
@@ -603,9 +619,20 @@ class ChatController extends GetxController with WidgetsBindingObserver {
           }
         }
 
-        // Mark as read only if user is actively viewing this chat screen
-        final messageStatus =
-            _isScreenActive ? MessageStatus.read : MessageStatus.delivered;
+        // Check if message already exists in storage (saved by FCM background handler)
+        final messageExists = _storageService.messageExists(messageId);
+        debugPrint(
+            '📨 Socket message: $messageId, chatId: $chatId, messageExists: $messageExists, _isScreenActive: $_isScreenActive');
+
+        // Mark as read only if:
+        // 1. User is actively viewing this chat screen AND
+        // 2. Message doesn't already exist in storage (to prevent overwriting FCM-saved delivered status)
+        final messageStatus = (_isScreenActive && !messageExists)
+            ? MessageStatus.read
+            : MessageStatus.delivered;
+
+        debugPrint('📨 Socket message status: $messageStatus');
+
         final message = MessageEntity(
           id: messageId,
           chatId: chatId,

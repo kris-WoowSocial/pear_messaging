@@ -376,6 +376,7 @@ class ChatScreen extends GetView<ChatController> {
 
                       // Message input row
                       Row(
+                        textDirection: TextDirection.ltr,
                         children: [
                           Expanded(
                             child: TextField(

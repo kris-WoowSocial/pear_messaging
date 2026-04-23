@@ -1,3 +1,4 @@
+import 'dart:ui';
 import 'package:get/get.dart';
 import 'package:share_plus/share_plus.dart';
 import '../utils/string_utils.dart';
@@ -7,7 +8,7 @@ class ShareService extends GetxService {
   final LocalStorageService _storageService = Get.find();
 
   /// Share app with custom deep link
-  Future<void> shareApp() async {
+  Future<void> shareApp({Rect? sharePositionOrigin}) async {
     try {
       final deviceId = _storageService.deviceId;
       if (deviceId == null) {
@@ -29,7 +30,11 @@ Once installed, the connection will be established automatically, and you can be
 
 Experience total privacy with military-grade encryption and a direct, peer-to-peer connection that bypasses third-party servers entirely.''';
 
-      await Share.share(message, subject: 'Chat with me on Pear Messaging');
+      await Share.share(
+        message,
+        subject: 'Chat with me on Pear Messaging',
+        sharePositionOrigin: sharePositionOrigin,
+      );
       print('✅ App shared successfully with custom scheme: $link');
     } catch (e) {
       print('❌ Error sharing app: $e');

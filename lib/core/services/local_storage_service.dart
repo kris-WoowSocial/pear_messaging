@@ -499,7 +499,7 @@ class LocalStorageService extends GetxService {
 
       final jsonData = message.toJson();
       debugPrint(
-          '💬 Saving message: ${message.id} for chat ${message.chatId} -> $jsonData');
+          '💬 Saving message: ${message.id} for chat ${message.chatId} with status: ${message.status} -> $jsonData');
       await _messagesBox.put(message.id, jsonData);
       // Update in-memory index
       _chatMessageIndex.putIfAbsent(message.chatId, () => []).add(message.id);

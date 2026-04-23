@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter_branch_sdk/flutter_branch_sdk.dart';
 import 'package:get/get.dart';
@@ -407,7 +408,7 @@ class BranchService extends GetxService {
   }
 
   /// Share app with generated link
-  Future<void> shareApp() async {
+  Future<void> shareApp({Rect? sharePositionOrigin}) async {
     try {
       final deviceId = _storageService.deviceId;
       if (deviceId == null) {
@@ -437,7 +438,11 @@ Once installed, the connection will be established automatically, and you can be
 
 Experience total privacy with military-grade encryption and a direct, peer-to-peer connection that bypasses third-party servers entirely.''';
 
-      await Share.share(message, subject: 'Chat with me on Vant Chat');
+      await Share.share(
+        message,
+        subject: 'Chat with me on Vant Chat',
+        sharePositionOrigin: sharePositionOrigin,
+      );
       debugPrint('✅ App shared successfully');
     } catch (e) {
       debugPrint('❌ Error sharing app: $e');

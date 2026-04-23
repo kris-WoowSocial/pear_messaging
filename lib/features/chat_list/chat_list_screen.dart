@@ -1,3 +1,4 @@
+import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:pear_messaging/core/services/branch_service.dart';
@@ -12,7 +13,9 @@ import 'chat_list_item.dart';
 import 'connection_request_item.dart';
 
 class ChatListScreen extends GetView<ChatListController> {
-  const ChatListScreen({super.key});
+  ChatListScreen({super.key});
+
+  final _shareButtonKey = GlobalKey();
 
   @override
   Widget build(BuildContext context) {
@@ -318,6 +321,7 @@ class ChatListScreen extends GetView<ChatListController> {
         ],
       ),
       floatingActionButton: InkWell(
+        key: _shareButtonKey,
         onTap: () => shareApp(),
         child: Container(
           decoration: BoxDecoration(
@@ -358,6 +362,20 @@ class ChatListScreen extends GetView<ChatListController> {
 
   void shareApp() async {
     try {
+      // Calculate share position origin from the button's position
+      Rect? sharePositionOrigin;
+      if (_shareButtonKey.currentContext != null) {
+        final RenderBox renderBox =
+            _shareButtonKey.currentContext!.findRenderObject() as RenderBox;
+        final Offset offset = renderBox.localToGlobal(Offset.zero);
+        sharePositionOrigin = Rect.fromLTWH(
+          offset.dx,
+          offset.dy,
+          renderBox.size.width,
+          renderBox.size.height,
+        );
+      }
+
       // Get or initialize Branch service
       BranchService branchService;
       try {
@@ -370,7 +388,7 @@ class ChatListScreen extends GetView<ChatListController> {
       }
 
       // Share the app
-      await branchService.shareApp();
+      await branchService.shareApp(sharePositionOrigin: sharePositionOrigin);
     } catch (e) {
       print('❌ Error sharing app: $e');
       Get.snackbar(

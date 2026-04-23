@@ -232,18 +232,54 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
       String contentToStore;
       MessageType msgType = MessageType.text;
 
-      try {
-        contentToStore = encryptedContent.isNotEmpty
-            ? SocketService.decryptMessage(encryptedContent)
-            : (message.notification?.body ?? 'New message');
+      // Always try to decrypt encrypted content first to detect image messages
+      if (encryptedContent.isNotEmpty) {
+        try {
+          debugPrint(
+              '📱 Background: Attempting to decrypt encrypted content...');
+          contentToStore = SocketService.decryptMessage(encryptedContent);
+          debugPrint(
+              '📱 Background: Decryption successful, content length: ${contentToStore.length}');
 
-        // Detect media messages
-        if (contentToStore.startsWith('IMAGE:') ||
-            contentToStore.startsWith('MEDIA:')) {
-          msgType = MessageType.image;
+          // Detect media messages only after successful decryption
+          // Check for exact MEDIA: or IMAGE: prefix at the start
+          if (contentToStore.startsWith('IMAGE:') ||
+              contentToStore.startsWith('MEDIA:')) {
+            msgType = MessageType.image;
+            debugPrint('📱 Background: Detected as media message');
+          } else {
+            // For text messages, we can use notification body if it's more readable
+            final notificationBody = message.notification?.body;
+            if (notificationBody != null && notificationBody.isNotEmpty) {
+              debugPrint(
+                  '📱 Background: Using notification body as content for text message');
+              contentToStore = notificationBody;
+            }
+          }
+        } catch (e) {
+          debugPrint('⚠️ Background: Decryption failed: $e');
+          debugPrint('⚠️ Background: Falling back to notification body');
+          final notificationBody = message.notification?.body;
+          if (notificationBody != null && notificationBody.isNotEmpty) {
+            contentToStore = notificationBody;
+            msgType = MessageType.text;
+          } else {
+            contentToStore = 'New message';
+            msgType = MessageType.text;
+          }
         }
-      } catch (e) {
-        contentToStore = message.notification?.body ?? 'New message';
+      } else {
+        // No encrypted content, fall back to notification body
+        final notificationBody = message.notification?.body;
+        if (notificationBody != null && notificationBody.isNotEmpty) {
+          debugPrint(
+              '📱 Background: Using notification body as content (no encrypted content)');
+          contentToStore = notificationBody;
+          msgType = MessageType.text;
+        } else {
+          contentToStore = 'New message';
+          msgType = MessageType.text;
+        }
       }
 
       await storageService.saveMessage(
@@ -259,7 +295,8 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
           type: msgType,
         ),
       );
-      debugPrint('💾 Background: saved message $messageId to local DB');
+      debugPrint(
+          '💾 Background: saved message $messageId to local DB with status: delivered');
       // Queue delivery ack so sender gets 'delivered' status when socket reconnects
       FCMService._storeAcknowledgmentRequestStatic(messageId, senderId);
     }
@@ -503,19 +540,54 @@ class FCMService extends GetxService {
         String contentToStore;
         MessageType msgType = MessageType.text;
 
-        try {
-          contentToStore = encryptedContent.isNotEmpty
-              ? SocketService.decryptMessage(encryptedContent)
-              : (message.notification?.body ?? 'New message');
+        // Always try to decrypt encrypted content first to detect image messages
+        if (encryptedContent.isNotEmpty) {
+          try {
+            debugPrint(
+                '📱 Foreground: Attempting to decrypt encrypted content...');
+            contentToStore = SocketService.decryptMessage(encryptedContent);
+            debugPrint(
+                '📱 Foreground: Decryption successful, content length: ${contentToStore.length}');
 
-          // Detect media messages but keep original MEDIA:token for storage
-          if (contentToStore.startsWith('IMAGE:') ||
-              contentToStore.startsWith('MEDIA:')) {
-            msgType = MessageType.image;
-            // Keep contentToStore as original MEDIA:token, don't convert to "📷 Photo"
+            // Detect media messages only after successful decryption
+            // Check for exact MEDIA: or IMAGE: prefix at the start
+            if (contentToStore.startsWith('IMAGE:') ||
+                contentToStore.startsWith('MEDIA:')) {
+              msgType = MessageType.image;
+              debugPrint('📱 Foreground: Detected as media message');
+            } else {
+              // For text messages, we can use notification body if it's more readable
+              final notificationBody = message.notification?.body;
+              if (notificationBody != null && notificationBody.isNotEmpty) {
+                debugPrint(
+                    '📱 Foreground: Using notification body as content for text message');
+                contentToStore = notificationBody;
+              }
+            }
+          } catch (e) {
+            debugPrint('⚠️ Foreground: Decryption failed: $e');
+            debugPrint('⚠️ Foreground: Falling back to notification body');
+            final notificationBody = message.notification?.body;
+            if (notificationBody != null && notificationBody.isNotEmpty) {
+              contentToStore = notificationBody;
+              msgType = MessageType.text;
+            } else {
+              contentToStore = 'New message';
+              msgType = MessageType.text;
+            }
           }
-        } catch (e) {
-          contentToStore = message.notification?.body ?? 'New message';
+        } else {
+          // No encrypted content, fall back to notification body
+          final notificationBody = message.notification?.body;
+          if (notificationBody != null && notificationBody.isNotEmpty) {
+            debugPrint(
+                '📱 Foreground: Using notification body as content (no encrypted content)');
+            contentToStore = notificationBody;
+            msgType = MessageType.text;
+          } else {
+            contentToStore = 'New message';
+            msgType = MessageType.text;
+          }
         }
 
         try {

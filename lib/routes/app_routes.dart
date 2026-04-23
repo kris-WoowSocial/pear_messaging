@@ -46,7 +46,7 @@ class AppRoutes {
     ),
     GetPage(
       name: chatList,
-      page: () => const ChatListScreen(),
+      page: () => ChatListScreen(),
       binding: BindingsBuilder(() {
         Get.put(ChatListController());
       }),

@@ -236,55 +236,63 @@ class _ChatMessageBubbleState extends State<ChatMessageBubble> {
           }
         }
       },
-      child: Align(
-        alignment:
-            widget.message.isMe ? Alignment.centerRight : Alignment.centerLeft,
-        child: Container(
-          margin: EdgeInsets.only(
-            left: widget.message.isMe ? 50 : AppSizes.paddingM,
-            right: widget.message.isMe ? AppSizes.paddingM : 50,
-            top: AppSizes.paddingXS,
-            bottom: AppSizes.paddingXS,
-          ),
-          child: Column(
-            crossAxisAlignment: widget.message.isMe
-                ? CrossAxisAlignment.end
-                : CrossAxisAlignment.start,
-            children: [
-              Row(
-                mainAxisSize: MainAxisSize.max,
-                crossAxisAlignment: CrossAxisAlignment.end,
+      child: Container(
+        margin: EdgeInsets.only(
+          top: AppSizes.paddingXS,
+          bottom: AppSizes.paddingXS,
+        ),
+        child: Row(
+          mainAxisAlignment: widget.message.isMe
+              ? MainAxisAlignment.end
+              : MainAxisAlignment.start,
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            Container(
+              margin: EdgeInsets.only(
+                left: widget.message.isMe ? 50 : AppSizes.paddingM,
+                right: widget.message.isMe ? AppSizes.paddingM : 50,
+              ),
+              child: Column(
+                crossAxisAlignment: widget.message.isMe
+                    ? CrossAxisAlignment.end
+                    : CrossAxisAlignment.start,
                 children: [
-                  if (widget.message.isMe &&
-                      widget.message.status == MessageStatus.failed)
-                    GestureDetector(
-                      onTap: () {
-                        try {
-                          Get.find<ChatController>()
-                              .retrySendMessage(widget.message.id);
-                        } catch (e) {
-                          debugPrint('⚠️ Could not retry message: $e');
-                        }
-                      },
-                      child: const Padding(
-                        padding: EdgeInsets.only(right: 6, bottom: 10),
-                        child: Icon(
-                          Icons.refresh_rounded,
-                          size: 18,
-                          color: Colors.red,
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      if (widget.message.isMe &&
+                          widget.message.status == MessageStatus.failed)
+                        GestureDetector(
+                          onTap: () {
+                            try {
+                              Get.find<ChatController>()
+                                  .retrySendMessage(widget.message.id);
+                            } catch (e) {
+                              debugPrint('⚠️ Could not retry message: $e');
+                            }
+                          },
+                          child: const Padding(
+                            padding: EdgeInsets.only(right: 6, bottom: 10),
+                            child: Icon(
+                              Icons.refresh_rounded,
+                              size: 18,
+                              color: Colors.red,
+                            ),
+                          ),
                         ),
+                      // Use Flexible to prevent overflow
+                      Flexible(
+                        child: shouldWrapToContent
+                            ? _buildContentWrappedBubble(hasLinks)
+                            : _buildFullWidthBubble(hasLinks),
                       ),
-                    ),
-                  // Use Flexible to prevent overflow
-                  Flexible(
-                    child: shouldWrapToContent
-                        ? _buildContentWrappedBubble(hasLinks)
-                        : _buildFullWidthBubble(hasLinks),
+                    ],
                   ),
                 ],
               ),
-            ],
-          ),
+            ),
+          ],
         ),
       ),
     );
