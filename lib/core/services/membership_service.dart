@@ -8,7 +8,7 @@ class MembershipService extends GetxService {
   static const String _membershipExpiryKey = 'membership_expiry_date';
   static const String _membershipPurchaseDateKey = 'membership_purchase_date';
 
-  static const int _freeMediaDays = 3;
+  static const int _freeMediaDays = 7;
 
   late SharedPreferences _prefs;
 

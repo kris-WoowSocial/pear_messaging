@@ -14,7 +14,12 @@ class MembershipScreen extends GetView<MembershipController> {
   Widget build(BuildContext context) {
     final membershipService = Get.find<MembershipService>();
     final regionService = Get.find<RegionService>();
-    final pricing = PricingConfig.getPricingForRegion(regionService.region);
+
+    // Determine pricing based on payment method
+    final paymentMethod = regionService.getPaymentMethod();
+    final region =
+        paymentMethod == 'stripe' ? 'HighPrice' : regionService.region;
+    final pricing = PricingConfig.getPricingForRegion(region);
 
     return Scaffold(
       backgroundColor: const Color(0xFF0A0A0F),
@@ -99,8 +104,8 @@ class MembershipScreen extends GetView<MembershipController> {
                         _buildFeaturesSection(),
                         const SizedBox(height: 16),
                         // Required Subscription Information
-                        _buildSubscriptionInfo(),
-                        const SizedBox(height: 16),
+                        // _buildSubscriptionInfo(),
+                        // const SizedBox(height: 16),
                         // Legal Links
                         _buildLegalLinks(),
                         const SizedBox(height: 20),
@@ -426,92 +431,6 @@ class MembershipScreen extends GetView<MembershipController> {
     // Calculate per-month price from total price in smallest currency unit
     final perMonth = (totalPrice / months / 100).toStringAsFixed(2);
     return '$currencySymbol$perMonth / month';
-  }
-
-  Widget _buildSubscriptionInfo() {
-    final regionService = Get.find<RegionService>();
-    final pricing = PricingConfig.getPricingForRegion(regionService.region);
-
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(20),
-        color: Colors.white.withOpacity(0.05),
-        border: Border.all(color: Colors.white12),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text(
-            'Subscription Details',
-            style: TextStyle(
-              color: Colors.white,
-              fontSize: 16,
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-          const SizedBox(height: 16),
-          _buildSubscriptionDetail(
-            title: 'Vant Chat Premium - 6 Months',
-            duration: '6 months',
-            price: pricing.sixMonthDisplay,
-            features:
-                'Unlimited media sharing, priority support, enhanced privacy',
-          ),
-          const SizedBox(height: 12),
-          _buildSubscriptionDetail(
-            title: 'Vant Chat Premium - 1 Year',
-            duration: '1 year',
-            price: pricing.oneYearDisplay,
-            features:
-                'Unlimited media sharing, priority support, enhanced privacy, best value',
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildSubscriptionDetail({
-    required String title,
-    required String duration,
-    required String price,
-    required String features,
-  }) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          title,
-          style: const TextStyle(
-            color: Colors.white,
-            fontSize: 14,
-            fontWeight: FontWeight.w600,
-          ),
-        ),
-        const SizedBox(height: 4),
-        Text(
-          'Duration: $duration',
-          style: TextStyle(
-            color: Colors.white.withOpacity(0.7),
-            fontSize: 12,
-          ),
-        ),
-        Text(
-          'Price: $price',
-          style: TextStyle(
-            color: Colors.white.withOpacity(0.7),
-            fontSize: 12,
-          ),
-        ),
-        Text(
-          'Includes: $features',
-          style: TextStyle(
-            color: Colors.white.withOpacity(0.7),
-            fontSize: 12,
-          ),
-        ),
-      ],
-    );
   }
 
   Widget _buildLegalLink(String title, String url) {

@@ -52,4 +52,9 @@ class DeviceUtils {
     }
     return id;
   }
+
+  /// Force generate a new device ID (used for self-destruct on iOS)
+  static String generateNewDeviceId() {
+    return _generateDeviceId();
+  }
 }

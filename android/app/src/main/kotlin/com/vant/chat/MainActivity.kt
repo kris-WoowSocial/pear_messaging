@@ -6,6 +6,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
 import android.provider.Settings
 import io.flutter.embedding.android.FlutterFragmentActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -14,6 +15,7 @@ import io.flutter.plugin.common.MethodChannel
 class MainActivity : FlutterFragmentActivity() {
     private val DEEPLINK_CHANNEL = "com.pear.messaging/deeplink"
     private val APPLINKS_CHANNEL = "com.pear.messaging.pear_messaging/applinks"
+    private val BATTERY_CHANNEL = "com.pear.messaging/battery"
     private var pendingIntent: Intent? = null
     
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -25,6 +27,29 @@ class MainActivity : FlutterFragmentActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        
+        // Setup battery optimization channel for Samsung devices
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, BATTERY_CHANNEL).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "isIgnoringBatteryOptimizations" -> {
+                    result.success(isIgnoringBatteryOptimizations())
+                }
+                "requestIgnoreBatteryOptimizations" -> {
+                    requestIgnoreBatteryOptimizations()
+                    result.success(null)
+                }
+                "openBatterySettings" -> {
+                    openBatterySettings()
+                    result.success(null)
+                }
+                "getDeviceManufacturer" -> {
+                    result.success(android.os.Build.MANUFACTURER)
+                }
+                else -> {
+                    result.notImplemented()
+                }
+            }
+        }
         
         // Setup app links method channel
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, APPLINKS_CHANNEL).setMethodCallHandler { call, result ->
@@ -159,6 +184,50 @@ class MainActivity : FlutterFragmentActivity() {
             resolveInfo?.activityInfo?.packageName == packageName
         } catch (e: Exception) {
             false
+        }
+    }
+
+    private fun isIgnoringBatteryOptimizations(): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            val powerManager = getSystemService(POWER_SERVICE) as PowerManager
+            powerManager.isIgnoringBatteryOptimizations(packageName)
+        } else {
+            true
+        }
+    }
+
+    private fun requestIgnoreBatteryOptimizations() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            if (!isIgnoringBatteryOptimizations()) {
+                try {
+                    val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                        data = Uri.parse("package:$packageName")
+                    }
+                    startActivity(intent)
+                } catch (e: Exception) {
+                    println("Error requesting battery optimization exemption: $e")
+                }
+            }
+        }
+    }
+
+    private fun openBatterySettings() {
+        try {
+            // Use ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS to show the "Not Optimized" list directly
+            // This is more specific for Samsung's "Deep Sleeping" apps category
+            val intent = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+            startActivity(intent)
+        } catch (e: Exception) {
+            println("Error opening battery optimization settings: $e")
+            // Fallback to app-specific settings
+            try {
+                val fallbackIntent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                    data = Uri.parse("package:$packageName")
+                }
+                startActivity(fallbackIntent)
+            } catch (e2: Exception) {
+                println("Error opening fallback settings: $e2")
+            }
         }
     }
 }

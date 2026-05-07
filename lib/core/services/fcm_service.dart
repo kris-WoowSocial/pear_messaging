@@ -13,21 +13,27 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../utils/string_utils.dart';
 import '../../routes/app_routes.dart';
 import '../../storage/models/message_entity.dart';
+import '../../storage/models/chat_entity.dart';
 import 'local_storage_service.dart';
 import 'socket_service.dart';
 import 'block_service.dart';
 import 'app_lifecycle_service.dart';
+import 'badge_service.dart';
 
 // Global notification settings for our custom notifications
-const androidNotificationDetails = AndroidNotificationDetails(
-  'high_importance_channel',
-  'High Importance Notifications',
-  channelDescription: 'This channel is used for important notifications.',
-  importance: Importance.max,
-  priority: Priority.max,
-  playSound: true,
-  enableVibration: true,
-);
+// Note: number field will be set dynamically based on total unread count
+AndroidNotificationDetails getAndroidNotificationDetails(int badgeCount) {
+  return AndroidNotificationDetails(
+    'high_importance_channel',
+    'High Importance Notifications',
+    channelDescription: 'This channel is used for important notifications.',
+    importance: Importance.max,
+    priority: Priority.max,
+    playSound: true,
+    enableVibration: true,
+    number: badgeCount, // Shows count on long-press for Stock Android
+  );
+}
 
 // Disabled channel for Firebase automatic notifications
 const disabledAndroidNotificationDetails = AndroidNotificationDetails(
@@ -48,10 +54,12 @@ const iosNotificationDetails = DarwinNotificationDetails(
   presentSound: true,
 );
 
-const notificationDetails = NotificationDetails(
-  android: androidNotificationDetails,
-  iOS: iosNotificationDetails,
-);
+NotificationDetails getNotificationDetails(int badgeCount) {
+  return NotificationDetails(
+    android: getAndroidNotificationDetails(badgeCount),
+    iOS: iosNotificationDetails,
+  );
+}
 
 /// Top-level function to handle notification taps
 Future<void> onNotificationTap(NotificationResponse response) async {
@@ -184,9 +192,14 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
 
   // Show notification immediately
   try {
-    final title = message.notification?.title ?? 'New Message';
+    var title = message.notification?.title ?? 'New Message';
     final body = message.notification?.body ?? 'You have a new message';
     final payload = jsonEncode({'senderId': senderId});
+
+    // If title is a raw device ID (no username found), format it as friendly name
+    if (title == senderId && senderId.length > 5) {
+      title = '@user_${senderId.substring(senderId.length - 5)}';
+    }
 
     await flutterLocalNotificationsPlugin.show(
       DateTime.now().millisecondsSinceEpoch.remainder(100000),
@@ -229,6 +242,23 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
     final encryptedContent = message.data['originalMessage'] ?? '';
 
     if (messageId.isNotEmpty && senderId.isNotEmpty) {
+      // Check if message already exists to prevent duplicate processing
+      if (storageService.messageExists(messageId)) {
+        debugPrint(
+            '💾 Background: message $messageId already exists in storage, skipping');
+        return;
+      }
+
+      // Mark message as processed in SharedPreferences to prevent foreground handler from processing it
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        final processedKey = 'processed_msg_$messageId';
+        await prefs.setBool(processedKey, true);
+        debugPrint('💾 Background: marked message $messageId as processed');
+      } catch (e) {
+        debugPrint('⚠️ Background: Error marking message as processed: $e');
+      }
+
       String contentToStore;
       MessageType msgType = MessageType.text;
 
@@ -297,6 +327,37 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
       );
       debugPrint(
           '💾 Background: saved message $messageId to local DB with status: delivered');
+
+      // Update chat entity's last message (but don't increment unreadCount in background)
+      // unreadCount will be recalculated when app opens based on actual unread messages
+      try {
+        final chat = storageService.getChat(senderId);
+        if (chat != null) {
+          final updatedChat = chat.copyWith(
+            lastMessage:
+                msgType == MessageType.image ? '📷 Photo' : contentToStore,
+            lastMessageTime: DateTime.fromMillisecondsSinceEpoch(timestampMs),
+          );
+          await storageService.saveChat(updatedChat);
+          debugPrint('💾 Background: updated last message for chat $senderId');
+        } else {
+          // Create new chat entity if it doesn't exist (with unreadCount 0 initially)
+          final newChat = ChatEntity(
+            id: senderId,
+            userName: senderId, // Will be updated when user opens chat
+            lastMessage:
+                msgType == MessageType.image ? '📷 Photo' : contentToStore,
+            lastMessageTime: DateTime.fromMillisecondsSinceEpoch(timestampMs),
+            unreadCount: 0, // Will be recalculated when app opens
+          );
+          await storageService.saveChat(newChat);
+          debugPrint(
+              '💾 Background: created new chat entity for $senderId with unreadCount: 0');
+        }
+      } catch (e) {
+        debugPrint('⚠️ Background: Error updating chat entity: $e');
+      }
+
       // Queue delivery ack so sender gets 'delivered' status when socket reconnects
       FCMService._storeAcknowledgmentRequestStatic(messageId, senderId);
     }
@@ -515,6 +576,28 @@ class FCMService extends GetxService {
     final encryptedContent = message.data['originalMessage'] ?? '';
 
     if (messageId.isNotEmpty && senderId.isNotEmpty) {
+      // Check if message already exists to prevent duplicate processing
+      if (_storageService.messageExists(messageId)) {
+        debugPrint(
+            '💾 Foreground: message $messageId already exists, skipping');
+        return;
+      }
+
+      // Check if message was already processed by background handler
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        final processedKey = 'processed_msg_$messageId';
+        if (prefs.getBool(processedKey) ?? false) {
+          debugPrint(
+              '💾 Foreground: message $messageId already processed by background, skipping');
+          // Clean up the processed flag after successful deduplication
+          await prefs.remove(processedKey);
+          return;
+        }
+      } catch (e) {
+        debugPrint('⚠️ Foreground: Error checking processed messages: $e');
+      }
+
       // Check bidirectional block status before processing message
       try {
         final blockService = Get.find<BlockService>();
@@ -606,6 +689,50 @@ class FCMService extends GetxService {
           );
           debugPrint(
               '💾 Foreground: saved message $messageId to local DB (type: $msgType)');
+
+          // Update chat entity's unreadCount
+          try {
+            final chat = _storageService.getChat(senderId);
+            if (chat != null) {
+              final currentUnreadCount = chat.unreadCount;
+              final updatedChat =
+                  chat.copyWith(unreadCount: currentUnreadCount + 1);
+              await _storageService.saveChat(updatedChat);
+              debugPrint(
+                  '💾 Foreground: updated unreadCount for chat $senderId: $currentUnreadCount -> ${currentUnreadCount + 1}');
+            } else {
+              // Create new chat entity if it doesn't exist
+              final newChat = ChatEntity(
+                id: senderId,
+                userName: senderId, // Will be updated when user opens chat
+                lastMessage:
+                    msgType == MessageType.image ? '📷 Photo' : contentToStore,
+                lastMessageTime:
+                    DateTime.fromMillisecondsSinceEpoch(timestampMs),
+                unreadCount: 1,
+              );
+              await _storageService.saveChat(newChat);
+              debugPrint(
+                  '💾 Foreground: created new chat entity for $senderId with unreadCount: 1');
+            }
+
+            // Recalculate badge count from local storage
+            try {
+              final allChats = _storageService.getAllChats();
+              final totalUnread = allChats.fold<int>(
+                0,
+                (sum, chat) => sum + chat.unreadCount,
+              );
+              final badgeService = Get.find<BadgeService>();
+              await badgeService.setTotalUnreadCount(totalUnread);
+              debugPrint('🔔 Foreground: badge recalculated: $totalUnread');
+            } catch (e) {
+              debugPrint('⚠️ Foreground: Error recalculating badge: $e');
+            }
+          } catch (e) {
+            debugPrint(
+                '⚠️ Foreground: Error updating unreadCount for chat $senderId: $e');
+          }
         } catch (e) {
           debugPrint('💾 Foreground: error saving message to local DB: $e');
         }
@@ -631,8 +758,13 @@ class FCMService extends GetxService {
 
     if (!shouldSuppressNotification && senderId.isNotEmpty) {
       try {
-        final title = message.notification?.title ?? 'New Message';
+        var title = message.notification?.title ?? 'New Message';
         final body = message.notification?.body ?? 'You have a new message';
+
+        // If title is a raw device ID (no username found), format it as friendly name
+        if (title == senderId && senderId.length > 5) {
+          title = '@user_${senderId.substring(senderId.length - 5)}';
+        }
 
         await showTestNotification(title, body, senderId);
         debugPrint('📱 Foreground notification shown for sender: $senderId');
@@ -739,11 +871,20 @@ class FCMService extends GetxService {
           DateTime.now().millisecondsSinceEpoch.remainder(100000);
       debugPrint('🔔 DEBUG: notificationId: $notificationId');
 
+      // Get current badge count for notification
+      int badgeCount = 0;
+      try {
+        final badgeService = Get.find<BadgeService>();
+        badgeCount = await badgeService.getTotalUnreadCount();
+      } catch (e) {
+        debugPrint('⚠️ Could not get badge count for notification: $e');
+      }
+
       await _notifications.show(
         notificationId,
         title,
         body,
-        notificationDetails,
+        getNotificationDetails(badgeCount),
         payload: payload,
       );
 

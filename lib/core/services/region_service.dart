@@ -1,31 +1,54 @@
 import 'dart:io';
 import 'package:get/get.dart';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
 
 class RegionService extends GetxService {
   final Rx<String> currentRegion = 'USA'.obs;
   final Rx<String> currentCountryCode = 'US'.obs;
 
   Future<RegionService> init() async {
-    _detectRegion();
+    await detectRegion();
     return this;
   }
 
-  void _detectRegion() {
+  Future<void> detectRegion() async {
     try {
-      // Get device locale
-      final locale = Platform.localeName;
-      final countryCode = locale.split('_').last.toUpperCase();
+      final response = await http.get(
+        Uri.parse('http://api.vant.chat/api/membership/detect-region'),
+      );
 
-      currentCountryCode.value = countryCode;
-      currentRegion.value = _mapCountryToRegion(countryCode);
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        final countryCode = data['countryCode'] ?? 'US';
 
-      print(
-          '🌍 Region detected: ${currentRegion.value} (Country: $countryCode)');
+        currentCountryCode.value = countryCode;
+        currentRegion.value = _mapCountryToRegion(countryCode);
+
+        print('🌍 IP-based country detection: $countryCode');
+        print('🌍 Payment method: ${getPaymentMethod()}');
+      } else {
+        throw Exception('Failed to detect region: ${response.body}');
+      }
     } catch (e) {
-      print('⚠️ Region detection failed, using fallback: $e');
-      currentRegion.value = 'USA';
-      currentCountryCode.value = 'US';
+      print('❌ IP-based detection failed, falling back to device locale: $e');
+      _fallbackToDeviceLocale();
     }
+  }
+
+  void _fallbackToDeviceLocale() {
+    final locale = Platform.localeName;
+    print('🌍 Fallback - Device locale: $locale');
+
+    String countryCode = 'US';
+    if (locale.contains('_')) {
+      countryCode = locale.split('_').last.toUpperCase();
+    }
+
+    currentCountryCode.value = countryCode;
+    currentRegion.value = _mapCountryToRegion(countryCode);
+    print('🌍 Fallback - Detected country code: $countryCode');
+    print('🌍 Payment method: ${getPaymentMethod()}');
   }
 
   String _mapCountryToRegion(String countryCode) {
@@ -83,4 +106,11 @@ class RegionService extends GetxService {
 
   String get region => currentRegion.value;
   String get countryCode => currentCountryCode.value;
+
+  String getPaymentMethod() {
+    final lowPriceCountries = ['US', 'IN', 'CA', 'BD'];
+    return lowPriceCountries.contains(currentCountryCode.value)
+        ? 'google_play'
+        : 'stripe';
+  }
 }

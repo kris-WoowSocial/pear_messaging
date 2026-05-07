@@ -5,7 +5,7 @@ import 'package:get/get.dart';
 /// Used to suppress notifications on iOS when app is in foreground
 class AppLifecycleService extends GetxService with WidgetsBindingObserver {
   static AppLifecycleService get instance => Get.find<AppLifecycleService>();
-  
+
   final RxBool _isInForeground = false.obs;
   bool get isInForeground => _isInForeground.value;
 
@@ -25,7 +25,7 @@ class AppLifecycleService extends GetxService with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     debugPrint('📱 App lifecycle state changed: $state');
-    
+
     switch (state) {
       case AppLifecycleState.resumed:
         _isInForeground.value = true;

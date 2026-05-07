@@ -15,8 +15,8 @@ class PricingConfig {
       currencySymbol: 'PKR',
       sixMonthPrice: 119900, // in paisa (PKR 1,199)
       oneYearPrice: 159900, // in paisa (PKR 1,599)
-      sixMonthDisplay: 'PKR 2,900',
-      oneYearDisplay: 'PKR 3,500',
+      sixMonthDisplay: 'PKR 1,199',
+      oneYearDisplay: 'PKR 1,599',
     ),
     'India': RegionPricing(
       region: 'India',
@@ -40,10 +40,19 @@ class PricingConfig {
       region: 'EU',
       currency: 'EUR',
       currencySymbol: '€',
-      sixMonthPrice: 899, // in cents (€8.99)
-      oneYearPrice: 1399, // in cents (€13.99)
-      sixMonthDisplay: '€8.99',
-      oneYearDisplay: '€13.99',
+      sixMonthPrice: 20000, // in cents (€600.00)
+      oneYearPrice: 30000, // in cents (€800.00)
+      sixMonthDisplay: '€200.00',
+      oneYearDisplay: '€300.00',
+    ),
+    'HighPrice': RegionPricing(
+      region: 'HighPrice',
+      currency: 'USD',
+      currencySymbol: '\$',
+      sixMonthPrice: 20000, // $700 in cents
+      oneYearPrice: 30000, // $900 in cents
+      sixMonthDisplay: '\$200 USD',
+      oneYearDisplay: '\$300 USD',
     ),
   };
 

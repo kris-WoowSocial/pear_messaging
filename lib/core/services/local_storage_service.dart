@@ -11,6 +11,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'username_sync_service.dart';
 import '../utils/string_utils.dart';
+import '../utils/device_utils.dart';
 
 class LocalStorageService extends GetxService {
   static const _appGroupChannel = MethodChannel('com.vant.chatting/app_group');
@@ -36,6 +37,15 @@ class LocalStorageService extends GetxService {
 
     // Initialize SharedPreferences FIRST - needed for device ID and terms check
     _prefs = await SharedPreferences.getInstance();
+
+    // Check if iOS self-destruct flag is set and generate new device ID
+    if (Platform.isIOS && _prefs.getBool('self_destruct_ios') == true) {
+      debugPrint('🔄 iOS self-destruct detected, generating new device ID');
+      final newDeviceId = DeviceUtils.generateNewDeviceId();
+      await _prefs.setString(_prefsDeviceIdKey, newDeviceId);
+      await _prefs.remove('self_destruct_ios'); // Clear the flag
+      debugPrint('🆕 New device ID generated: $newDeviceId');
+    }
 
     // Open all boxes at startup so data is ready instantly
     _chatsBox = await Hive.openBox(_chatsBoxName);

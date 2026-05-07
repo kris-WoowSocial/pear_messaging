@@ -2,7 +2,7 @@ name: pear_messaging
 description: "Secure local chat application with biometric authentication"
 publish_to: "none"
 
-version: 1.5.0+50
+version: 1.5.7+57
 
 environment:
   sdk: ^3.5.4
@@ -37,6 +37,7 @@ dependencies:
   permission_handler: ^11.3.1
   path_provider: ^2.1.1
   country_picker: ^2.0.24
+  android_intent_plus: ^5.0.2
   firebase_core: ^4.0.0
   firebase_crashlytics: ^5.0.0
   firebase_analytics: ^12.0.0
@@ -60,6 +61,7 @@ dependencies:
 
   # Payments
   in_app_purchase: ^3.2.0
+  flutter_stripe: ^10.0.0
 
   # Image Handling & Compression
   image_picker: ^1.0.7
@@ -68,6 +70,9 @@ dependencies:
   # Image Compression
   flutter_image_compress: ^2.3.0
   cached_network_image: ^3.4.1
+
+  # App Icon Badge
+  app_badge_plus:
 
   # Cryptography
   cryptography: ^2.7.0

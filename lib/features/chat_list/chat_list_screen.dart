@@ -1,6 +1,10 @@
+import 'dart:io';
 import 'dart:ui';
 import 'package:flutter/material.dart';
+import 'package:hive_flutter/hive_flutter.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:get/get.dart';
+import 'package:android_intent_plus/android_intent.dart';
 import 'package:pear_messaging/core/services/branch_service.dart';
 import '../../core/constants/app_colors.dart';
 import '../../core/constants/app_strings.dart';
@@ -24,49 +28,44 @@ class ChatListScreen extends GetView<ChatListController> {
     return Scaffold(
       appBar: AppBar(
         backgroundColor: AppColors.surface,
-        toolbarHeight: 50,
-        leading: Padding(
-          padding: const EdgeInsets.only(left: 12, top: 6),
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(8),
-            child: Image.asset(
-              'assets/icons/app_icon.png',
-              width: 44,
-              height: 44,
-              fit: BoxFit.cover,
+        toolbarHeight: 60,
+        leadingWidth: 70,
+        leading: GestureDetector(
+          onTap: () => _showSelfDestructSheet(context),
+          child: Image.asset(
+            'assets/icons/destruct.png',
+            width: 40,
+            height: 40,
+          ),
+        ),
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            const SizedBox(height: 8),
+            const Text(
+              'Vant Chat',
+              style: TextStyle(
+                color: AppColors.textPrimary,
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+              ),
             ),
-          ),
-        ),
-        title: Transform.translate(
-          offset: const Offset(-20, 0),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              SizedBox(height: 10),
-              const Text(
-                'Vant Chats',
-                style: TextStyle(
-                  color: AppColors.textPrimary,
-                  fontSize: 18,
-                  fontWeight: FontWeight.bold,
-                ),
+            const SizedBox(height: 2),
+            const Text(
+              'E2E-PQC Encryption Serverless-Invisible',
+              style: TextStyle(
+                color: AppColors.textPrimary,
+                fontSize: 10,
+                fontWeight: FontWeight.w400,
               ),
-              SizedBox(height: 5),
-              const Text(
-                'Serverless. Private. Direct. Encrypted.',
-                style: TextStyle(
-                  color: AppColors.textSecondary,
-                  fontSize: 11,
-                  fontWeight: FontWeight.w400,
-                ),
-              ),
-            ],
-          ),
+            ),
+          ],
         ),
+        centerTitle: true,
         actions: [
           IconButton(
             icon: const Icon(
-              Icons.person_outline,
+              Icons.settings,
               color: AppColors.textPrimary,
             ),
             onPressed: () => Get.toNamed(AppRoutes.profile),
@@ -360,6 +359,15 @@ class ChatListScreen extends GetView<ChatListController> {
     );
   }
 
+  void _showSelfDestructSheet(BuildContext context) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) => const _SelfDestructSheet(),
+    );
+  }
+
   void shareApp() async {
     try {
       // Calculate share position origin from the button's position
@@ -397,5 +405,211 @@ class ChatListScreen extends GetView<ChatListController> {
         snackPosition: SnackPosition.BOTTOM,
       );
     }
+  }
+}
+
+class _SelfDestructSheet extends StatefulWidget {
+  const _SelfDestructSheet();
+
+  @override
+  State<_SelfDestructSheet> createState() => _SelfDestructSheetState();
+}
+
+class _SelfDestructSheetState extends State<_SelfDestructSheet> {
+  bool _isDeleting = false;
+
+  Future<void> _executeDestruct() async {
+    setState(() => _isDeleting = true);
+    try {
+      debugPrint('🔥 Starting self-destruct sequence...');
+
+      // Clear all Hive boxes
+      debugPrint('🗑️ Clearing Hive boxes...');
+      await Hive.box('chats').clear();
+      debugPrint('✅ Chats box cleared');
+      await Hive.box('messages').clear();
+      debugPrint('✅ Messages box cleared');
+      await Hive.box('connection_requests').clear();
+      debugPrint('✅ Connection requests box cleared');
+
+      // Clear all SharedPreferences
+      debugPrint('🗑️ Clearing SharedPreferences...');
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.clear();
+      debugPrint('✅ SharedPreferences cleared');
+
+      // Trigger app uninstall on Android
+      if (Theme.of(context).platform == TargetPlatform.android) {
+        debugPrint('📱 Triggering Android uninstall...');
+        final intent = AndroidIntent(
+          action: 'android.intent.action.DELETE',
+          data: 'package:com.vant.chat',
+        );
+        await intent.launch();
+        debugPrint('✅ Uninstall intent launched');
+
+        // Give user time to respond to uninstall dialog
+        await Future.delayed(const Duration(seconds: 3));
+
+        // If we're still here, user likely cancelled uninstall
+        // Navigate to splash to show fresh state
+        Get.offAllNamed(AppRoutes.splash);
+      }
+
+      // For iOS, set flag to generate new device ID on next launch and exit app
+      if (Theme.of(context).platform == TargetPlatform.iOS) {
+        debugPrint('🍎 Setting iOS self-destruct flag...');
+        // Need fresh prefs instance since we cleared the previous one
+        final freshPrefs = await SharedPreferences.getInstance();
+        await freshPrefs.setBool('self_destruct_ios', true);
+        debugPrint('✅ iOS self-destruct flag set, exiting app...');
+        exit(0);
+      }
+    } catch (e, stackTrace) {
+      debugPrint('❌ Self-destruct failed: $e');
+      debugPrint('❌ Stack trace: $stackTrace');
+      setState(() => _isDeleting = false);
+      Get.snackbar(
+        'Error',
+        'Failed to wipe data: ${e.toString()}',
+        snackPosition: SnackPosition.BOTTOM,
+        backgroundColor: Colors.red.shade100,
+        colorText: Colors.red.shade800,
+        duration: const Duration(seconds: 5),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      height: MediaQuery.of(context).size.height * 0.52,
+      decoration: const BoxDecoration(
+        color: Color(0xFF1A1A1A),
+        borderRadius: BorderRadius.only(
+          topLeft: Radius.circular(28),
+          topRight: Radius.circular(28),
+        ),
+      ),
+      child: Column(
+        children: [
+          // Drag handle
+          Container(
+            margin: const EdgeInsets.only(top: 12),
+            width: 40,
+            height: 4,
+            decoration: BoxDecoration(
+              color: Colors.white24,
+              borderRadius: BorderRadius.circular(2),
+            ),
+          ),
+          const SizedBox(height: 24),
+          // Red warning icon
+          Container(
+            width: 72,
+            height: 72,
+            decoration: BoxDecoration(
+              color: Colors.red.shade900.withOpacity(0.3),
+              shape: BoxShape.circle,
+              border: Border.all(color: Colors.red.shade700, width: 2),
+            ),
+            child: Icon(
+              Icons.warning_amber_rounded,
+              color: Colors.red.shade400,
+              size: 38,
+            ),
+          ),
+          const SizedBox(height: 20),
+          // Title
+          const Text(
+            'Self Destruct',
+            style: TextStyle(
+              color: Colors.white,
+              fontSize: 22,
+              fontWeight: FontWeight.bold,
+              letterSpacing: 0.5,
+            ),
+          ),
+          const SizedBox(height: 10),
+          // Warning text
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 32),
+            child: Text(
+              'This will permanently delete ALL chats, messages, and app data.\n\nThis action cannot be undone and data cannot be recovered.',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: Colors.white60,
+                fontSize: 14,
+                height: 1.5,
+              ),
+            ),
+          ),
+          const Spacer(),
+          // Buttons
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 0, 20, 32),
+            child: Row(
+              children: [
+                // Cancel button
+                Expanded(
+                  child: TextButton(
+                    onPressed:
+                        _isDeleting ? null : () => Navigator.pop(context),
+                    style: TextButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(14),
+                        side: const BorderSide(color: Colors.white24),
+                      ),
+                    ),
+                    child: const Text(
+                      'Cancel',
+                      style: TextStyle(
+                        color: Colors.white70,
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                // Done / Destruct button
+                Expanded(
+                  child: ElevatedButton(
+                    onPressed: _isDeleting ? null : _executeDestruct,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.red.shade700,
+                      disabledBackgroundColor: Colors.red.shade900,
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                      elevation: 0,
+                    ),
+                    child: _isDeleting
+                        ? const SizedBox(
+                            width: 22,
+                            height: 22,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2.5,
+                              color: Colors.white,
+                            ),
+                          )
+                        : const Text(
+                            'Destruct',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
   }
 }

@@ -1,16 +1,19 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:in_app_update/in_app_update.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
 import '../constants/app_colors.dart';
 import 'dart:math' as math;
 
 class AppUpdateService extends GetxService {
-  static const String _currentVersion = '1.1.0';
+  static const String _currentVersion = '1.3.2';
 
   // Server-side version that will trigger force update
   // You should update this when you release new versions
-  static const String _minimumRequiredVersion = '1.1.0';
+  static const String _minimumRequiredVersion = '1.3.2';
 
   /// Initialize the service
   Future<AppUpdateService> init() async {
@@ -30,9 +33,12 @@ class AppUpdateService extends GetxService {
     try {
       isCheckingForUpdate.value = true;
 
-      // For Play Store, we'll use a simple version comparison
-      // In production, you might want to fetch this from your server
-      await _checkPlayStoreUpdate();
+      // Platform-specific update check
+      if (Platform.isAndroid) {
+        await _checkPlayStoreUpdate();
+      } else if (Platform.isIOS) {
+        await _checkAppStoreUpdate();
+      }
     } catch (e) {
       debugPrint('❌ Error checking for updates: $e');
     } finally {
@@ -62,6 +68,53 @@ class AppUpdateService extends GetxService {
     }
   }
 
+  /// Check App Store for updates (iOS)
+  Future<void> _checkAppStoreUpdate() async {
+    try {
+      const String appId = '6758916131';
+      final String url = 'https://itunes.apple.com/lookup?id=$appId&country=US';
+
+      final response = await http.get(Uri.parse(url));
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+
+        if (data['resultCount'] > 0) {
+          final storeVersion = data['results'][0]['version'];
+          final storeVersionCode = _versionToNumber(storeVersion);
+          final currentVersionCode = _versionToNumber(_currentVersion);
+
+          debugPrint('📱 App Store version: $storeVersion ($storeVersionCode)');
+          debugPrint(
+            '📱 Current version: $_currentVersion ($currentVersionCode)',
+          );
+
+          if (storeVersionCode > currentVersionCode) {
+            debugPrint('🔄 Update available on App Store');
+            updateAvailable.value = true;
+            isForceUpdate.value = true;
+            _showCustomUpdateDialog();
+          } else {
+            debugPrint('✅ App is up to date');
+            updateAvailable.value = false;
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('❌ Error checking App Store update: $e');
+    }
+  }
+
+  /// Convert version string to number for comparison (e.g., "1.2.3" -> 10203)
+  int _versionToNumber(String version) {
+    final parts = version.split('.');
+    int result = 0;
+    for (int i = 0; i < parts.length && i < 3; i++) {
+      result += int.parse(parts[i]) * math.pow(100, 2 - i).toInt();
+    }
+    return result;
+  }
+
   /// Show custom update dialog (eye-catching with animations)
   void _showCustomUpdateDialog() {
     Get.dialog(
@@ -86,12 +139,24 @@ class AppUpdateService extends GetxService {
               // Animated bubbles background
               _buildAnimatedBubble(100, 100, 60, Colors.white.withOpacity(0.1)),
               _buildAnimatedBubble(
-                  300, 200, 40, Colors.white.withOpacity(0.08)),
+                300,
+                200,
+                40,
+                Colors.white.withOpacity(0.08),
+              ),
               _buildAnimatedBubble(50, 400, 80, Colors.white.withOpacity(0.06)),
               _buildAnimatedBubble(
-                  250, 500, 50, Colors.white.withOpacity(0.09)),
+                250,
+                500,
+                50,
+                Colors.white.withOpacity(0.09),
+              ),
               _buildAnimatedBubble(
-                  350, 350, 70, Colors.white.withOpacity(0.07)),
+                350,
+                350,
+                70,
+                Colors.white.withOpacity(0.07),
+              ),
 
               SafeArea(
                 child: Column(
@@ -99,8 +164,10 @@ class AppUpdateService extends GetxService {
                     // Header section with animations
                     Container(
                       width: double.infinity,
-                      padding:
-                          EdgeInsets.symmetric(horizontal: 24, vertical: 32),
+                      padding: EdgeInsets.symmetric(
+                        horizontal: 24,
+                        vertical: 32,
+                      ),
                       child: Column(
                         children: [
                           TweenAnimationBuilder(
@@ -205,8 +272,10 @@ class AppUpdateService extends GetxService {
                                     // Pulsing title
                                     TweenAnimationBuilder(
                                       duration: Duration(milliseconds: 1500),
-                                      tween:
-                                          Tween<double>(begin: 0.8, end: 1.0),
+                                      tween: Tween<double>(
+                                        begin: 0.8,
+                                        end: 1.0,
+                                      ),
                                       builder: (context, double value, child) {
                                         return Transform.scale(
                                           scale: value,
@@ -330,7 +399,7 @@ class AppUpdateService extends GetxService {
                                                     BorderRadius.circular(16),
                                                 onTap: () {
                                                   Get.back(); // Close dialog
-                                                  _openPlayStoreForUpdate();
+                                                  _openStoreForUpdate();
                                                 },
                                                 child: Center(
                                                   child: Row(
@@ -387,7 +456,11 @@ class AppUpdateService extends GetxService {
 
   /// Build animated bubble
   Widget _buildAnimatedBubble(
-      double left, double top, double size, Color color) {
+    double left,
+    double top,
+    double size,
+    Color color,
+  ) {
     return Positioned(
       left: left,
       top: top,
@@ -396,17 +469,11 @@ class AppUpdateService extends GetxService {
         tween: Tween<double>(begin: 0, end: 2 * 3.14159),
         builder: (context, double value, child) {
           return Transform.translate(
-            offset: Offset(
-              20 * math.sin(value),
-              20 * math.cos(value),
-            ),
+            offset: Offset(20 * math.sin(value), 20 * math.cos(value)),
             child: Container(
               width: size,
               height: size,
-              decoration: BoxDecoration(
-                color: color,
-                shape: BoxShape.circle,
-              ),
+              decoration: BoxDecoration(color: color, shape: BoxShape.circle),
             ),
           );
         },
@@ -455,11 +522,7 @@ class AppUpdateService extends GetxService {
                       color: color.withValues(alpha: 0.1),
                       borderRadius: BorderRadius.circular(12),
                     ),
-                    child: Icon(
-                      icon,
-                      color: color,
-                      size: 28,
-                    ),
+                    child: Icon(icon, color: color, size: 28),
                   ),
                   SizedBox(height: 8),
                   Text(
@@ -492,33 +555,41 @@ class AppUpdateService extends GetxService {
     );
   }
 
-  /// Open Play Store for update
-  Future<void> _openPlayStoreForUpdate() async {
+  /// Open app store for update (Play Store or App Store)
+  Future<void> _openStoreForUpdate() async {
     try {
-      const String appId = 'com.vant.chat';
-      final Uri url = Uri.parse(
-        'https://play.google.com/store/apps/details?id=$appId',
-      );
+      Uri url;
 
-      debugPrint('🔄 Opening Play Store for update...');
+      if (Platform.isAndroid) {
+        const String appId = 'com.vant.chat';
+        url = Uri.parse('https://play.google.com/store/apps/details?id=$appId');
+        debugPrint('🔄 Opening Play Store for update...');
+      } else if (Platform.isIOS) {
+        const String appId = '6758916131';
+        url = Uri.parse('https://apps.apple.com/app/id$appId');
+        debugPrint('🔄 Opening App Store for update...');
+      } else {
+        debugPrint('❌ Unsupported platform');
+        return;
+      }
 
       if (await canLaunchUrl(url)) {
         await launchUrl(url, mode: LaunchMode.externalApplication);
-        debugPrint('✅ Play Store opened successfully');
+        debugPrint('✅ Store opened successfully');
       } else {
-        debugPrint('❌ Could not open Play Store');
+        debugPrint('❌ Could not open store');
         Get.snackbar(
           'Error',
-          'Could not open Play Store. Please try again.',
+          'Could not open store. Please try again.',
           backgroundColor: Colors.red[100],
           colorText: Colors.red[800],
         );
       }
     } catch (e) {
-      debugPrint('❌ Error opening Play Store: $e');
+      debugPrint('❌ Error opening store: $e');
       Get.snackbar(
         'Error',
-        'Could not open Play Store. Please try again.',
+        'Could not open store. Please try again.',
         backgroundColor: Colors.red[100],
         colorText: Colors.red[800],
       );

@@ -727,13 +727,22 @@ Experience total privacy with military-grade encryption and a direct, peer-to-pe
           isColdStart: isColdStart,
         );
       } else if (hasExistingRequest) {
-        // Connection request already exists - navigate to chat list
+        // Connection request already exists - navigate to chat list and reload requests
         userName = _storageService.getDisplayName(deviceId);
         isNewChat = true;
         debugPrint(
             '📱 Connection request already exists for: $userName, navigating to chat list');
 
         Get.offAllNamed(AppRoutes.chatList);
+
+        // Reload connection requests to ensure UI shows the pending request
+        try {
+          final chatListController = Get.find<ChatListController>();
+          chatListController.loadConnectionRequests();
+          debugPrint('📱 Reloaded connection requests for chat list');
+        } catch (e) {
+          debugPrint('⚠️ Error reloading connection requests: $e');
+        }
 
         Get.snackbar(
           'Connection Request',

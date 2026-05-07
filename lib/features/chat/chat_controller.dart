@@ -12,6 +12,7 @@ import '../../core/services/socket_service.dart';
 import '../../core/services/block_service.dart';
 import '../../core/services/image_cache_service.dart';
 import '../../core/services/url_preview_service.dart';
+import '../../core/services/badge_service.dart';
 import '../../core/utils/presence_utils.dart';
 import '../../storage/models/message_entity.dart';
 import '../../storage/models/chat_entity.dart';
@@ -151,6 +152,9 @@ class ChatController extends GetxController with WidgetsBindingObserver {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _loadMessages();
       _markMessagesAsRead();
+
+      // Decrement badge count by this chat's unread count
+      _decrementBadgeForChat();
 
       // Also refresh from storage to catch any messages saved by background FCM handler
       // This ensures messages from notifications are visible immediately
@@ -450,6 +454,27 @@ class ChatController extends GetxController with WidgetsBindingObserver {
     if (unreadMessages.isNotEmpty) {
       debugPrint(
           '📖 Marked ${unreadMessages.length} messages as read for chat: $chatId');
+
+      // Update chat entity's unreadCount to 0 in storage
+      try {
+        final chat = _storageService.getChat(chatId);
+        if (chat != null) {
+          final updatedChat = chat.copyWith(unreadCount: 0);
+          await _storageService.saveChat(updatedChat);
+          debugPrint('📖 Reset unreadCount to 0 for chat: $chatId');
+        }
+      } catch (e) {
+        debugPrint('⚠️ Error resetting unreadCount for chat $chatId: $e');
+      }
+
+      // Recalculate total unread count and update badge
+      try {
+        final chatListController = Get.find<ChatListController>();
+        await chatListController.recalculateTotalUnreadCount();
+        debugPrint('📖 Recalculated total unread count and updated badge');
+      } catch (e) {
+        debugPrint('⚠️ Error recalculating total unread count: $e');
+      }
 
       // Notify ChatListController to refresh unread counts
       try {
@@ -1467,13 +1492,32 @@ class ChatController extends GetxController with WidgetsBindingObserver {
   /// Called when chat screen becomes visible (foreground)
   void setScreenActive() {
     _isScreenActive = true;
-    debugPrint('📱 Chat screen active - messages will be marked as read');
+    debugPrint(
+        '📱 Chat screen active - messages will be marked as read when user opens chat');
 
     // Refresh messages to ensure any background messages are loaded
     refreshMessagesFromStorage();
 
-    // Mark any unread messages as read now that user is viewing
-    _markMessagesAsRead();
+    // Don't auto-mark as read here - only mark when user explicitly opens the chat
+    // This prevents marking messages as read when app resumes from background
+  }
+
+  /// Decrement badge count by this chat's unread count
+  Future<void> _decrementBadgeForChat() async {
+    try {
+      final chat = _storageService.getChat(chatId);
+      if (chat != null && chat.unreadCount > 0) {
+        final badgeService = Get.find<BadgeService>();
+        await badgeService.decrementBadge(chat.unreadCount);
+        // Immediately update app icon to prevent ghost count
+        final newTotal = await badgeService.getTotalUnreadCount();
+        await badgeService.updateAppIconBadge(newTotal);
+        debugPrint(
+            '🔔 Badge decremented by ${chat.unreadCount} for chat $chatId');
+      }
+    } catch (e) {
+      debugPrint('⚠️ Error decrementing badge for chat: $e');
+    }
   }
 
   /// Called when chat screen goes to background
@@ -1487,7 +1531,8 @@ class ChatController extends GetxController with WidgetsBindingObserver {
     debugPrint('📱 App lifecycle changed: $state');
     switch (state) {
       case AppLifecycleState.resumed:
-        // App came to foreground - mark messages as read and refresh
+        // App came to foreground - refresh messages but don't auto-mark as read
+        // Messages should only be marked as read when user explicitly opens the chat
         setScreenActive();
         // Refresh messages to catch any saved by background FCM handler
         refreshMessagesFromStorage();

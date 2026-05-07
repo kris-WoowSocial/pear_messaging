@@ -11,6 +11,7 @@ import 'package:pear_messaging/firebase_options.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:firebase_analytics/firebase_analytics.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:pear_messaging/storage/models/message_entity.dart';
 import 'core/services/fcm_service.dart';
 import 'core/services/url_preview_service.dart';
 import 'core/services/local_storage_service.dart';
@@ -27,8 +28,10 @@ import 'core/services/review_service.dart';
 import 'core/services/region_service.dart';
 import 'core/services/membership_service.dart';
 import 'core/services/iap_service.dart';
+import 'core/services/stripe_service.dart';
 import 'core/services/report_service.dart';
 import 'core/services/app_lifecycle_service.dart';
+import 'core/services/badge_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -144,9 +147,43 @@ void initializeNonCriticalServices() async {
       // In-app purchase service
       Get.putAsync(() => IAPService().init()),
 
+      // Stripe payment service
+      Get.putAsync(() => StripeService().init()),
+
       // URL preview service for link previews
       Get.putAsync(() => UrlPreviewService().init()),
     ]);
+
+    // Initialize badge service (not async, doesn't need to be in Future.wait)
+    Get.put(BadgeService());
+
+    // Recalculate badge count from local storage on app startup
+    // Count actual unread messages based on message status, not chat.unreadCount
+    try {
+      final storageService = Get.find<LocalStorageService>();
+      final allChats = storageService.getAllChats();
+      int totalUnread = 0;
+
+      for (final chat in allChats) {
+        final messages = storageService.getChatMessages(chat.id);
+        final unreadCount = messages
+            .where((msg) => !msg.isMe && msg.status != MessageStatus.read)
+            .length;
+        totalUnread += unreadCount;
+
+        // Update chat entity's unreadCount to match actual count
+        if (chat.unreadCount != unreadCount) {
+          final updatedChat = chat.copyWith(unreadCount: unreadCount);
+          await storageService.saveChat(updatedChat);
+        }
+      }
+
+      final badgeService = Get.find<BadgeService>();
+      await badgeService.setTotalUnreadCount(totalUnread);
+      debugPrint('📊 Badge count recalculated on startup: $totalUnread');
+    } catch (e) {
+      debugPrint('⚠️ Error recalculating badge on startup: $e');
+    }
 
     // Initialize report service - not async, very fast
     Get.put(ReportService());

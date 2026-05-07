@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io' show Platform;
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
@@ -224,8 +225,9 @@ class SocketService extends GetxService {
     _socket?.on('pending_messages', (data) {
       debugPrint('📬 Pending messages received: ${(data as List).length}');
       if (onPendingMessages != null) {
-        final messages =
-            (data).map((msg) => Map<String, dynamic>.from(msg)).toList();
+        final messages = (data)
+            .map((msg) => Map<String, dynamic>.from(msg))
+            .toList();
         onPendingMessages!(messages);
         // Send message acks for all pending messages
         for (final message in messages) {
@@ -307,9 +309,12 @@ class SocketService extends GetxService {
       return;
     }
 
-    _socket?.emit('register', {'deviceId': _deviceId});
+    // Detect platform
+    final platform = Platform.isAndroid ? 'android' : 'ios';
+
+    _socket?.emit('register', {'deviceId': _deviceId, 'platform': platform});
     isRegistered.value = true;
-    debugPrint('📝 Device registered: $_deviceId');
+    debugPrint('📝 Device registered: $_deviceId (platform: $platform)');
 
     // Also register FCM token if available
     _registerFCMTokenIfAvailable();
@@ -394,13 +399,16 @@ class SocketService extends GetxService {
       if (!blockService.isMessagingAllowed(recipientDeviceId)) {
         if (blockService.isUserBlocked(recipientDeviceId)) {
           debugPrint(
-              '🚫 Cannot send message: I have blocked $recipientDeviceId');
+            '🚫 Cannot send message: I have blocked $recipientDeviceId',
+          );
         } else if (blockService.hasUserBlockedMe(recipientDeviceId)) {
           debugPrint(
-              '🚫 Cannot send message: $recipientDeviceId has blocked me');
+            '🚫 Cannot send message: $recipientDeviceId has blocked me',
+          );
         } else {
           debugPrint(
-              '🚫 Cannot send message: Blocking detected with $recipientDeviceId');
+            '🚫 Cannot send message: Blocking detected with $recipientDeviceId',
+          );
         }
         return false;
       }
@@ -613,10 +621,12 @@ class SocketService extends GetxService {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setBool('socket_connected', isConnected);
       debugPrint(
-          '📱 Socket connection status updated in UserDefaults: $isConnected');
+        '📱 Socket connection status updated in UserDefaults: $isConnected',
+      );
     } catch (e) {
       debugPrint(
-          '⚠️ Failed to update socket connection status in UserDefaults: $e');
+        '⚠️ Failed to update socket connection status in UserDefaults: $e',
+      );
     }
   }
 

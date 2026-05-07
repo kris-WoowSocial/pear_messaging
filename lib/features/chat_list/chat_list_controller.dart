@@ -1,20 +1,19 @@
-import 'dart:typed_data';
 import 'package:flutter/material.dart';
-import 'package:flutter/foundation.dart';
 import 'package:get/get.dart';
-import 'package:pear_messaging/core/services/invitation_storage_service.dart';
-import 'package:pear_messaging/core/services/local_auth_service.dart';
-import 'package:pear_messaging/core/services/username_service.dart';
-import 'package:pear_messaging/core/services/username_sync_service.dart';
-import 'package:pear_messaging/core/utils/string_utils.dart';
+import 'package:pear_messaging/core/services/fcm_service.dart';
 import 'package:pear_messaging/storage/models/connection_request_entity.dart';
 import 'package:uuid/uuid.dart';
+
 import '../../core/constants/app_colors.dart';
 import '../../core/constants/app_sizes.dart';
-import '../../core/constants/app_strings.dart';
 import '../../core/services/local_storage_service.dart';
 import '../../core/services/socket_service.dart';
-import '../../core/services/fcm_service.dart';
+import '../../core/services/badge_service.dart';
+import '../../core/services/invitation_storage_service.dart';
+import '../../core/services/local_auth_service.dart';
+import '../../core/services/username_service.dart';
+import '../../core/services/username_sync_service.dart';
+import '../../core/utils/string_utils.dart';
 import '../../storage/models/chat_entity.dart';
 import '../../storage/models/message_entity.dart';
 import '../../storage/models/reply_to_entity.dart';
@@ -49,8 +48,9 @@ class ChatListController extends GetxController {
     FCMService.activeChatId = null;
 
     _authenticateIfNeeded();
+    loadChats(); // This calls loadConnectionRequests internally
+    loadConnectionRequests(); // Explicitly load connection requests before checking pending invitation
     _checkPendingInvitation();
-    loadChats();
     _setupSocketListeners();
     _loadUserName();
     _syncExistingUsernames();
@@ -336,23 +336,8 @@ class ChatListController extends GetxController {
         // Chat exists in storage, add to memory and update
         debugPrint('📝 Found existing chat in storage for sender: $senderId');
 
-        // Use existing username or generate a friendly name if empty
-        final displayName = existingChat.userName.isNotEmpty &&
-                existingChat.userName != existingChat.id
-            ? existingChat.userName
-            : StringUtils.generateFriendlyName(senderId);
         final actualUnreadCount = _calculateUnreadCount(senderId);
         final displayMessage = isImageMessage ? '📷 Photo' : content;
-
-        final chatModel = ChatListModel(
-          id: senderId,
-          userName: displayName,
-          lastMessage: displayMessage,
-          lastMessageTime: messageTime,
-          unreadCount: actualUnreadCount,
-          isReply: replyToEntity != null,
-          replyContent: replyToEntity?.content,
-        );
 
         // Update in storage
         final updatedChat = existingChat.copyWith(
@@ -657,18 +642,18 @@ class ChatListController extends GetxController {
       }
 
       // Sort by last message time (most recent first)
-      chats.sort(
-        (a, b) => (b.lastMessageTime ?? DateTime.now()).compareTo(
-          a.lastMessageTime ?? DateTime.now(),
-        ),
-      );
+      chats.sort((a, b) {
+        final aTime =
+            a.lastMessageTime ?? DateTime.fromMillisecondsSinceEpoch(0);
+        final bTime =
+            b.lastMessageTime ?? DateTime.fromMillisecondsSinceEpoch(0);
+        return bTime.compareTo(aTime);
+      });
 
-      // Load connection requests
-      loadConnectionRequests();
-
-      // Update filtered chats
       filteredChats.value = List.from(chats);
-      debugPrint('✅ Chat list updated with ${chats.length} chats');
+
+      // Recalculate total unread count and update badge
+      recalculateTotalUnreadCount();
     } catch (e) {
       debugPrint('❌ Error loading chats: $e');
     }
@@ -914,6 +899,23 @@ class ChatListController extends GetxController {
     } catch (e) {
       debugPrint('📊 Error calculating unread count for $chatId: $e');
       return 0;
+    }
+  }
+
+  /// Recalculate total unread count across all chats and update badge
+  Future<void> recalculateTotalUnreadCount() async {
+    try {
+      final allChats = _storageService.getAllChats();
+      final totalUnread = allChats.fold<int>(
+        0,
+        (sum, chat) => sum + chat.unreadCount,
+      );
+      debugPrint('📊 Total unread count recalculated: $totalUnread');
+
+      final badgeService = Get.find<BadgeService>();
+      await badgeService.setTotalUnreadCount(totalUnread);
+    } catch (e) {
+      debugPrint('⚠️ Error recalculating total unread count: $e');
     }
   }
 
