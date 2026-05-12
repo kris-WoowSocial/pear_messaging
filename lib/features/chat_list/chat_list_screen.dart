@@ -2,6 +2,7 @@ import 'dart:io';
 import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:hive_flutter/hive_flutter.dart';
+import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:get/get.dart';
 import 'package:android_intent_plus/android_intent.dart';
@@ -438,6 +439,24 @@ class _SelfDestructSheetState extends State<_SelfDestructSheet> {
     setState(() => _isDeleting = true);
     try {
       debugPrint('🔥 Starting self-destruct sequence...');
+
+      // Unregister FCM token from server so no more notifications are sent
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        final deviceId = prefs.getString('device_id');
+        if (deviceId != null && deviceId.isNotEmpty) {
+          await http
+              .delete(
+                Uri.parse(
+                    'https://vant.chat/api/membership/unregister-device/$deviceId'),
+              )
+              .timeout(const Duration(seconds: 5));
+          debugPrint(
+              '✅ FCM token unregistered from server for device: $deviceId');
+        }
+      } catch (e) {
+        debugPrint('⚠️ Failed to unregister FCM token (continuing wipe): $e');
+      }
 
       // Clear all Hive boxes
       debugPrint('🗑️ Clearing Hive boxes...');
