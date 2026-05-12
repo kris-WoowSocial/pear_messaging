@@ -181,6 +181,40 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
           AndroidFlutterLocalNotificationsPlugin>();
   await androidPlugin?.createNotificationChannel(androidChannel);
 
+  // Handle payment confirmed notifications
+  if (message.data['type'] == 'payment_confirmed') {
+    try {
+      final planId = message.data['planId'] ?? '6_months';
+      final planLabel = planId == '1_year' ? '1-Year Plan' : '6-Month Plan';
+      await flutterLocalNotificationsPlugin.show(
+        DateTime.now().millisecondsSinceEpoch.remainder(100000),
+        '🎉 Payment Confirmed!',
+        '$planLabel is now active. Enjoy unlimited media sharing!',
+        const NotificationDetails(
+          android: AndroidNotificationDetails(
+            'high_importance_channel',
+            'High Importance Notifications',
+            channelDescription:
+                'This channel is used for important notifications.',
+            importance: Importance.max,
+            priority: Priority.max,
+            playSound: true,
+            enableVibration: true,
+          ),
+          iOS: DarwinNotificationDetails(
+            presentAlert: true,
+            presentBadge: true,
+            presentSound: true,
+          ),
+        ),
+      );
+      debugPrint('📱 Background: payment confirmed notification shown');
+    } catch (e) {
+      debugPrint('❌ Error showing payment notification: $e');
+    }
+    return;
+  }
+
   // Get sender info
   final senderId =
       message.data['senderDeviceId'] ?? message.data['sender'] ?? '';
@@ -563,6 +597,35 @@ class FCMService extends GetxService {
     debugPrint(
         '📱 Firebase notification title: ${message.notification?.title}');
     debugPrint('📱 Firebase notification body: ${message.notification?.body}');
+
+    // Handle payment confirmed notification
+    if (message.data['type'] == 'payment_confirmed') {
+      final planId = message.data['planId'] ?? '6_months';
+      final planLabel = planId == '1_year' ? '1-Year Plan' : '6-Month Plan';
+      debugPrint('💳 Foreground: payment confirmed for plan: $planId');
+
+      // Activate membership in local storage
+      try {
+        final membershipService = Get.find();
+        await (membershipService as dynamic).activateMembership(
+          selectedPlan: planId,
+          purchaseId: message.data['txHash'] ??
+              'fcm_${DateTime.now().millisecondsSinceEpoch}',
+        );
+        debugPrint('✅ Membership activated from FCM: $planId');
+      } catch (e) {
+        debugPrint('⚠️ Could not activate membership from FCM: $e');
+      }
+
+      // Show local notification
+      await _notifications.show(
+        DateTime.now().millisecondsSinceEpoch.remainder(100000),
+        '🎉 Payment Confirmed!',
+        '$planLabel is now active. Enjoy unlimited media sharing!',
+        getNotificationDetails(0),
+      );
+      return;
+    }
 
     // Get sender info first so we can check suppression
     final senderId =

@@ -29,6 +29,7 @@ import 'core/services/region_service.dart';
 import 'core/services/membership_service.dart';
 import 'core/services/iap_service.dart';
 import 'core/services/stripe_service.dart';
+import 'core/services/crypto_service.dart';
 import 'core/services/report_service.dart';
 import 'core/services/app_lifecycle_service.dart';
 import 'core/services/badge_service.dart';
@@ -149,6 +150,9 @@ void initializeNonCriticalServices() async {
 
       // Stripe payment service
       Get.putAsync(() => StripeService().init()),
+
+      // Crypto payment service
+      Get.putAsync(() => CryptoService().init()),
 
       // URL preview service for link previews
       Get.putAsync(() => UrlPreviewService().init()),

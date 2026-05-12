@@ -1,4 +1,7 @@
+import 'dart:convert';
+import 'package:flutter/foundation.dart';
 import 'package:get/get.dart';
+import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
 class MembershipService extends GetxService {
@@ -154,5 +157,78 @@ class MembershipService extends GetxService {
     if (ms == null) return null;
     final d = DateTime.fromMillisecondsSinceEpoch(ms);
     return '${d.day}/${d.month}/${d.year}';
+  }
+
+  /// Syncs membership from server on app open.
+  /// Only hits the API if no active plan is stored locally.
+  /// Call this from the main listing screen (ChatListController) in the background.
+  Future<void> syncMembershipFromServer(String deviceId) async {
+    // Skip if already active locally
+    if (isPremium) {
+      debugPrint(
+          '📋 Membership sync skipped - active plan already in local storage');
+      return;
+    }
+
+    try {
+      debugPrint('🔄 Syncing membership from server for device: $deviceId');
+
+      final uri =
+          Uri.parse('https://vant.chat/api/membership/sync-status/$deviceId');
+      final response = await http.get(uri).timeout(const Duration(seconds: 10));
+
+      if (response.statusCode != 200) {
+        debugPrint('⚠️ Membership sync failed: HTTP ${response.statusCode}');
+        return;
+      }
+
+      final data = jsonDecode(response.body) as Map<String, dynamic>;
+
+      if (data['hasActivePlan'] != true) {
+        debugPrint('📋 No active plan found on server');
+        return;
+      }
+
+      final planId = data['planId'] as String? ?? '6_months';
+      final purchaseId = data['purchaseId'] as String? ?? 'server_sync';
+      final purchaseDateStr = data['purchaseDate'] as String?;
+      final expiryDateStr = data['expiryDate'] as String?;
+
+      // Use server expiry date if available, otherwise calculate from purchase date
+      if (expiryDateStr != null) {
+        final expiry = DateTime.parse(expiryDateStr);
+        if (DateTime.now().isBefore(expiry)) {
+          await _prefs.setString(_membershipStatusKey, 'premium');
+          await _prefs.setString(_membershipPlanKey, planId);
+          await _prefs.setInt(
+              _membershipExpiryKey, expiry.millisecondsSinceEpoch);
+          await _prefs.setString('purchase_id', purchaseId);
+
+          if (purchaseDateStr != null) {
+            final purchaseDate = DateTime.parse(purchaseDateStr);
+            await _prefs.setInt(_membershipPurchaseDateKey,
+                purchaseDate.millisecondsSinceEpoch);
+          }
+
+          status.value = 'premium';
+          plan.value = planId;
+          expiryDate.value = expiry;
+
+          debugPrint(
+              '✅ Membership restored from server: $planId, expires: $expiry');
+        } else {
+          debugPrint('⚠️ Server plan is expired, not restoring');
+        }
+      } else if (purchaseDateStr != null) {
+        final purchaseDate = DateTime.parse(purchaseDateStr);
+        await restoreMembership(
+          purchaseId: purchaseId,
+          selectedPlan: planId,
+          purchaseDate: purchaseDate,
+        );
+      }
+    } catch (e) {
+      debugPrint('⚠️ Membership sync error: $e');
+    }
   }
 }

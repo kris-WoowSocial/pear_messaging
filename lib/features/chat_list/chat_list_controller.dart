@@ -7,6 +7,7 @@ import 'package:uuid/uuid.dart';
 import '../../core/constants/app_colors.dart';
 import '../../core/constants/app_sizes.dart';
 import '../../core/services/local_storage_service.dart';
+import '../../core/services/membership_service.dart';
 import '../../core/services/socket_service.dart';
 import '../../core/services/badge_service.dart';
 import '../../core/services/invitation_storage_service.dart';
@@ -54,6 +55,22 @@ class ChatListController extends GetxController {
     _setupSocketListeners();
     _loadUserName();
     _syncExistingUsernames();
+    _syncMembership();
+  }
+
+  /// Sync membership from server in background on app open.
+  /// Only calls API if no active plan is stored locally.
+  void _syncMembership() {
+    Future.microtask(() async {
+      try {
+        final deviceId = _storageService.deviceId;
+        if (deviceId == null) return;
+        final membershipService = Get.find<MembershipService>();
+        await membershipService.syncMembershipFromServer(deviceId);
+      } catch (e) {
+        foundation.debugPrint('⚠️ Membership sync failed: $e');
+      }
+    });
   }
 
   /// Sync existing usernames to backend on app startup

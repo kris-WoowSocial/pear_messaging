@@ -28,14 +28,30 @@ class ChatListScreen extends GetView<ChatListController> {
     return Scaffold(
       appBar: AppBar(
         backgroundColor: AppColors.surface,
-        toolbarHeight: 60,
+        toolbarHeight: 70,
         leadingWidth: 70,
         leading: GestureDetector(
           onTap: () => _showSelfDestructSheet(context),
-          child: Image.asset(
-            'assets/icons/destruct.png',
-            width: 40,
-            height: 40,
+          child: Container(
+            height: 70,
+            width: 70,
+            margin: EdgeInsets.all(5),
+            decoration: BoxDecoration(
+              color: AppColors.error,
+              border: Border.all(color: AppColors.textPrimary, width: 2),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Center(
+              child: const Text(
+                'Self\nDestruct\n1 Click',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+            ),
           ),
         ),
         title: Column(

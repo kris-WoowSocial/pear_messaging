@@ -9,7 +9,7 @@ class StripeService extends GetxService {
   static const String _stripePublishableKey =
       'pk_live_51TOkyVIC9vv7zpPxQHj0TE6JA9qRW0RlLQBR0gLsLJqxVwWSObl0uwbTIRzwemrTvgNY8y2mMPhdEB93HIERXhzg00lr6lYUqD';
 
-  static const String _baseUrl = 'http://api.vant.chat/api/membership';
+  static const String _baseUrl = 'https://vant.chat/api/membership';
 
   final RxBool isAvailable = false.obs;
   final RxBool isLoading = false.obs;

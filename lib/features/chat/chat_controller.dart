@@ -705,6 +705,13 @@ class ChatController extends GetxController with WidgetsBindingObserver {
             newStatus = MessageStatus.read;
             break;
           case 'failed':
+            // Never downgrade from sent/delivered/read to failed
+            // Server might send stale 'failed' status after message is already delivered
+            if (messages[index].status != MessageStatus.sending) {
+              debugPrint(
+                  '📊 Ignoring failed status for $messageId - current status: ${messages[index].status} (not sending)');
+              return;
+            }
             newStatus = MessageStatus.failed;
             break;
           default:
@@ -719,6 +726,22 @@ class ChatController extends GetxController with WidgetsBindingObserver {
 
         debugPrint(
             '📊 Updating message status: $messageId ${messages[index].status} -> $newStatus');
+
+        // Prevent status downgrade (e.g., from delivered back to sent, or from sent back to failed)
+        final currentStatus = messages[index].status;
+        if (_isStatusDowngrade(currentStatus, newStatus)) {
+          debugPrint(
+              '📊 Ignoring status downgrade for $messageId: $currentStatus -> $newStatus');
+          return;
+        }
+
+        // Cancel timeout if message is successfully sent/delivered/read
+        if (newStatus == MessageStatus.sent ||
+            newStatus == MessageStatus.delivered ||
+            newStatus == MessageStatus.read) {
+          _messageTimeouts[messageId]?.cancel();
+          _messageTimeouts.remove(messageId);
+        }
 
         // Delegate to _updateMessageStatusIfNotRead which persists to Hive
         // and updates UI while preserving all fields (type, mediaToken, replyTo, etc.)
@@ -835,9 +858,10 @@ class ChatController extends GetxController with WidgetsBindingObserver {
             .then((success) {
           if (success) {
             _updateMessageStatusIfNotRead(messageId, MessageStatus.sent);
-          } else {
-            _updateMessageStatusIfNotRead(messageId, MessageStatus.failed);
           }
+          // If !success (socket disconnected): message stays in 'sending' state.
+          // _flushOutbox() will retry automatically when socket reconnects.
+          // Do not mark as failed immediately - let timeout mechanism handle it.
         });
 
         _scrollToBottom();
@@ -897,28 +921,13 @@ class ChatController extends GetxController with WidgetsBindingObserver {
       replyTo: replyToData,
     )
         .then((success) {
-      if (success) {
-        // Socket accepted the event — update status to sent
-        final index = messages.indexWhere((msg) => msg.id == messageId);
-        if (index != -1) {
-          _updateMessageStatusIfNotRead(messageId, MessageStatus.sent);
-          _messageTimeouts[messageId]?.cancel();
-          _messageTimeouts.remove(messageId);
-
-          // Scroll to bottom after successful text send
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (scrollController.hasClients) {
-              scrollController.animateTo(
-                0.0,
-                duration: const Duration(milliseconds: 300),
-                curve: Curves.easeOut,
-              );
-            }
-          });
-        }
+      // Don't update status locally - wait for server status update
+      // This prevents race condition where server sends 'failed' before local 'sent' update
+      // Server will send 'sent'/'delivered'/'read' status via onMessageStatus callback
+      if (!success) {
+        debugPrint(
+            '⚠️ Socket send failed for $messageId - keeping in sending state for retry');
       }
-      // If !success (socket disconnected): message stays in 'sending' state.
-      // _flushOutbox() will retry automatically when socket reconnects.
     });
 
     // Schedule timeout so message eventually shows as failed if never delivered
@@ -1487,6 +1496,21 @@ class ChatController extends GetxController with WidgetsBindingObserver {
         }
       },
     );
+  }
+
+  /// Check if a status change would be a downgrade
+  /// Prevents reverting from higher status (sent/delivered/read) to lower status (sending/failed)
+  bool _isStatusDowngrade(MessageStatus current, MessageStatus newStatus) {
+    const statusOrder = [
+      MessageStatus.sending,
+      MessageStatus.failed,
+      MessageStatus.sent,
+      MessageStatus.delivered,
+      MessageStatus.read,
+    ];
+    final currentIndex = statusOrder.indexOf(current);
+    final newIndex = statusOrder.indexOf(newStatus);
+    return newIndex < currentIndex;
   }
 
   /// Called when chat screen becomes visible (foreground)

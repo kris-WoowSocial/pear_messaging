@@ -4,6 +4,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../../core/constants/app_colors.dart';
 import '../../core/services/membership_service.dart';
 import '../../core/services/region_service.dart';
+import '../../core/services/crypto_service.dart';
 import '../../core/constants/pricing_config.dart';
 import 'membership_controller.dart';
 
@@ -64,6 +65,9 @@ class MembershipScreen extends GetView<MembershipController> {
                         const SizedBox(height: 16),
                         // Terms and Conditions Checkbox
                         Obx(() => _buildTermsCheckbox()),
+                        const SizedBox(height: 16),
+                        // Payment Method Selection
+                        _buildPaymentMethodSelection(),
                         const SizedBox(height: 24),
                         // Plan cards
                         Obx(() => _buildPlanCard(
@@ -594,6 +598,179 @@ class MembershipScreen extends GetView<MembershipController> {
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildPaymentMethodSelection() {
+    final regionService = Get.find<RegionService>();
+    final cryptoService = Get.find<CryptoService>();
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(12),
+        color: Colors.white.withOpacity(0.05),
+        border: Border.all(color: Colors.white.withOpacity(0.1)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Payment Method',
+            style: TextStyle(
+              color: Colors.white.withOpacity(0.8),
+              fontSize: 14,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: 12),
+          Obx(() => Row(
+                children: [
+                  _buildPaymentMethodChip(
+                    label: 'Crypto',
+                    icon: Icons.currency_bitcoin,
+                    value: 'crypto',
+                    selected:
+                        controller.selectedPaymentMethod.value == 'crypto',
+                  ),
+                  const SizedBox(width: 8),
+                  _buildPaymentMethodChip(
+                    label: regionService.getPaymentMethod() == 'stripe'
+                        ? 'Card'
+                        : 'Google Pay',
+                    icon: regionService.getPaymentMethod() == 'stripe'
+                        ? Icons.credit_card
+                        : Icons.payment,
+                    value: regionService.getPaymentMethod(),
+                    selected: controller.selectedPaymentMethod.value ==
+                        regionService.getPaymentMethod(),
+                  ),
+                ],
+              )),
+          // Show coin selection when crypto is selected
+          Obx(() {
+            if (controller.selectedPaymentMethod.value == 'crypto') {
+              return Column(
+                children: [
+                  const SizedBox(height: 16),
+                  Text(
+                    'Select Cryptocurrency',
+                    style: TextStyle(
+                      color: Colors.white.withOpacity(0.8),
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      _buildCoinChip(CryptoCoin.btc, cryptoService),
+                      const SizedBox(width: 8),
+                      _buildCoinChip(CryptoCoin.eth, cryptoService),
+                      const SizedBox(width: 8),
+                      _buildCoinChip(CryptoCoin.usdtTrc20, cryptoService),
+                    ],
+                  ),
+                ],
+              );
+            }
+            return const SizedBox.shrink();
+          }),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCoinChip(CryptoCoin coin, CryptoService cryptoService) {
+    return Expanded(
+      child: Obx(() {
+        final isSelected = cryptoService.selectedCoin.value == coin;
+        return GestureDetector(
+          onTap: () {
+            cryptoService.selectedCoin.value = coin;
+          },
+          child: Container(
+            padding: const EdgeInsets.symmetric(vertical: 10),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(8),
+              color: isSelected
+                  ? coin.color.withOpacity(0.2)
+                  : Colors.white.withOpacity(0.05),
+              border: Border.all(
+                color: isSelected ? coin.color : Colors.white.withOpacity(0.2),
+                width: 1,
+              ),
+            ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(
+                  coin.icon,
+                  color: isSelected ? coin.color : Colors.white54,
+                  size: 16,
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  coin.symbol,
+                  style: TextStyle(
+                    color: isSelected ? coin.color : Colors.white70,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      }),
+    );
+  }
+
+  Widget _buildPaymentMethodChip({
+    required String label,
+    required IconData icon,
+    required String value,
+    required bool selected,
+  }) {
+    return Expanded(
+      child: GestureDetector(
+        onTap: () {
+          controller.selectedPaymentMethod.value = value;
+        },
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 12),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(8),
+            color: selected
+                ? AppColors.primary.withOpacity(0.2)
+                : Colors.white.withOpacity(0.05),
+            border: Border.all(
+              color:
+                  selected ? AppColors.primary : Colors.white.withOpacity(0.2),
+              width: 1,
+            ),
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(
+                icon,
+                color: selected ? AppColors.primary : Colors.white54,
+                size: 18,
+              ),
+              const SizedBox(width: 8),
+              Text(
+                label,
+                style: TextStyle(
+                  color: selected ? AppColors.primary : Colors.white70,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }

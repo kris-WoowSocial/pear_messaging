@@ -15,7 +15,7 @@
 		97C146FC1CF9000F007C117D /* Main.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 97C146FA1CF9000F007C117D /* Main.storyboard */; };
 		97C146FE1CF9000F007C117D /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 97C146FD1CF9000F007C117D /* Assets.xcassets */; };
 		97C147011CF9000F007C117D /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 97C146FF1CF9000F007C117D /* LaunchScreen.storyboard */; };
-		9A8DF8642F3944F000673D7B /* BuildFile in Resources */ = {isa = PBXBuildFile; };
+		9A8DF8642F3944F000673D7B /* (null) in Resources */ = {isa = PBXBuildFile; };
 		9A9DE12E2F7736B900E0782C /* GoogleService-Info.plist in Resources */ = {isa = PBXBuildFile; fileRef = 9A9DE12D2F7736B900E0782C /* GoogleService-Info.plist */; };
 		E509F4EAFD022702F41AB70F /* Pods_Runner.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 1ABC1DAB72E1FB171DE52F41 /* Pods_Runner.framework */; };
 /* End PBXBuildFile section */
@@ -270,7 +270,7 @@
 				3B3967161E833CAA004F5970 /* AppFrameworkInfo.plist in Resources */,
 				97C146FE1CF9000F007C117D /* Assets.xcassets in Resources */,
 				97C146FC1CF9000F007C117D /* Main.storyboard in Resources */,
-				9A8DF8642F3944F000673D7B /* BuildFile in Resources */,
+				9A8DF8642F3944F000673D7B /* (null) in Resources */,
 				9A9DE12E2F7736B900E0782C /* GoogleService-Info.plist in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -346,9 +346,13 @@
 			inputFileListPaths = (
 				"${PODS_ROOT}/Target Support Files/Pods-Runner/Pods-Runner-frameworks-${CONFIGURATION}-input-files.xcfilelist",
 			);
+			inputPaths = (
+			);
 			name = "[CP] Embed Pods Frameworks";
 			outputFileListPaths = (
 				"${PODS_ROOT}/Target Support Files/Pods-Runner/Pods-Runner-frameworks-${CONFIGURATION}-output-files.xcfilelist",
+			);
+			outputPaths = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
@@ -378,9 +382,13 @@
 			inputFileListPaths = (
 				"${PODS_ROOT}/Target Support Files/Pods-Runner/Pods-Runner-resources-${CONFIGURATION}-input-files.xcfilelist",
 			);
+			inputPaths = (
+			);
 			name = "[CP] Copy Pods Resources";
 			outputFileListPaths = (
 				"${PODS_ROOT}/Target Support Files/Pods-Runner/Pods-Runner-resources-${CONFIGURATION}-output-files.xcfilelist",
+			);
+			outputPaths = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
@@ -499,7 +507,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = N382HY85Z6;
 				ENABLE_BITCODE = NO;
-				FLUTTER_BUILD_NAME = 1.3.1;
+				FLUTTER_BUILD_NAME = 1.3.2;
 				FLUTTER_BUILD_NUMBER = 1;
 				INFOPLIST_FILE = Runner/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "Vant Chat";
@@ -693,7 +701,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = N382HY85Z6;
 				ENABLE_BITCODE = NO;
-				FLUTTER_BUILD_NAME = 1.3.1;
+				FLUTTER_BUILD_NAME = 1.3.2;
 				FLUTTER_BUILD_NUMBER = 1;
 				INFOPLIST_FILE = Runner/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "Vant Chat";
@@ -727,7 +735,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = N382HY85Z6;
 				ENABLE_BITCODE = NO;
-				FLUTTER_BUILD_NAME = 1.3.1;
+				FLUTTER_BUILD_NAME = 1.3.2;
 				FLUTTER_BUILD_NUMBER = 1;
 				INFOPLIST_FILE = Runner/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "Vant Chat";
