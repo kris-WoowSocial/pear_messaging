@@ -2,8 +2,8 @@ import 'dart:io';
 import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:hive_flutter/hive_flutter.dart';
-import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
+import '../../core/services/api_service.dart';
 import 'package:get/get.dart';
 import 'package:android_intent_plus/android_intent.dart';
 import 'package:pear_messaging/core/services/branch_service.dart';
@@ -445,12 +445,7 @@ class _SelfDestructSheetState extends State<_SelfDestructSheet> {
         final prefs = await SharedPreferences.getInstance();
         final deviceId = prefs.getString('device_id');
         if (deviceId != null && deviceId.isNotEmpty) {
-          await http
-              .delete(
-                Uri.parse(
-                    'https://vant.chat/api/membership/unregister-device/$deviceId'),
-              )
-              .timeout(const Duration(seconds: 5));
+          await ApiService.to.unregisterDevice(deviceId);
           debugPrint(
               '✅ FCM token unregistered from server for device: $deviceId');
         }

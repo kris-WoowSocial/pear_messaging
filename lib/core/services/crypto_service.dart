@@ -1,8 +1,7 @@
-import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
-import 'package:http/http.dart' as http;
 import 'dart:async';
+import 'api_service.dart';
 
 /// Supported cryptocurrencies
 enum CryptoCoin {
@@ -56,8 +55,6 @@ enum CryptoCoin {
 }
 
 class CryptoService extends GetxService {
-  static const String _baseUrl = 'https://vant.chat/api/membership';
-
   final RxBool isAvailable = false.obs;
   final RxBool isLoading = false.obs;
   final Rx<CryptoCoin> selectedCoin = CryptoCoin.usdtTrc20.obs;
@@ -89,40 +86,44 @@ class CryptoService extends GetxService {
     // 1 year: ~$35 USD
     switch (coin) {
       case CryptoCoin.btc:
-        // ~0.0005 BTC for 6 months, ~0.0009 BTC for 1 year
+        // ~200 USDT = 0.0025 BTC for 6 months, 300 USDT = 0.00375 BTC for 1 year
         return {
           '6_months': {
-            'amount': 0.0005,
-            'smallestUnit': 50000,
+            'amount': 0.0025,
+            'smallestUnit': 250000,
             'symbol': 'BTC'
           },
-          '1_year': {'amount': 0.0009, 'smallestUnit': 90000, 'symbol': 'BTC'},
+          '1_year': {
+            'amount': 0.00375,
+            'smallestUnit': 375000,
+            'symbol': 'BTC'
+          },
         };
       case CryptoCoin.eth:
-        // ~0.007 ETH for 6 months, ~0.012 ETH for 1 year
+        // ~200 USDT = 0.075 ETH for 6 months, 300 USDT = 0.1125 ETH for 1 year
         return {
           '6_months': {
-            'amount': 0.007,
-            'smallestUnit': 7000000000000000,
+            'amount': 0.075,
+            'smallestUnit': 75000000000000000,
             'symbol': 'ETH'
           },
           '1_year': {
-            'amount': 0.012,
-            'smallestUnit': 12000000000000000,
+            'amount': 0.1125,
+            'smallestUnit': 112500000000000000,
             'symbol': 'ETH'
           },
         };
       case CryptoCoin.usdtTrc20:
-        // 20 USDT for 6 months, 35 USDT for 1 year
+        // 200 USDT for 6 months, 300 USDT for 1 year
         return {
           '6_months': {
-            'amount': 20.0,
-            'smallestUnit': 20000000,
+            'amount': 200.0,
+            'smallestUnit': 200000000,
             'symbol': 'USDT'
           },
           '1_year': {
-            'amount': 35.0,
-            'smallestUnit': 35000000,
+            'amount': 300.0,
+            'smallestUnit': 300000000,
             'symbol': 'USDT'
           },
         };
@@ -141,42 +142,31 @@ class CryptoService extends GetxService {
       final selectedCrypto = coin ?? selectedCoin.value;
       selectedCoin.value = selectedCrypto;
 
-      final response = await http.post(
-        Uri.parse('$_baseUrl/generate-crypto-address'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'deviceId': deviceId,
-          'planId': planId,
-          'countryCode': countryCode,
-          'coin': selectedCrypto.name, // btc, eth, usdtTrc20
-        }),
+      final data = await ApiService.to.generateCryptoAddress(
+        deviceId: deviceId,
+        planId: planId,
+        countryCode: countryCode,
+        coin: selectedCrypto.name,
       );
+      print('✅ ${selectedCrypto.label} address generated: ${data['address']}');
 
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        print(
-            '✅ ${selectedCrypto.label} address generated: ${data['address']}');
+      currentAddress.value = data['address'];
+      amount.value = ((data['amount'] ??
+              data['amountUSDT'] ??
+              data['amountBTC'] ??
+              data['amountETH'] ??
+              0) as num)
+          .toDouble();
+      amountSmallestUnit.value = (data['amountSmallestUnit'] ??
+          data['amountSatoshi'] ??
+          data['amountWei'] ??
+          0) as int;
+      expiry.value = data['expiry'];
+      contractAddress.value = data['contractAddress'] ?? '';
+      currency.value = data['currency'] ?? selectedCrypto.symbol;
+      paymentStatus.value = 'pending';
 
-        currentAddress.value = data['address'];
-        amount.value = ((data['amount'] ??
-                data['amountUSDT'] ??
-                data['amountBTC'] ??
-                data['amountETH'] ??
-                0) as num)
-            .toDouble();
-        amountSmallestUnit.value = (data['amountSmallestUnit'] ??
-            data['amountSatoshi'] ??
-            data['amountWei'] ??
-            0) as int;
-        expiry.value = data['expiry'];
-        contractAddress.value = data['contractAddress'] ?? '';
-        currency.value = data['currency'] ?? selectedCrypto.symbol;
-        paymentStatus.value = 'pending';
-
-        return data;
-      } else {
-        throw Exception('Failed to generate crypto address: ${response.body}');
-      }
+      return data;
     } catch (e) {
       print('❌ Error generating crypto address: $e');
       rethrow;
@@ -191,29 +181,21 @@ class CryptoService extends GetxService {
     try {
       final selectedCrypto = coin ?? selectedCoin.value;
 
-      final response = await http.get(
-        Uri.parse(
-            '$_baseUrl/check-crypto-payment/$deviceId?coin=${selectedCrypto.name}'),
-      );
+      final data = await ApiService.to
+          .checkCryptoPayment(deviceId, coin: selectedCrypto.name);
 
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
+      paymentStatus.value = data['status'];
+      confirmations.value = data['confirmations'] ?? 0;
+      txHash.value = data['txHash'] ?? '';
+      currency.value = data['currency'] ?? selectedCrypto.symbol;
 
-        paymentStatus.value = data['status'];
-        confirmations.value = data['confirmations'] ?? 0;
-        txHash.value = data['txHash'] ?? '';
-        currency.value = data['currency'] ?? selectedCrypto.symbol;
-
-        if (data['expiryDate'] != null) {
-          expiryDate.value = data['expiryDate'];
-        }
-
-        print(
-            '✅ Payment status checked: ${data['status']}, confirmations: ${data['confirmations']}');
-        return data;
-      } else {
-        throw Exception('Failed to check payment status: ${response.body}');
+      if (data['expiryDate'] != null) {
+        expiryDate.value = data['expiryDate'];
       }
+
+      print(
+          '✅ Payment status: ${data['status']}, confirmations: ${data['confirmations']}');
+      return data;
     } catch (e) {
       print('❌ Error checking payment status: $e');
       rethrow;

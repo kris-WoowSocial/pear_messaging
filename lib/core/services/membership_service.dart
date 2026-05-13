@@ -1,8 +1,7 @@
-import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:get/get.dart';
-import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
+import 'api_service.dart';
 
 class MembershipService extends GetxService {
   static const String _installDateKey = 'app_install_date';
@@ -173,16 +172,7 @@ class MembershipService extends GetxService {
     try {
       debugPrint('🔄 Syncing membership from server for device: $deviceId');
 
-      final uri =
-          Uri.parse('https://vant.chat/api/membership/sync-status/$deviceId');
-      final response = await http.get(uri).timeout(const Duration(seconds: 10));
-
-      if (response.statusCode != 200) {
-        debugPrint('⚠️ Membership sync failed: HTTP ${response.statusCode}');
-        return;
-      }
-
-      final data = jsonDecode(response.body) as Map<String, dynamic>;
+      final data = await ApiService.to.syncMembershipStatus(deviceId);
 
       if (data['hasActivePlan'] != true) {
         debugPrint('📋 No active plan found on server');

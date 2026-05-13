@@ -31,6 +31,7 @@ import 'core/services/iap_service.dart';
 import 'core/services/stripe_service.dart';
 import 'core/services/crypto_service.dart';
 import 'core/services/report_service.dart';
+import 'core/services/api_service.dart';
 import 'core/services/app_lifecycle_service.dart';
 import 'core/services/badge_service.dart';
 
@@ -85,6 +86,9 @@ Future<void> initializeCriticalServices() async {
     deviceId = DateTime.now().millisecondsSinceEpoch.toString();
     await storageService.setDeviceId(deviceId);
   }
+
+  // Initialize ApiService - all HTTP calls go through this
+  await Get.putAsync(() => ApiService().init());
 
   // Initialize socket service FIRST - BlockService depends on it
   final socketService = Get.put(SocketService());

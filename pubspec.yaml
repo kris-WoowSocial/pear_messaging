@@ -2,7 +2,7 @@ name: pear_messaging
 description: "Secure local chat application with biometric authentication"
 publish_to: "none"
 
-version: 1.6.0+60
+version: 1.6.1+61
 
 environment:
   sdk: ^3.5.4
@@ -76,6 +76,9 @@ dependencies:
 
   # Cryptography
   cryptography: ^2.7.0
+
+  # Secure Storage - Hardware-backed key management
+  flutter_secure_storage: ^9.2.2
 
   # File Handling
   file_picker: ^8.0.3

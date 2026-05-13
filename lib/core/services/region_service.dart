@@ -1,7 +1,6 @@
 import 'dart:io';
 import 'package:get/get.dart';
-import 'package:http/http.dart' as http;
-import 'dart:convert';
+import 'api_service.dart';
 
 class RegionService extends GetxService {
   final Rx<String> currentRegion = 'USA'.obs;
@@ -14,22 +13,12 @@ class RegionService extends GetxService {
 
   Future<void> detectRegion() async {
     try {
-      final response = await http.get(
-        Uri.parse('http://api.vant.chat/api/membership/detect-region'),
-      );
-
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        final countryCode = data['countryCode'] ?? 'US';
-
-        currentCountryCode.value = countryCode;
-        currentRegion.value = _mapCountryToRegion(countryCode);
-
-        print('🌍 IP-based country detection: $countryCode');
-        print('🌍 Payment method: ${getPaymentMethod()}');
-      } else {
-        throw Exception('Failed to detect region: ${response.body}');
-      }
+      final data = await ApiService.to.detectRegion();
+      final countryCode = data['countryCode'] ?? 'US';
+      currentCountryCode.value = countryCode;
+      currentRegion.value = _mapCountryToRegion(countryCode);
+      print('🌍 IP-based country detection: $countryCode');
+      print('🌍 Payment method: ${getPaymentMethod()}');
     } catch (e) {
       print('❌ IP-based detection failed, falling back to device locale: $e');
       _fallbackToDeviceLocale();

@@ -1,15 +1,11 @@
-import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:get/get.dart';
-import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
+import 'api_service.dart';
 import 'local_storage_service.dart';
 
 /// Service to sync usernames with backend for notification titles
 class UsernameSyncService extends GetxService {
-  static const String _baseUrl =
-      'https://vant.chat'; // Use HTTPS instead of HTTP
-
   /// Initialize the service
   Future<UsernameSyncService> init() async {
     debugPrint('🔄 UsernameSyncService initialized');
@@ -20,28 +16,9 @@ class UsernameSyncService extends GetxService {
   Future<bool> syncUsername(String deviceId, String username) async {
     try {
       debugPrint('🔄 Syncing username to backend: $deviceId -> $username');
-
-      final response = await http
-          .post(
-            Uri.parse('$_baseUrl/api/username'),
-            headers: {
-              'Content-Type': 'application/json',
-            },
-            body: jsonEncode({
-              'deviceId': deviceId,
-              'username': username,
-            }),
-          )
-          .timeout(const Duration(seconds: 10));
-
-      if (response.statusCode == 200) {
-        debugPrint('✅ Username synced successfully: $username');
-        return true;
-      } else {
-        debugPrint(
-            '❌ Failed to sync username: ${response.statusCode} - ${response.body}');
-        return false;
-      }
+      await ApiService.to.setUsername(deviceId, username);
+      debugPrint('✅ Username synced successfully: $username');
+      return true;
     } catch (e) {
       debugPrint('❌ Error syncing username: $e');
       return false;
@@ -53,30 +30,14 @@ class UsernameSyncService extends GetxService {
       String ownerDeviceId, String contactDeviceId, String displayName) async {
     try {
       debugPrint(
-          '🔄 Syncing contact name to backend: $ownerDeviceId calls $contactDeviceId as "$displayName"');
-
-      final response = await http
-          .post(
-            Uri.parse('$_baseUrl/api/username/contact'),
-            headers: {
-              'Content-Type': 'application/json',
-            },
-            body: jsonEncode({
-              'ownerDeviceId': ownerDeviceId,
-              'contactDeviceId': contactDeviceId,
-              'displayName': displayName,
-            }),
-          )
-          .timeout(const Duration(seconds: 10));
-
-      if (response.statusCode == 200) {
-        debugPrint('✅ Contact name synced successfully: "$displayName"');
-        return true;
-      } else {
-        debugPrint(
-            '❌ Failed to sync contact name: ${response.statusCode} - ${response.body}');
-        return false;
-      }
+          '🔄 Syncing contact name: $ownerDeviceId calls $contactDeviceId as "$displayName"');
+      await ApiService.to.syncContactName(
+        ownerDeviceId: ownerDeviceId,
+        contactDeviceId: contactDeviceId,
+        displayName: displayName,
+      );
+      debugPrint('✅ Contact name synced successfully: "$displayName"');
+      return true;
     } catch (e) {
       debugPrint('❌ Error syncing contact name: $e');
       return false;
@@ -87,23 +48,10 @@ class UsernameSyncService extends GetxService {
   Future<String?> getUsername(String deviceId) async {
     try {
       debugPrint('🔄 Fetching username from backend: $deviceId');
-
-      final response = await http
-          .get(
-            Uri.parse('$_baseUrl/api/username/$deviceId'),
-          )
-          .timeout(const Duration(seconds: 10));
-
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        final username = data['username'] as String?;
-        debugPrint('✅ Username fetched from backend: $username');
-        return username;
-      } else {
-        debugPrint(
-            '❌ Failed to fetch username: ${response.statusCode} - ${response.body}');
-        return null;
-      }
+      final data = await ApiService.to.getUsername(deviceId);
+      final username = data?['username'] as String?;
+      debugPrint('✅ Username fetched from backend: $username');
+      return username;
     } catch (e) {
       debugPrint('❌ Error fetching username: $e');
       return null;
