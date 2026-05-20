@@ -177,12 +177,12 @@ class ChatController extends GetxController with WidgetsBindingObserver {
         '⏱️ ChatController.onInit() END: ${initEnd.millisecondsSinceEpoch} (${initEnd.difference(initStart).inMicroseconds}μs)');
   }
 
-  void _loadMessages() {
+  Future<void> _loadMessages() async {
     final loadStart = DateTime.now();
     debugPrint('⏱️ _loadMessages() START: ${loadStart.millisecondsSinceEpoch}');
     try {
       final storageStart = DateTime.now();
-      _allMessageEntities = _storageService.getChatMessages(chatId);
+      _allMessageEntities = await _storageService.getChatMessages(chatId);
       final storageEnd = DateTime.now();
       debugPrint(
           '⏱️ getChatMessages() took: ${storageEnd.difference(storageStart).inMicroseconds}μs');
@@ -254,10 +254,10 @@ class ChatController extends GetxController with WidgetsBindingObserver {
   }
 
   /// Refresh messages from local storage (called when app resumes from background)
-  void refreshMessagesFromStorage() {
+  Future<void> refreshMessagesFromStorage() async {
     try {
       debugPrint('🔄 Refreshing messages from storage for chat: $chatId');
-      _allMessageEntities = _storageService.getChatMessages(chatId);
+      _allMessageEntities = await _storageService.getChatMessages(chatId);
       final totalCount = _allMessageEntities.length;
 
       if (totalCount == 0) {
@@ -563,7 +563,7 @@ class ChatController extends GetxController with WidgetsBindingObserver {
     });
 
     // Handle incoming messages - chain with previous handler
-    _socketService.onMessageReceived = (Map<String, dynamic> data) {
+    _socketService.onMessageReceived = (Map<String, dynamic> data) async {
       debugPrint('📩 ChatController received message: $data');
 
       // Always call the previous handler first (ChatListController)
@@ -600,7 +600,7 @@ class ChatController extends GetxController with WidgetsBindingObserver {
               '🔁 Socket message $messageId exists in Hive but not UI, adding to UI');
           // Load the message from Hive and add to UI
           final savedMessages =
-              _storageService.getChatMessages(recipientDeviceId);
+              await _storageService.getChatMessages(recipientDeviceId);
           final savedMessage =
               savedMessages.firstWhere((m) => m.id == messageId,
                   orElse: () => MessageEntity(

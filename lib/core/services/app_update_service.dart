@@ -5,22 +5,35 @@ import 'package:in_app_update/in_app_update.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
+import 'package:package_info_plus/package_info_plus.dart';
 import '../constants/app_colors.dart';
 import 'dart:math' as math;
 
 class AppUpdateService extends GetxService {
-  static const String _currentVersion = '1.3.2';
-
-  // Server-side version that will trigger force update
-  // You should update this when you release new versions
-  static const String _minimumRequiredVersion = '1.3.2';
+  String _currentVersion = '1.6.1';
+  final String _minimumRequiredVersion = '1.6.1';
+  PackageInfo? _packageInfo;
 
   /// Initialize the service
   Future<AppUpdateService> init() async {
+    // Get actual installed version
+    await _loadPackageInfo();
+
     // Check for updates on app startup
     await checkForUpdates();
 
     return this;
+  }
+
+  /// Load package info to get actual installed version
+  Future<void> _loadPackageInfo() async {
+    try {
+      _packageInfo = await PackageInfo.fromPlatform();
+      _currentVersion = _packageInfo!.version;
+      debugPrint('📱 Installed version: $_currentVersion');
+    } catch (e) {
+      debugPrint('❌ Error loading package info: $e');
+    }
   }
 
   final RxBool isCheckingForUpdate = false.obs;
@@ -71,8 +84,12 @@ class AppUpdateService extends GetxService {
   /// Check App Store for updates (iOS)
   Future<void> _checkAppStoreUpdate() async {
     try {
-      const String appId = '6758916131';
-      final String url = 'https://itunes.apple.com/lookup?id=$appId&country=US';
+      // Get bundle ID from package info
+      final bundleId = _packageInfo?.packageName ?? 'com.vant.chat';
+      final String url =
+          'https://itunes.apple.com/lookup?bundleId=$bundleId&country=US';
+
+      debugPrint('🔍 Checking App Store for bundle ID: $bundleId');
 
       final response = await http.get(Uri.parse(url));
 
@@ -98,6 +115,8 @@ class AppUpdateService extends GetxService {
             debugPrint('✅ App is up to date');
             updateAvailable.value = false;
           }
+        } else {
+          debugPrint('⚠️ No results found for bundle ID: $bundleId');
         }
       }
     } catch (e) {
@@ -561,12 +580,13 @@ class AppUpdateService extends GetxService {
       Uri url;
 
       if (Platform.isAndroid) {
-        const String appId = 'com.vant.chat';
-        url = Uri.parse('https://play.google.com/store/apps/details?id=$appId');
+        final bundleId = _packageInfo?.packageName ?? 'com.vant.chat';
+        url = Uri.parse(
+            'https://play.google.com/store/apps/details?id=$bundleId');
         debugPrint('🔄 Opening Play Store for update...');
       } else if (Platform.isIOS) {
-        const String appId = '6758916131';
-        url = Uri.parse('https://apps.apple.com/app/id$appId');
+        final bundleId = _packageInfo?.packageName ?? 'com.vant.chat';
+        url = Uri.parse('https://apps.apple.com/app/id?bundleId=$bundleId');
         debugPrint('🔄 Opening App Store for update...');
       } else {
         debugPrint('❌ Unsupported platform');

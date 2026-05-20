@@ -34,6 +34,10 @@ import 'core/services/report_service.dart';
 import 'core/services/api_service.dart';
 import 'core/services/app_lifecycle_service.dart';
 import 'core/services/badge_service.dart';
+import 'core/services/secure_key_service.dart';
+import 'core/services/secure_encryption_service.dart';
+import 'core/services/secure_image_storage_service.dart';
+import 'core/services/chat_media_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -77,7 +81,19 @@ void main() async {
 
 /// Initialize only critical services needed for app to function
 Future<void> initializeCriticalServices() async {
-  // Initialize storage service first - CRITICAL for app data
+  // Initialize secure key service FIRST - Required for encryption
+  await Get.putAsync(() => SecureKeyService().init());
+
+  // Initialize secure encryption service
+  await Get.putAsync(() => SecureEncryptionService().init());
+
+  // Initialize secure image storage service
+  await Get.putAsync(() => SecureImageStorageService().init());
+
+  // Initialize chat media service
+  await Get.putAsync(() => ChatMediaService().init());
+
+  // Initialize storage service - CRITICAL for app data
   final storageService = await Get.putAsync(() => LocalStorageService().init());
 
   // Get or create device ID - CRITICAL for messaging
@@ -173,7 +189,7 @@ void initializeNonCriticalServices() async {
       int totalUnread = 0;
 
       for (final chat in allChats) {
-        final messages = storageService.getChatMessages(chat.id);
+        final messages = await storageService.getChatMessages(chat.id);
         final unreadCount = messages
             .where((msg) => !msg.isMe && msg.status != MessageStatus.read)
             .length;

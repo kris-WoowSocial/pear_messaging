@@ -82,48 +82,48 @@ class CryptoService extends GetxService {
   /// Get pricing for a specific coin and plan
   Map<String, dynamic> getPricing(CryptoCoin coin, String planId) {
     // Pricing in USD equivalent
-    // 6 months: ~$20 USD
-    // 1 year: ~$35 USD
+    // 6 months: $70 USD
+    // 1 year: $100 USD
     switch (coin) {
       case CryptoCoin.btc:
-        // ~200 USDT = 0.0025 BTC for 6 months, 300 USDT = 0.00375 BTC for 1 year
+        // ~70 USDT = 0.000875 BTC for 6 months, 100 USDT = 0.00125 BTC for 1 year
         return {
           '6_months': {
-            'amount': 0.0025,
-            'smallestUnit': 250000,
+            'amount': 0.000875,
+            'smallestUnit': 87500,
             'symbol': 'BTC'
           },
           '1_year': {
-            'amount': 0.00375,
-            'smallestUnit': 375000,
+            'amount': 0.00125,
+            'smallestUnit': 125000,
             'symbol': 'BTC'
           },
         };
       case CryptoCoin.eth:
-        // ~200 USDT = 0.075 ETH for 6 months, 300 USDT = 0.1125 ETH for 1 year
+        // ~70 USDT = 0.026 ETH for 6 months, 100 USDT = 0.038 ETH for 1 year
         return {
           '6_months': {
-            'amount': 0.075,
-            'smallestUnit': 75000000000000000,
+            'amount': 0.026,
+            'smallestUnit': 26000000000000000,
             'symbol': 'ETH'
           },
           '1_year': {
-            'amount': 0.1125,
-            'smallestUnit': 112500000000000000,
+            'amount': 0.038,
+            'smallestUnit': 38000000000000000,
             'symbol': 'ETH'
           },
         };
       case CryptoCoin.usdtTrc20:
-        // 200 USDT for 6 months, 300 USDT for 1 year
+        // 70 USDT for 6 months, 100 USDT for 1 year
         return {
           '6_months': {
-            'amount': 200.0,
-            'smallestUnit': 200000000,
+            'amount': 70.0,
+            'smallestUnit': 70000000,
             'symbol': 'USDT'
           },
           '1_year': {
-            'amount': 300.0,
-            'smallestUnit': 300000000,
+            'amount': 100.0,
+            'smallestUnit': 100000000,
             'symbol': 'USDT'
           },
         };

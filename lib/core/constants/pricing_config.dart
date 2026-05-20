@@ -40,19 +40,19 @@ class PricingConfig {
       region: 'EU',
       currency: 'EUR',
       currencySymbol: '€',
-      sixMonthPrice: 20000, // in cents (€600.00)
-      oneYearPrice: 30000, // in cents (€800.00)
-      sixMonthDisplay: '€200.00',
-      oneYearDisplay: '€300.00',
+      sixMonthPrice: 7000, // in cents (€70.00)
+      oneYearPrice: 10000, // in cents (€100.00)
+      sixMonthDisplay: '€70.00',
+      oneYearDisplay: '€100.00',
     ),
     'HighPrice': RegionPricing(
       region: 'HighPrice',
       currency: 'USD',
       currencySymbol: '\$',
-      sixMonthPrice: 20000, // $700 in cents
-      oneYearPrice: 30000, // $900 in cents
-      sixMonthDisplay: '\$200 USD',
-      oneYearDisplay: '\$300 USD',
+      sixMonthPrice: 7000, // $70 in cents
+      oneYearPrice: 10000, // $100 in cents
+      sixMonthDisplay: '\$70 USD',
+      oneYearDisplay: '\$100 USD',
     ),
   };
 

@@ -353,7 +353,7 @@ class ChatListController extends GetxController {
         // Chat exists in storage, add to memory and update
         debugPrint('📝 Found existing chat in storage for sender: $senderId');
 
-        final actualUnreadCount = _calculateUnreadCount(senderId);
+        final actualUnreadCount = await _calculateUnreadCount(senderId);
         final displayMessage = isImageMessage ? '📷 Photo' : content;
 
         // Update in storage
@@ -410,7 +410,7 @@ class ChatListController extends GetxController {
                   invitationChat.userName != invitationChat.id
               ? invitationChat.userName
               : StringUtils.generateFriendlyName(senderId);
-          final actualUnreadCount = _calculateUnreadCount(senderId);
+          final actualUnreadCount = await _calculateUnreadCount(senderId);
           final displayMessage = isImageMessage ? '📷 Photo' : content;
 
           debugPrint(
@@ -477,7 +477,7 @@ class ChatListController extends GetxController {
             debugPrint('⚠️ CHAT LIST LOG: Could not fetch username: $e');
           }
 
-          final actualUnreadCount = _calculateUnreadCount(senderId);
+          final actualUnreadCount = await _calculateUnreadCount(senderId);
           final displayMessage = isImageMessage ? '📷 Photo' : content;
 
           final chatModel = ChatListModel(
@@ -530,7 +530,7 @@ class ChatListController extends GetxController {
       final existingChat = chats[existingChatIndex];
 
       // Calculate actual unread count by counting unread messages (now includes the new message)
-      final actualUnreadCount = _calculateUnreadCount(senderId);
+      final actualUnreadCount = await _calculateUnreadCount(senderId);
 
       // Display "📷 Photo" for image messages in chat list
       final displayMessage = isImageMessage ? '📷 Photo' : content;
@@ -907,9 +907,9 @@ class ChatListController extends GetxController {
   }
 
   /// Calculate actual unread count for a chat by counting unread messages in storage
-  int _calculateUnreadCount(String chatId) {
+  Future<int> _calculateUnreadCount(String chatId) async {
     try {
-      final messages = _storageService.getChatMessages(chatId);
+      final messages = await _storageService.getChatMessages(chatId);
       return messages
           .where((msg) => !msg.isMe && msg.status != MessageStatus.read)
           .length;

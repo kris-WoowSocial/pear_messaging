@@ -193,16 +193,16 @@ class MembershipScreen extends GetView<MembershipController> {
         const SizedBox(height: 10),
         Obx(() {
           final membershipService = Get.find<MembershipService>();
-          final daysLeft = membershipService.freeMediaDaysRemaining;
-          final text = daysLeft > 0
-              ? '$daysLeft day${daysLeft == 1 ? '' : 's'} of free media remaining'
-              : 'Free media period ended · Upgrade to continue';
+          final text = membershipService.statusDescription;
+          final isPremium = membershipService.isPremium;
           return Text(
             text,
             style: TextStyle(
-              color: daysLeft > 0
-                  ? Colors.amber.shade300
-                  : Colors.redAccent.shade100,
+              color: isPremium
+                  ? Colors.green.shade300
+                  : membershipService.freeMediaDaysRemaining > 0
+                      ? Colors.amber.shade300
+                      : Colors.redAccent.shade100,
               fontSize: 14,
             ),
             textAlign: TextAlign.center,

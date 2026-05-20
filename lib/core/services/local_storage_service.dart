@@ -10,6 +10,7 @@ import 'package:pear_messaging/storage/models/message_entity.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'username_sync_service.dart';
+import 'secure_encryption_service.dart';
 import '../utils/string_utils.dart';
 import '../utils/device_utils.dart';
 
@@ -399,7 +400,7 @@ class LocalStorageService extends GetxService {
   }
 
   // Message operations
-  List<MessageEntity> getChatMessages(String chatId) {
+  Future<List<MessageEntity>> getChatMessages(String chatId) async {
     final getStart = DateTime.now();
     try {
       // Ensure messages box is opened lazily - this will be synchronous for already opened box
@@ -435,6 +436,20 @@ class LocalStorageService extends GetxService {
               message = value;
             } else {
               continue;
+            }
+
+            // Decrypt message content if it's text
+            if (message.type == MessageType.text &&
+                message.content.isNotEmpty) {
+              try {
+                final encryptionService = Get.find<SecureEncryptionService>();
+                final decryptedContent =
+                    await encryptionService.decryptText(message.content);
+                message = message.copyWith(content: decryptedContent);
+              } catch (e) {
+                debugPrint('⚠️ Failed to decrypt message content: $e');
+                // Keep original content if decryption fails (might be plain text)
+              }
             }
 
             messages.add(message);
@@ -479,6 +494,19 @@ class LocalStorageService extends GetxService {
             continue;
           }
 
+          // Decrypt message content if it's text
+          if (message.type == MessageType.text && message.content.isNotEmpty) {
+            try {
+              final encryptionService = Get.find<SecureEncryptionService>();
+              final decryptedContent =
+                  await encryptionService.decryptText(message.content);
+              message = message.copyWith(content: decryptedContent);
+            } catch (e) {
+              debugPrint('⚠️ Failed to decrypt message content: $e');
+              // Keep original content if decryption fails
+            }
+          }
+
           // Rebuild index entry while scanning
           _chatMessageIndex
               .putIfAbsent(message.chatId, () => [])
@@ -507,9 +535,24 @@ class LocalStorageService extends GetxService {
       // Ensure messages box is opened lazily
       await _ensureMessagesBoxOpen();
 
-      final jsonData = message.toJson();
+      // Encrypt message content if it's text
+      MessageEntity messageToSave = message;
+      if (message.type == MessageType.text && message.content.isNotEmpty) {
+        try {
+          final encryptionService = Get.find<SecureEncryptionService>();
+          final encryptedContent =
+              await encryptionService.encryptText(message.content);
+          messageToSave = message.copyWith(content: encryptedContent);
+          debugPrint('🔒 Message content encrypted');
+        } catch (e) {
+          debugPrint('⚠️ Failed to encrypt message content: $e');
+          // Continue with unencrypted content as fallback
+        }
+      }
+
+      final jsonData = messageToSave.toJson();
       debugPrint(
-          '💬 Saving message: ${message.id} for chat ${message.chatId} with status: ${message.status} -> $jsonData');
+          '💬 Saving message: ${message.id} for chat ${message.chatId} with status: ${message.status}');
       await _messagesBox.put(message.id, jsonData);
       // Update in-memory index
       _chatMessageIndex.putIfAbsent(message.chatId, () => []).add(message.id);
@@ -547,7 +590,7 @@ class LocalStorageService extends GetxService {
   }
 
   /// Get all messages across all chats (for deduplication)
-  List<MessageEntity> getAllMessages() {
+  Future<List<MessageEntity>> getAllMessages() async {
     try {
       // Ensure messages box is opened lazily
       _ensureMessagesBoxOpen();
@@ -560,10 +603,25 @@ class LocalStorageService extends GetxService {
         try {
           final messageData = _messagesBox.get(key);
           if (messageData != null) {
-            final message = messageData is MessageEntity
+            var message = messageData is MessageEntity
                 ? messageData
                 : MessageEntity.fromJson(
                     Map<String, dynamic>.from(messageData));
+
+            // Decrypt message content if it's text
+            if (message.type == MessageType.text &&
+                message.content.isNotEmpty) {
+              try {
+                final encryptionService = Get.find<SecureEncryptionService>();
+                final decryptedContent =
+                    await encryptionService.decryptText(message.content);
+                message = message.copyWith(content: decryptedContent);
+              } catch (e) {
+                debugPrint('⚠️ Failed to decrypt message content: $e');
+                // Keep original content if decryption fails
+              }
+            }
+
             messages.add(message);
           }
         } catch (e) {
