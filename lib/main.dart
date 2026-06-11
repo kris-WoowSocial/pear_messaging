@@ -38,18 +38,21 @@ import 'core/services/secure_key_service.dart';
 import 'core/services/secure_encryption_service.dart';
 import 'core/services/secure_image_storage_service.dart';
 import 'core/services/chat_media_service.dart';
+import 'core/services/webrtc_call_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   // 2. Set the system overlay style globally
-  SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
-    statusBarColor: Colors.transparent, // Makes status bar blend in
-    statusBarIconBrightness:
-        Brightness.dark, // Forces icons (battery/time) to be DARK
-    statusBarBrightness:
-        Brightness.light, // Required for iOS to show DARK icons
-  ));
+  SystemChrome.setSystemUIOverlayStyle(
+    const SystemUiOverlayStyle(
+      statusBarColor: Colors.transparent, // Makes status bar blend in
+      statusBarIconBrightness:
+          Brightness.dark, // Forces icons (battery/time) to be DARK
+      statusBarBrightness:
+          Brightness.light, // Required for iOS to show DARK icons
+    ),
+  );
 
   // iOS-specific status bar configuration
   if (Platform.isIOS) {
@@ -72,6 +75,9 @@ void main() async {
   // Request notification permission directly on app launch (Android 13+ requirement)
   // This shows the system permission popup immediately
   await requestNotificationPermission();
+
+  // Request microphone permission for audio calls
+  await requestMicrophonePermission();
 
   runApp(PearMessagingApp(skipSplash: termsAccepted));
 
@@ -116,7 +122,8 @@ Future<void> initializeCriticalServices() async {
   Get.put(BlockService()); // Now this can find SocketService
   Get.put(ConnectionRequestService());
   Get.put(
-      AppLifecycleService()); // Track app lifecycle for notification suppression
+    AppLifecycleService(),
+  ); // Track app lifecycle for notification suppression
   Get.put(await Get.putAsync(() => UsernameSyncService().init()));
 }
 
@@ -212,6 +219,10 @@ void initializeNonCriticalServices() async {
     // Initialize report service - not async, very fast
     Get.put(ReportService());
 
+    // Initialize WebRTC call service
+    Get.put(WebRTCCallService());
+    await Get.find<WebRTCCallService>().initialize();
+
     debugPrint('✅ Non-critical services initialized in background');
 
     // Handle notification tap that arrived while app was terminated
@@ -306,5 +317,28 @@ Future<void> requestNotificationPermission() async {
     }
   } catch (e) {
     debugPrint('⚠️ Error requesting notification permission: $e');
+  }
+}
+
+/// Request microphone permission for audio calls
+/// Shows the system permission popup immediately on app launch
+Future<void> requestMicrophonePermission() async {
+  try {
+    final status = await Permission.microphone.status;
+    debugPrint('🎤 Microphone permission status: $status');
+
+    if (status.isDenied) {
+      debugPrint('🎤 Requesting microphone permission...');
+      final result = await Permission.microphone.request();
+      debugPrint('🎤 Microphone permission result: $result');
+    } else if (status.isPermanentlyDenied) {
+      debugPrint(
+        '⚠️ Microphone permission permanently denied - user must enable in settings',
+      );
+    } else if (status.isGranted) {
+      debugPrint('✅ Microphone permission already granted');
+    }
+  } catch (e) {
+    debugPrint('⚠️ Error requesting microphone permission: $e');
   }
 }

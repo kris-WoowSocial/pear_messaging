@@ -39,6 +39,15 @@ class SocketService extends GetxService {
   Function(Map<String, dynamic>)? onConnectionRequest;
   Function(Map<String, dynamic>)? onConnectionRequestResponse;
 
+  // Callbacks for WebRTC call events
+  Function(Map<String, dynamic>)? onIncomingCall;
+  Function(Map<String, dynamic>)? onCallAccepted;
+  Function(Map<String, dynamic>)? onCallRejected;
+  Function(Map<String, dynamic>)? onCallTerminated;
+  Function(Map<String, dynamic>)? onIceCandidate;
+  Function(Map<String, dynamic>)? onPeerRinging;
+  Function(Map<String, dynamic>)? onIceRestart;
+
   // Getters
   String? get deviceId => _deviceId;
 
@@ -298,6 +307,62 @@ class SocketService extends GetxService {
       debugPrint('🤝 Connection request response: $data');
       if (onConnectionRequestResponse != null && data != null) {
         onConnectionRequestResponse!(Map<String, dynamic>.from(data));
+      }
+    });
+
+    // WebRTC Call: Incoming call
+    _socket?.on('incoming_call', (data) {
+      debugPrint('📞 Incoming call: $data');
+      if (onIncomingCall != null && data != null) {
+        onIncomingCall!(Map<String, dynamic>.from(data));
+      }
+    });
+
+    // WebRTC Call: Call accepted
+    _socket?.on('call_accepted', (data) {
+      debugPrint('📞 Call accepted: $data');
+      if (onCallAccepted != null && data != null) {
+        onCallAccepted!(Map<String, dynamic>.from(data));
+      }
+    });
+
+    // WebRTC Call: Call rejected
+    _socket?.on('call_rejected', (data) {
+      debugPrint('📞 Call rejected: $data');
+      if (onCallRejected != null && data != null) {
+        onCallRejected!(Map<String, dynamic>.from(data));
+      }
+    });
+
+    // WebRTC Call: Call terminated
+    _socket?.on('call_terminated', (data) {
+      debugPrint('📞 Call terminated: $data');
+      if (onCallTerminated != null && data != null) {
+        onCallTerminated!(Map<String, dynamic>.from(data));
+      }
+    });
+
+    // WebRTC Call: ICE candidate
+    _socket?.on('ice_candidate', (data) {
+      debugPrint('📞 ICE candidate received');
+      if (onIceCandidate != null && data != null) {
+        onIceCandidate!(Map<String, dynamic>.from(data));
+      }
+    });
+
+    // WebRTC Call: Peer ringing
+    _socket?.on('peer_ringing', (data) {
+      debugPrint('📞 Peer ringing: $data');
+      if (onPeerRinging != null && data != null) {
+        onPeerRinging!(Map<String, dynamic>.from(data));
+      }
+    });
+
+    // WebRTC Call: ICE restart
+    _socket?.on('ice_restart', (data) {
+      debugPrint('📞 ICE restart: $data');
+      if (onIceRestart != null && data != null) {
+        onIceRestart!(Map<String, dynamic>.from(data));
       }
     });
   }
@@ -715,6 +780,126 @@ class SocketService extends GetxService {
     if (!isConnected.value) return;
 
     _socket?.emit('get_online_users');
+  }
+
+  // WebRTC Call Signaling Methods
+
+  /// Initiate a call
+  void initiateCall({
+    required String callerId,
+    required String calleeId,
+    required String sdpOffer,
+  }) {
+    if (!isConnected.value) {
+      debugPrint('❌ Cannot initiate call: not connected');
+      return;
+    }
+
+    _socket?.emit('call_initiate', {
+      'callerId': callerId,
+      'calleeId': calleeId,
+      'sdpOffer': sdpOffer,
+    });
+    debugPrint('📞 Call initiated: $callerId -> $calleeId');
+  }
+
+  /// Accept a call
+  void acceptCall({
+    required String callId,
+    required String callerId,
+    required String sdpAnswer,
+  }) {
+    if (!isConnected.value) {
+      debugPrint('❌ Cannot accept call: not connected');
+      return;
+    }
+
+    _socket?.emit('call_accept', {
+      'callId': callId,
+      'callerId': callerId,
+      'sdpAnswer': sdpAnswer,
+    });
+    debugPrint('📞 Call accepted: $callId');
+  }
+
+  /// Reject a call
+  void rejectCall({
+    required String callId,
+    required String callerId,
+    String? reason,
+  }) {
+    if (!isConnected.value) {
+      debugPrint('❌ Cannot reject call: not connected');
+      return;
+    }
+
+    _socket?.emit('call_reject', {
+      'callId': callId,
+      'callerId': callerId,
+      'reason': reason ?? 'rejected',
+    });
+    debugPrint('📞 Call rejected: $callId');
+  }
+
+  /// Terminate a call
+  void terminateCall({required String callId, String? reason}) {
+    if (!isConnected.value) {
+      debugPrint('❌ Cannot terminate call: not connected');
+      return;
+    }
+
+    _socket?.emit('call_terminate', {
+      'callId': callId,
+      'reason': reason ?? 'ended',
+    });
+    debugPrint('📞 Call terminated: $callId');
+  }
+
+  /// Send ICE candidate
+  void sendIceCandidate({
+    required String callId,
+    required String targetDeviceId,
+    required String candidate,
+  }) {
+    if (!isConnected.value) {
+      debugPrint('❌ Cannot send ICE candidate: not connected');
+      return;
+    }
+
+    _socket?.emit('ice_candidate', {
+      'callId': callId,
+      'targetDeviceId': targetDeviceId,
+      'candidate': candidate,
+    });
+    debugPrint('📞 ICE candidate sent');
+  }
+
+  /// Notify peer that device is ringing
+  void notifyPeerRinging({required String callId, required String callerId}) {
+    if (!isConnected.value) {
+      debugPrint('❌ Cannot notify peer ringing: not connected');
+      return;
+    }
+
+    _socket?.emit('peer_ringing', {'callId': callId, 'callerId': callerId});
+    debugPrint('📞 Peer ringing notified');
+  }
+
+  /// Request ICE restart
+  void requestIceRestart({
+    required String callId,
+    required String targetDeviceId,
+  }) {
+    if (!isConnected.value) {
+      debugPrint('❌ Cannot request ICE restart: not connected');
+      return;
+    }
+
+    _socket?.emit('ice_restart', {
+      'callId': callId,
+      'targetDeviceId': targetDeviceId,
+    });
+    debugPrint('📞 ICE restart requested');
   }
 
   /// Get socket instance for direct event listening

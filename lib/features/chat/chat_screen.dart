@@ -10,6 +10,7 @@ import 'package:pear_messaging/core/widgets/url_preview_widget.dart';
 import 'package:pear_messaging/features/chat/chat_controller.dart';
 import 'package:pear_messaging/features/chat/chat_message_bubble.dart';
 import 'package:pear_messaging/features/chat/widgets/reply_preview_bar.dart';
+import 'package:pear_messaging/features/call/call_controller.dart';
 import '../../core/services/membership_service.dart';
 import '../../routes/app_routes.dart';
 import 'package:image_picker/image_picker.dart';
@@ -26,12 +27,14 @@ class ChatScreen extends GetView<ChatController> {
   Widget build(BuildContext context) {
     final buildStart = DateTime.now();
     debugPrint(
-        '⏱️ ChatScreen build() START: ${buildStart.millisecondsSinceEpoch}');
+      '⏱️ ChatScreen build() START: ${buildStart.millisecondsSinceEpoch}',
+    );
     debugPrint('🔧 DEBUG: ChatScreen build called');
     debugPrint('🔧 DEBUG: Display name: ${controller.displayName.value}');
     debugPrint('🔧 DEBUG: Conversation ID: ${controller.displayName.value}');
     debugPrint(
-        '🔧 DEBUG: Recipient device ID: ${controller.recipientDeviceId}');
+      '🔧 DEBUG: Recipient device ID: ${controller.recipientDeviceId}',
+    );
     // Check if this is a new conversation that needs username setup
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _checkAndAutoOpenEditSheet();
@@ -64,7 +67,8 @@ class ChatScreen extends GetView<ChatController> {
                               controller.displayName.value)
                       ? controller.displayName.value
                       : StringUtils.generateFriendlyName(
-                          controller.recipientDeviceId),
+                          controller.recipientDeviceId,
+                        ),
                   style: const TextStyle(
                     fontSize: AppSizes.fontM,
                     fontWeight: FontWeight.bold,
@@ -78,11 +82,13 @@ class ChatScreen extends GetView<ChatController> {
                   style: TextStyle(
                     fontSize: AppSizes.fontS,
                     fontWeight: FontWeight.w600,
-                    color: controller.recipientOnline.value ||
+                    color:
+                        controller.recipientOnline.value ||
                             (controller.recipientLastSeen.value != null &&
                                 DateTime.now()
                                         .difference(
-                                            controller.recipientLastSeen.value!)
+                                          controller.recipientLastSeen.value!,
+                                        )
                                         .inHours <
                                     24)
                         ? Colors.green
@@ -102,12 +108,21 @@ class ChatScreen extends GetView<ChatController> {
               } else {
                 // No navigation stack - navigate to chat list as fallback
                 debugPrint(
-                    '📱 No navigation stack found, navigating to chat list');
+                  '📱 No navigation stack found, navigating to chat list',
+                );
                 Get.offAllNamed('/chat-list');
               }
             },
           ),
           actions: [
+            IconButton(
+              icon: const Icon(Icons.call, color: Colors.black),
+              onPressed: () {
+                debugPrint('📞 Call button pressed');
+                _startAudioCall();
+              },
+              tooltip: 'Audio Call',
+            ),
             IconButton(
               icon: const Icon(Icons.settings, color: Colors.black),
               onPressed: () {
@@ -167,20 +182,23 @@ class ChatScreen extends GetView<ChatController> {
                                 children: [
                                   _buildChatHeader(),
                                   // Show loading indicator when loading more
-                                  Obx(() => controller.isLoadingMore.value
-                                      ? const Padding(
-                                          padding: EdgeInsets.all(8.0),
-                                          child: Center(
-                                            child: SizedBox(
-                                              width: 24,
-                                              height: 24,
-                                              child: CircularProgressIndicator(
-                                                strokeWidth: 2,
+                                  Obx(
+                                    () => controller.isLoadingMore.value
+                                        ? const Padding(
+                                            padding: EdgeInsets.all(8.0),
+                                            child: Center(
+                                              child: SizedBox(
+                                                width: 24,
+                                                height: 24,
+                                                child:
+                                                    CircularProgressIndicator(
+                                                      strokeWidth: 2,
+                                                    ),
                                               ),
                                             ),
-                                          ),
-                                        )
-                                      : const SizedBox.shrink()),
+                                          )
+                                        : const SizedBox.shrink(),
+                                  ),
                                 ],
                               );
                             }
@@ -194,7 +212,8 @@ class ChatScreen extends GetView<ChatController> {
                             final message = controller.messages[messageIndex];
                             return ChatMessageBubble(
                               key: ValueKey(
-                                  'msg_${message.id}_${message.timestamp.millisecondsSinceEpoch}'),
+                                'msg_${message.id}_${message.timestamp.millisecondsSinceEpoch}',
+                              ),
                               message: message,
                             );
                           },
@@ -229,7 +248,7 @@ class ChatScreen extends GetView<ChatController> {
                             )
                           : const SizedBox.shrink(); // Hide when at bottom
                     }),
-                  )
+                  ),
                 ],
               ),
             ),
@@ -270,15 +289,19 @@ class ChatScreen extends GetView<ChatController> {
                   padding: const EdgeInsets.all(AppSizes.paddingM),
                   decoration: BoxDecoration(
                     color: Colors.orange.shade50,
-                    border:
-                        Border(top: BorderSide(color: Colors.orange.shade200)),
+                    border: Border(
+                      top: BorderSide(color: Colors.orange.shade200),
+                    ),
                   ),
                   child: SafeArea(
                     child: Row(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                        Icon(Icons.block,
-                            color: Colors.orange.shade400, size: 20),
+                        Icon(
+                          Icons.block,
+                          color: Colors.orange.shade400,
+                          size: 20,
+                        ),
                         const SizedBox(width: 8),
                         Expanded(
                           child: Text(
@@ -296,8 +319,11 @@ class ChatScreen extends GetView<ChatController> {
                           onPressed: () {
                             controller.unblockUser();
                           },
-                          icon: Icon(Icons.lock_open,
-                              color: Colors.orange.shade600, size: 20),
+                          icon: Icon(
+                            Icons.lock_open,
+                            color: Colors.orange.shade600,
+                            size: 20,
+                          ),
                           tooltip: 'Unblock User',
                         ),
                       ],
@@ -307,140 +333,146 @@ class ChatScreen extends GetView<ChatController> {
               }
 
               // Normal input field
-              return Column(mainAxisSize: MainAxisSize.min, children: [
-                // URL Preview (shown while typing)
-                Obx(() {
-                  if (controller.currentUrlPreview.value != null) {
-                    return Container(
-                      margin: const EdgeInsets.only(
-                        left: AppSizes.paddingM,
-                        right: AppSizes.paddingM,
-                        bottom: AppSizes.paddingS,
-                      ),
-                      child: UrlPreviewWidget(
-                        preview: controller.currentUrlPreview.value!,
-                        isMe: true,
-                      ),
-                    );
-                  }
+              return Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // URL Preview (shown while typing)
+                  Obx(() {
+                    if (controller.currentUrlPreview.value != null) {
+                      return Container(
+                        margin: const EdgeInsets.only(
+                          left: AppSizes.paddingM,
+                          right: AppSizes.paddingM,
+                          bottom: AppSizes.paddingS,
+                        ),
+                        child: UrlPreviewWidget(
+                          preview: controller.currentUrlPreview.value!,
+                          isMe: true,
+                        ),
+                      );
+                    }
 
-                  // Loading state
-                  if (controller.isPreviewLoading.value) {
-                    return Container(
-                      margin: const EdgeInsets.only(
-                        left: AppSizes.paddingM,
-                        right: AppSizes.paddingM,
-                        bottom: AppSizes.paddingS,
-                      ),
-                      height: 100,
-                      decoration: BoxDecoration(
-                        color: Colors.grey.shade100,
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: Colors.grey.shade300),
-                      ),
-                      child: const Center(
-                        child: CircularProgressIndicator(),
-                      ),
-                    );
-                  }
+                    // Loading state
+                    if (controller.isPreviewLoading.value) {
+                      return Container(
+                        margin: const EdgeInsets.only(
+                          left: AppSizes.paddingM,
+                          right: AppSizes.paddingM,
+                          bottom: AppSizes.paddingS,
+                        ),
+                        height: 100,
+                        decoration: BoxDecoration(
+                          color: Colors.grey.shade100,
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: Colors.grey.shade300),
+                        ),
+                        child: const Center(child: CircularProgressIndicator()),
+                      );
+                    }
 
-                  return const SizedBox.shrink();
-                }),
+                    return const SizedBox.shrink();
+                  }),
 
-                // Input field container
-                Container(
-                  padding: const EdgeInsets.all(AppSizes.paddingM),
-                  decoration: BoxDecoration(
-                    color: AppColors.surface,
-                    boxShadow: [
-                      BoxShadow(
-                        color: AppColors.shadow,
-                        blurRadius: 4,
-                        offset: const Offset(0, -2),
-                      ),
-                    ],
-                  ),
-                  child: SafeArea(
-                    child: Column(mainAxisSize: MainAxisSize.min, children: [
-                      // Reply preview bar
-                      Obx(() {
-                        if (controller.isReplying &&
-                            controller.replyToMessage.value != null) {
-                          return ReplyPreviewBar(
-                            replyTo: controller.replyToMessage.value!,
-                            onCancel: controller.cancelReply,
-                            onTap: () {
-                              controller.scrollToMessage(
-                                  controller.replyToMessage.value!.messageId);
-                            },
-                          );
-                        }
-                        return const SizedBox.shrink();
-                      }),
-
-                      // Message input row
-                      Row(
-                        textDirection: TextDirection.ltr,
+                  // Input field container
+                  Container(
+                    padding: const EdgeInsets.all(AppSizes.paddingM),
+                    decoration: BoxDecoration(
+                      color: AppColors.surface,
+                      boxShadow: [
+                        BoxShadow(
+                          color: AppColors.shadow,
+                          blurRadius: 4,
+                          offset: const Offset(0, -2),
+                        ),
+                      ],
+                    ),
+                    child: SafeArea(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
                         children: [
-                          Expanded(
-                            child: TextField(
-                              controller: controller.messageController,
-                              focusNode: controller.messageFocusNode,
-                              onChanged: controller.onTyping,
-                              maxLines: 7,
-                              minLines: 1,
-                              keyboardType: TextInputType.multiline,
-                              textInputAction: TextInputAction.newline,
-                              enableInteractiveSelection: true,
-                              selectionControls:
-                                  MaterialTextSelectionControls(),
-                              decoration: InputDecoration(
-                                hintText: AppStrings.typeMessage,
-                                filled: true,
-                                fillColor: AppColors.background,
-                                contentPadding: const EdgeInsets.symmetric(
-                                  horizontal: AppSizes.paddingM,
-                                  vertical: AppSizes.paddingS,
-                                ),
-                                border: OutlineInputBorder(
-                                  borderRadius: BorderRadius.circular(
-                                    AppSizes.radiusCircular,
-                                  ),
-                                  borderSide: BorderSide.none,
-                                ),
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: AppSizes.paddingS),
-                          // Attachment button
-                          CircleAvatar(
-                            backgroundColor: AppColors.warning,
-                            child: IconButton(
-                              icon: const Icon(
-                                Icons.attach_file,
-                                color: AppColors.surfaceDark,
-                              ),
-                              onPressed: () => _showAttachmentOptions(context),
-                            ),
-                          ),
-                          const SizedBox(width: AppSizes.paddingS),
+                          // Reply preview bar
+                          Obx(() {
+                            if (controller.isReplying &&
+                                controller.replyToMessage.value != null) {
+                              return ReplyPreviewBar(
+                                replyTo: controller.replyToMessage.value!,
+                                onCancel: controller.cancelReply,
+                                onTap: () {
+                                  controller.scrollToMessage(
+                                    controller.replyToMessage.value!.messageId,
+                                  );
+                                },
+                              );
+                            }
+                            return const SizedBox.shrink();
+                          }),
 
-                          CircleAvatar(
-                            backgroundColor: AppColors.primary,
-                            child: IconButton(
-                              icon: const Icon(
-                                Icons.send,
-                                color: AppColors.textLight,
+                          // Message input row
+                          Row(
+                            textDirection: TextDirection.ltr,
+                            children: [
+                              Expanded(
+                                child: TextField(
+                                  controller: controller.messageController,
+                                  focusNode: controller.messageFocusNode,
+                                  onChanged: controller.onTyping,
+                                  maxLines: 7,
+                                  minLines: 1,
+                                  keyboardType: TextInputType.multiline,
+                                  textInputAction: TextInputAction.newline,
+                                  enableInteractiveSelection: true,
+                                  selectionControls:
+                                      MaterialTextSelectionControls(),
+                                  decoration: InputDecoration(
+                                    hintText: AppStrings.typeMessage,
+                                    filled: true,
+                                    fillColor: AppColors.background,
+                                    contentPadding: const EdgeInsets.symmetric(
+                                      horizontal: AppSizes.paddingM,
+                                      vertical: AppSizes.paddingS,
+                                    ),
+                                    border: OutlineInputBorder(
+                                      borderRadius: BorderRadius.circular(
+                                        AppSizes.radiusCircular,
+                                      ),
+                                      borderSide: BorderSide.none,
+                                    ),
+                                  ),
+                                ),
                               ),
-                              onPressed: controller.sendMessage,
-                            ),
+                              const SizedBox(width: AppSizes.paddingS),
+                              // Attachment button
+                              CircleAvatar(
+                                backgroundColor: AppColors.warning,
+                                child: IconButton(
+                                  icon: const Icon(
+                                    Icons.attach_file,
+                                    color: AppColors.surfaceDark,
+                                  ),
+                                  onPressed: () =>
+                                      _showAttachmentOptions(context),
+                                ),
+                              ),
+                              const SizedBox(width: AppSizes.paddingS),
+
+                              CircleAvatar(
+                                backgroundColor: AppColors.primary,
+                                child: IconButton(
+                                  icon: const Icon(
+                                    Icons.send,
+                                    color: AppColors.textLight,
+                                  ),
+                                  onPressed: controller.sendMessage,
+                                ),
+                              ),
+                            ],
                           ),
                         ],
                       ),
-                    ]),
+                    ),
                   ),
-                )
-              ]);
+                ],
+              );
             }),
           ],
         ),
@@ -448,7 +480,8 @@ class ChatScreen extends GetView<ChatController> {
     );
     final buildEnd = DateTime.now();
     debugPrint(
-        '⏱️ ChatScreen build() END: ${buildEnd.millisecondsSinceEpoch} (${buildEnd.difference(buildStart).inMicroseconds}μs)');
+      '⏱️ ChatScreen build() END: ${buildEnd.millisecondsSinceEpoch} (${buildEnd.difference(buildStart).inMicroseconds}μs)',
+    );
     return widget;
   }
 
@@ -568,7 +601,8 @@ class ChatScreen extends GetView<ChatController> {
 
     if (isDefaultUsername && isNewConversation) {
       debugPrint(
-          '🔧 DEBUG: Auto-opening edit sheet for new conversation with default username');
+        '🔧 DEBUG: Auto-opening edit sheet for new conversation with default username',
+      );
 
       // Add a small delay to ensure the UI is fully rendered
       Future.delayed(const Duration(milliseconds: 500), () {
@@ -585,7 +619,8 @@ class ChatScreen extends GetView<ChatController> {
     // Add debug logging to track when this is called
     debugPrint('🔧 DEBUG: _showEditSheet called');
     debugPrint(
-        '🔧 DEBUG: Current display name: ${controller.displayName.value}');
+      '🔧 DEBUG: Current display name: ${controller.displayName.value}',
+    );
     debugPrint('🔧 DEBUG: Stack trace: ${StackTrace.current}');
 
     // Check if this might be an automatic call for new connections
@@ -600,7 +635,8 @@ class ChatScreen extends GetView<ChatController> {
             stackTraceString.contains('initState')) &&
         !stackTraceString.contains('_checkAndAutoOpenEditSheet')) {
       debugPrint(
-          '🔧 DEBUG: Preventing automatic edit sheet opening during initialization');
+        '🔧 DEBUG: Preventing automatic edit sheet opening during initialization',
+      );
       return;
     }
 
@@ -627,9 +663,13 @@ class ChatScreen extends GetView<ChatController> {
                   ),
                   const SizedBox(width: AppSizes.paddingM),
                   const Expanded(
-                    child: Text('Edit Contact',
-                        style: TextStyle(
-                            fontSize: 18, fontWeight: FontWeight.bold)),
+                    child: Text(
+                      'Edit Contact',
+                      style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
                   ),
                 ],
               ),
@@ -656,8 +696,10 @@ class ChatScreen extends GetView<ChatController> {
                   ),
                   focusedBorder: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(12),
-                    borderSide:
-                        const BorderSide(color: AppColors.primary, width: 2),
+                    borderSide: const BorderSide(
+                      color: AppColors.primary,
+                      width: 2,
+                    ),
                   ),
                 ),
                 // Auto-select all text when field gets focus
@@ -725,7 +767,8 @@ class ChatScreen extends GetView<ChatController> {
                 ),
               ),
               const SizedBox(
-                  height: AppSizes.paddingS), // Add some padding at bottom
+                height: AppSizes.paddingS,
+              ), // Add some padding at bottom
             ],
           ),
         ),
@@ -744,16 +787,20 @@ class ChatScreen extends GetView<ChatController> {
       // Step 1: Compress (runs natively — won't block UI)
       final compressedBytes = await _compressImageBytes(pickedFile.path);
       if (compressedBytes.isEmpty) {
-        Get.snackbar('Error', 'Failed to process image',
-            snackPosition: SnackPosition.BOTTOM,
-            backgroundColor: Colors.red.shade100,
-            colorText: Colors.red.shade800);
+        Get.snackbar(
+          'Error',
+          'Failed to process image',
+          snackPosition: SnackPosition.BOTTOM,
+          backgroundColor: Colors.red.shade100,
+          colorText: Colors.red.shade800,
+        );
         return;
       }
 
       // Step 2: Add bubble immediately so user sees it with upload progress
-      pendingMsgId =
-          await controller.createPendingImageMessage(compressedBytes);
+      pendingMsgId = await controller.createPendingImageMessage(
+        compressedBytes,
+      );
       if (pendingMsgId == null) return;
 
       // Step 3: Encrypt + upload; progress goes directly into the bubble overlay
@@ -803,8 +850,11 @@ class ChatScreen extends GetView<ChatController> {
   String _formatDateHeader(DateTime messageDate) {
     final now = DateTime.now();
     final today = DateTime(now.year, now.month, now.day);
-    final messageDay =
-        DateTime(messageDate.year, messageDate.month, messageDate.day);
+    final messageDay = DateTime(
+      messageDate.year,
+      messageDate.month,
+      messageDate.day,
+    );
 
     final difference = today.difference(messageDay).inDays;
 
@@ -821,7 +871,7 @@ class ChatScreen extends GetView<ChatController> {
         'Thursday',
         'Friday',
         'Saturday',
-        'Sunday'
+        'Sunday',
       ];
       return dayNames[messageDay.weekday - 1];
     } else {
@@ -860,9 +910,11 @@ class ChatScreen extends GetView<ChatController> {
     String? lastDateHeader;
 
     // Build in natural order (oldest to newest)
-    for (int messageIndex = 0;
-        messageIndex < controller.messages.length;
-        messageIndex++) {
+    for (
+      int messageIndex = 0;
+      messageIndex < controller.messages.length;
+      messageIndex++
+    ) {
       final message = controller.messages[messageIndex];
       final dateHeader = _formatDateHeader(message.timestamp);
 
@@ -907,6 +959,31 @@ class ChatScreen extends GetView<ChatController> {
       ),
     );
   }
+
+  /// Start an audio call
+  void _startAudioCall() {
+    try {
+      // Get CallController
+      if (!Get.isRegistered<CallController>()) {
+        Get.put(CallController());
+      }
+
+      final callController = Get.find<CallController>();
+
+      // Start call
+      callController.startCall(controller.recipientDeviceId);
+
+      // Navigate to outgoing call screen
+      Get.toNamed('/call/outgoing', arguments: controller.recipientDeviceId);
+    } catch (e) {
+      debugPrint('❌ Failed to start audio call: $e');
+      Get.snackbar(
+        'Error',
+        'Failed to start call',
+        snackPosition: SnackPosition.BOTTOM,
+      );
+    }
+  }
 }
 
 /// Compresses image at [filePath] targeting ≤ 150 KB binary output (reduced from 250KB).
@@ -925,10 +1002,12 @@ Future<Uint8List> _compressImageBytes(String filePath) async {
       );
       if (compressed != null) {
         debugPrint(
-            '🔧 Compression quality $quality: ${compressed.length} bytes');
+          '🔧 Compression quality $quality: ${compressed.length} bytes',
+        );
         if (compressed.length <= 150 * 1024) {
           debugPrint(
-              '✅ Image compressed to ${compressed.length} bytes (≤150KB)');
+            '✅ Image compressed to ${compressed.length} bytes (≤150KB)',
+          );
           return compressed;
         }
       }
