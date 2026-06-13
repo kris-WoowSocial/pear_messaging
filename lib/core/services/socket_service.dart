@@ -6,6 +6,7 @@ import 'package:get/get.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:socket_io_client/socket_io_client.dart' as IO;
 import 'encryption_service.dart';
+import 'e2ee_service.dart';
 import 'fcm_service.dart';
 import 'block_service.dart';
 import 'connection_request_service.dart';
@@ -386,9 +387,30 @@ class SocketService extends GetxService {
     // Detect platform
     final platform = Platform.isAndroid ? 'android' : 'ios';
 
-    _socket?.emit('register', {'deviceId': _deviceId, 'platform': platform});
+    // Include E2EE public key if available
+    String? publicKey;
+    try {
+      if (Get.isRegistered<E2EEService>()) {
+        final e2ee = Get.find<E2EEService>();
+        publicKey = e2ee.myPublicKeyBase64;
+      }
+    } catch (e) {
+      debugPrint('⚠️ Could not get E2EE public key: $e');
+    }
+
+    final registerData = <String, dynamic>{
+      'deviceId': _deviceId,
+      'platform': platform,
+    };
+    if (publicKey != null) {
+      registerData['publicKey'] = publicKey;
+    }
+
+    _socket?.emit('register', registerData);
     isRegistered.value = true;
-    debugPrint('📝 Device registered: $_deviceId (platform: $platform)');
+    debugPrint(
+      '📝 Device registered: $_deviceId (platform: $platform, publicKey: ${publicKey?.substring(0, 12)}...)',
+    );
 
     // Also register FCM token if available
     _registerFCMTokenIfAvailable();
@@ -493,8 +515,30 @@ class SocketService extends GetxService {
 
     final timestamp = DateTime.now().millisecondsSinceEpoch;
 
-    // Encrypt content using EncryptionService
-    final encryptedContent = EncryptionService.encryptMessage(content);
+    // Try E2EE encryption if recipient's public key is known, otherwise XOR fallback
+    String encryptedContent;
+    String? senderPublicKey;
+    bool usedE2EE = false;
+
+    try {
+      if (Get.isRegistered<E2EEService>()) {
+        final e2ee = Get.find<E2EEService>();
+        senderPublicKey = e2ee.myPublicKeyBase64;
+        final recipientPublicKey = e2ee.getContactPublicKey(recipientDeviceId);
+        if (recipientPublicKey != null && recipientPublicKey.isNotEmpty) {
+          encryptedContent = await e2ee.encryptFor(recipientPublicKey, content);
+          usedE2EE = true;
+          debugPrint('🔐 E2EE encryption used for $recipientDeviceId');
+        }
+      }
+    } catch (e) {
+      debugPrint('⚠️ E2EE encryption failed, falling back to XOR: $e');
+    }
+
+    if (!usedE2EE) {
+      encryptedContent = EncryptionService.encryptMessage(content);
+      debugPrint('🔓 Legacy XOR encryption used for $recipientDeviceId');
+    }
 
     // Determine message type hint (no content exposed — server uses silent FCM push)
     final String messageType =
@@ -508,7 +552,9 @@ class SocketService extends GetxService {
       'receiverDeviceId': recipientDeviceId,
       'encryptedPayload': encryptedContent,
       'timestamp': timestamp,
-      'messageType': messageType, // type hint only, no plaintext content
+      'messageType': messageType,
+      // Include sender's public key so recipient can derive shared secret
+      if (senderPublicKey != null) 'senderPublicKey': senderPublicKey,
       // Add replyTo if present (replyTo.content is used locally only)
       if (replyTo != null) 'replyTo': {'messageId': replyTo['messageId']},
     };
@@ -774,6 +820,32 @@ class SocketService extends GetxService {
       '🤝 Connection request response sent: $requestId -> $accepted (sender: $senderDeviceId)',
     );
     return true;
+  }
+
+  /// Decrypt a message payload.
+  /// Tries E2EE first (if payload starts with 'E2:' and sender public key is known),
+  /// falls back to legacy XOR decryption for backward compatibility.
+  static String decryptMessage(
+    String encryptedPayload, {
+    String? senderPublicKey,
+  }) {
+    if (E2EEService.isE2EEPayload(encryptedPayload)) {
+      if (senderPublicKey != null && senderPublicKey.isNotEmpty) {
+        try {
+          final e2ee = Get.find<E2EEService>();
+          return e2ee.decryptFrom(senderPublicKey, encryptedPayload);
+        } catch (e) {
+          debugPrint('⚠️ E2EE decryption failed, falling back to XOR: $e');
+          // Fall through to XOR
+        }
+      } else {
+        debugPrint(
+          '⚠️ E2EE payload but no sender public key, falling back to XOR',
+        );
+      }
+    }
+    // Legacy XOR decryption
+    return EncryptionService.xorDecode(encryptedPayload);
   }
 
   /// Check if a device is online

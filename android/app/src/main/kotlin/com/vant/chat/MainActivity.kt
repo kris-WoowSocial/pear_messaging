@@ -16,7 +16,9 @@ class MainActivity : FlutterFragmentActivity() {
     private val DEEPLINK_CHANNEL = "com.pear.messaging/deeplink"
     private val APPLINKS_CHANNEL = "com.pear.messaging.pear_messaging/applinks"
     private val BATTERY_CHANNEL = "com.pear.messaging/battery"
+    private val RINGTONE_CHANNEL = "com.vant.chat/ringtone"
     private var pendingIntent: Intent? = null
+    private var ringtone: android.media.Ringtone? = null
     
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -44,6 +46,23 @@ class MainActivity : FlutterFragmentActivity() {
                 }
                 "getDeviceManufacturer" -> {
                     result.success(android.os.Build.MANUFACTURER)
+                }
+                else -> {
+                    result.notImplemented()
+                }
+            }
+        }
+
+        // Setup ringtone method channel
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, RINGTONE_CHANNEL).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "playRingtone" -> {
+                    playRingtone()
+                    result.success(null)
+                }
+                "stopRingtone" -> {
+                    stopRingtone()
+                    result.success(null)
                 }
                 else -> {
                     result.notImplemented()
@@ -228,6 +247,31 @@ class MainActivity : FlutterFragmentActivity() {
             } catch (e2: Exception) {
                 println("Error opening fallback settings: $e2")
             }
+        }
+    }
+
+    private fun playRingtone() {
+        try {
+            // Stop any existing ringtone
+            stopRingtone()
+            
+            // Get the default ringtone URI
+            val ringtoneUri = android.media.RingtoneManager.getDefaultUri(android.media.RingtoneManager.TYPE_RINGTONE)
+            ringtone = android.media.RingtoneManager.getRingtone(applicationContext, ringtoneUri)
+            ringtone?.play()
+            println("Ringtone started")
+        } catch (e: Exception) {
+            println("Error playing ringtone: $e")
+        }
+    }
+
+    private fun stopRingtone() {
+        try {
+            ringtone?.stop()
+            ringtone = null
+            println("Ringtone stopped")
+        } catch (e: Exception) {
+            println("Error stopping ringtone: $e")
         }
     }
 }

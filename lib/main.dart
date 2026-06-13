@@ -36,9 +36,11 @@ import 'core/services/app_lifecycle_service.dart';
 import 'core/services/badge_service.dart';
 import 'core/services/secure_key_service.dart';
 import 'core/services/secure_encryption_service.dart';
+import 'core/services/e2ee_service.dart';
 import 'core/services/secure_image_storage_service.dart';
 import 'core/services/chat_media_service.dart';
 import 'core/services/webrtc_call_service.dart';
+import 'features/call/call_controller.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -93,6 +95,9 @@ Future<void> initializeCriticalServices() async {
   // Initialize secure encryption service
   await Get.putAsync(() => SecureEncryptionService().init());
 
+  // Initialize E2EE service (X25519 keypair for end-to-end encryption)
+  await Get.putAsync(() => E2EEService().init());
+
   // Initialize secure image storage service
   await Get.putAsync(() => SecureImageStorageService().init());
 
@@ -125,6 +130,9 @@ Future<void> initializeCriticalServices() async {
     AppLifecycleService(),
   ); // Track app lifecycle for notification suppression
   Get.put(await Get.putAsync(() => UsernameSyncService().init()));
+
+  // Initialize CallController globally to handle incoming calls at any time
+  Get.put(CallController());
 }
 
 /// Initialize non-critical services in background after app launches

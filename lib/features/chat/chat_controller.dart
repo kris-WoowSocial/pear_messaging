@@ -41,7 +41,7 @@ class ChatController extends GetxController with WidgetsBindingObserver {
 
   late String chatId;
   late String
-      recipientDeviceId; // The recipient's device ID for socket messaging
+  recipientDeviceId; // The recipient's device ID for socket messaging
   late String myDeviceId;
 
   final TextEditingController messageController = TextEditingController();
@@ -77,7 +77,8 @@ class ChatController extends GetxController with WidgetsBindingObserver {
   void onInit() {
     final initStart = DateTime.now();
     debugPrint(
-        '⏱️ ChatController.onInit() START: ${initStart.millisecondsSinceEpoch}');
+      '⏱️ ChatController.onInit() START: ${initStart.millisecondsSinceEpoch}',
+    );
     super.onInit();
 
     // Get arguments
@@ -130,8 +131,9 @@ class ChatController extends GetxController with WidgetsBindingObserver {
 
     // Set initial connection status
     isConnected.value = _socketService.isConnected.value;
-    connectionStatus.value =
-        _socketService.isConnected.value ? 'Online' : 'Offline';
+    connectionStatus.value = _socketService.isConnected.value
+        ? 'Online'
+        : 'Offline';
 
     // Load last seen timestamp from storage
     _loadLastSeenFromStorage();
@@ -174,7 +176,8 @@ class ChatController extends GetxController with WidgetsBindingObserver {
 
     final initEnd = DateTime.now();
     debugPrint(
-        '⏱️ ChatController.onInit() END: ${initEnd.millisecondsSinceEpoch} (${initEnd.difference(initStart).inMicroseconds}μs)');
+      '⏱️ ChatController.onInit() END: ${initEnd.millisecondsSinceEpoch} (${initEnd.difference(initStart).inMicroseconds}μs)',
+    );
   }
 
   Future<void> _loadMessages() async {
@@ -185,7 +188,8 @@ class ChatController extends GetxController with WidgetsBindingObserver {
       _allMessageEntities = await _storageService.getChatMessages(chatId);
       final storageEnd = DateTime.now();
       debugPrint(
-          '⏱️ getChatMessages() took: ${storageEnd.difference(storageStart).inMicroseconds}μs');
+        '⏱️ getChatMessages() took: ${storageEnd.difference(storageStart).inMicroseconds}μs',
+      );
 
       final totalCount = _allMessageEntities.length;
 
@@ -199,15 +203,18 @@ class ChatController extends GetxController with WidgetsBindingObserver {
           .toList();
       final mapEnd = DateTime.now();
       debugPrint(
-          '⏱️ Message mapping took: ${mapEnd.difference(mapStart).inMicroseconds}μs');
+        '⏱️ Message mapping took: ${mapEnd.difference(mapStart).inMicroseconds}μs',
+      );
 
       hasMoreMessages.value = startIndex > 0;
 
       final loadEnd = DateTime.now();
       debugPrint(
-          '📨 Loaded ${messages.length} of $totalCount messages for chat: $chatId');
+        '📨 Loaded ${messages.length} of $totalCount messages for chat: $chatId',
+      );
       debugPrint(
-          '⏱️ _loadMessages() TOTAL: ${loadEnd.difference(loadStart).inMicroseconds}μs');
+        '⏱️ _loadMessages() TOTAL: ${loadEnd.difference(loadStart).inMicroseconds}μs',
+      );
 
       // Mark any delivered messages as read since user is now viewing the chat
       _markMessagesAsRead();
@@ -245,7 +252,8 @@ class ChatController extends GetxController with WidgetsBindingObserver {
 
       hasMoreMessages.value = startIndex > 0;
       debugPrint(
-          '📨 Loaded ${olderMessages.length} more messages. Total displayed: ${messages.length}');
+        '📨 Loaded ${olderMessages.length} more messages. Total displayed: ${messages.length}',
+      );
     } catch (e) {
       debugPrint('📨 Error loading more messages: $e');
     } finally {
@@ -270,7 +278,7 @@ class ChatController extends GetxController with WidgetsBindingObserver {
       final currentCount = messages.length;
       final displayCount = currentCount > 0
           ? currentCount.clamp(_pageSize, totalCount)
-          : _pageSize.clamp(0, totalCount);
+          : totalCount.clamp(0, _pageSize);
 
       // Ensure startIndex is valid
       final startIndex = (totalCount - displayCount).clamp(0, totalCount);
@@ -278,7 +286,8 @@ class ChatController extends GetxController with WidgetsBindingObserver {
       // Safety check before sublist
       if (startIndex >= totalCount) {
         debugPrint(
-            '⚠️ Invalid startIndex: $startIndex >= $totalCount, using 0');
+          '⚠️ Invalid startIndex: $startIndex >= $totalCount, using 0',
+        );
         messages.value = _allMessageEntities
             .map((msg) => ChatMessageModel.fromEntity(msg))
             .toList();
@@ -295,7 +304,8 @@ class ChatController extends GetxController with WidgetsBindingObserver {
       final lastCurrentId = messages.isNotEmpty ? messages.last.id : null;
       if (newMessages.length != messages.length || lastNewId != lastCurrentId) {
         debugPrint(
-            '📬 Found new messages from storage (${messages.length} → ${newMessages.length})');
+          '📬 Found new messages from storage (${messages.length} → ${newMessages.length})',
+        );
         messages.value = newMessages;
         hasMoreMessages.value = startIndex > 0;
       }
@@ -342,7 +352,8 @@ class ChatController extends GetxController with WidgetsBindingObserver {
     // Log when block state changes
     if (wasBlocked != isBlockedGlobally) {
       debugPrint(
-          '🔄 Chat block state updated for $recipientDeviceId: ${wasBlocked ? "blocked" : "unblocked"} → ${isBlockedGlobally ? "blocked" : "unblocked"}');
+        '🔄 Chat block state updated for $recipientDeviceId: ${wasBlocked ? "blocked" : "unblocked"} → ${isBlockedGlobally ? "blocked" : "unblocked"}',
+      );
     }
   }
 
@@ -359,8 +370,9 @@ class ChatController extends GetxController with WidgetsBindingObserver {
     try {
       final timestamp = _storageService.getLastSeen(recipientDeviceId);
       if (timestamp != null) {
-        recipientLastSeen.value =
-            DateTime.fromMillisecondsSinceEpoch(timestamp);
+        recipientLastSeen.value = DateTime.fromMillisecondsSinceEpoch(
+          timestamp,
+        );
         _updatePresenceStatus();
       }
     } catch (e) {
@@ -390,7 +402,8 @@ class ChatController extends GetxController with WidgetsBindingObserver {
     // Debug: Show all message statuses
     for (final msg in messages) {
       debugPrint(
-          '📖 Message ${msg.id}: isMe=${msg.isMe}, status=${msg.status}');
+        '📖 Message ${msg.id}: isMe=${msg.isMe}, status=${msg.status}',
+      );
     }
 
     // Find all unread messages from the recipient in this chat
@@ -399,10 +412,12 @@ class ChatController extends GetxController with WidgetsBindingObserver {
         .toList();
 
     debugPrint(
-        '📖 Found ${unreadMessages.length} unread messages to mark as read');
+      '📖 Found ${unreadMessages.length} unread messages to mark as read',
+    );
     for (final msg in unreadMessages) {
       debugPrint(
-          '📖 Unread message: ${msg.id} - isMe: ${msg.isMe} - status: ${msg.status}');
+        '📖 Unread message: ${msg.id} - isMe: ${msg.isMe} - status: ${msg.status}',
+      );
     }
 
     // Update message status in storage and UI
@@ -413,11 +428,14 @@ class ChatController extends GetxController with WidgetsBindingObserver {
         // Check original status before updating to determine if we should send read acknowledgment
         final originalStatus = message.status;
         debugPrint(
-            '📖 Original message status: ${message.id} -> $originalStatus');
+          '📖 Original message status: ${message.id} -> $originalStatus',
+        );
 
         // Update in storage first
         await _storageService.updateMessageStatus(
-            message.id, MessageStatus.read);
+          message.id,
+          MessageStatus.read,
+        );
 
         // Update in UI
         final index = messages.indexWhere((msg) => msg.id == message.id);
@@ -440,11 +458,13 @@ class ChatController extends GetxController with WidgetsBindingObserver {
         // Check original status BEFORE it was updated to read
         if (originalStatus == MessageStatus.delivered) {
           debugPrint(
-              '📖 Sending read acknowledgment for delivered message: ${message.id} to recipient: $recipientDeviceId');
+            '📖 Sending read acknowledgment for delivered message: ${message.id} to recipient: $recipientDeviceId',
+          );
           _socketService.sendReadAck(message.id, recipientDeviceId);
         } else {
           debugPrint(
-              '📖 Not sending read acknowledgment for message ${message.id} - original status: $originalStatus');
+            '📖 Not sending read acknowledgment for message ${message.id} - original status: $originalStatus',
+          );
         }
       } catch (e) {
         debugPrint('❌ Error marking message as read: ${message.id}, $e');
@@ -453,7 +473,8 @@ class ChatController extends GetxController with WidgetsBindingObserver {
 
     if (unreadMessages.isNotEmpty) {
       debugPrint(
-          '📖 Marked ${unreadMessages.length} messages as read for chat: $chatId');
+        '📖 Marked ${unreadMessages.length} messages as read for chat: $chatId',
+      );
 
       // Update chat entity's unreadCount to 0 in storage
       try {
@@ -483,7 +504,8 @@ class ChatController extends GetxController with WidgetsBindingObserver {
         chatListController.loadChats();
       } catch (e) {
         debugPrint(
-            '⚠️ ChatListController not found, unread count will update on restart');
+          '⚠️ ChatListController not found, unread count will update on restart',
+        );
       }
     } else {
       debugPrint('📖 No unread messages found to mark as read');
@@ -580,10 +602,24 @@ class ChatController extends GetxController with WidgetsBindingObserver {
           return;
         }
 
-        var decryptedContent =
-            SocketService.decryptMessage(data['encryptedPayload'] ?? '');
-        final timestamp =
-            DateTime.fromMillisecondsSinceEpoch(data['timestamp'] ?? 0);
+        // Cache sender's public key if present (for E2EE)
+        final senderPublicKey = data['senderPublicKey'] as String?;
+        if (senderPublicKey != null && senderPublicKey.isNotEmpty) {
+          try {
+            final e2ee = Get.find<E2EEService>();
+            e2ee.cacheContactPublicKey(senderId, senderPublicKey);
+          } catch (e) {
+            debugPrint('⚠️ Could not cache sender public key: $e');
+          }
+        }
+
+        var decryptedContent = SocketService.decryptMessage(
+          data['encryptedPayload'] ?? '',
+          senderPublicKey: senderPublicKey,
+        );
+        final timestamp = DateTime.fromMillisecondsSinceEpoch(
+          data['timestamp'] ?? 0,
+        );
 
         // Check if message already exists in Hive (FCM may have saved it) or UI
         final messageId = data['messageId'] ?? _uuid.v4();
@@ -597,22 +633,25 @@ class ChatController extends GetxController with WidgetsBindingObserver {
         final existsInHive = _storageService.messageExists(messageId);
         if (existsInHive) {
           debugPrint(
-              '🔁 Socket message $messageId exists in Hive but not UI, adding to UI');
+            '🔁 Socket message $messageId exists in Hive but not UI, adding to UI',
+          );
           // Load the message from Hive and add to UI
-          final savedMessages =
-              await _storageService.getChatMessages(recipientDeviceId);
-          final savedMessage =
-              savedMessages.firstWhere((m) => m.id == messageId,
-                  orElse: () => MessageEntity(
-                        id: '',
-                        chatId: '',
-                        senderId: '',
-                        receiverId: '',
-                        content: '',
-                        timestamp: DateTime.now(),
-                        status: MessageStatus.sending,
-                        isMe: false,
-                      ));
+          final savedMessages = await _storageService.getChatMessages(
+            recipientDeviceId,
+          );
+          final savedMessage = savedMessages.firstWhere(
+            (m) => m.id == messageId,
+            orElse: () => MessageEntity(
+              id: '',
+              chatId: '',
+              senderId: '',
+              receiverId: '',
+              content: '',
+              timestamp: DateTime.now(),
+              status: MessageStatus.sending,
+              isMe: false,
+            ),
+          );
           if (savedMessage.id.isNotEmpty) {
             messages.add(ChatMessageModel.fromEntity(savedMessage));
             _scrollToBottom();
@@ -636,8 +675,9 @@ class ChatController extends GetxController with WidgetsBindingObserver {
         ReplyToEntity? replyTo;
         if (data['replyTo'] != null) {
           try {
-            replyTo =
-                ReplyToEntity.fromJson(data['replyTo'] as Map<String, dynamic>);
+            replyTo = ReplyToEntity.fromJson(
+              data['replyTo'] as Map<String, dynamic>,
+            );
             debugPrint('🔁 Reply metadata parsed: ${replyTo.messageId}');
           } catch (e) {
             debugPrint('⚠️ Failed to parse reply metadata: $e');
@@ -647,7 +687,8 @@ class ChatController extends GetxController with WidgetsBindingObserver {
         // Check if message already exists in storage (saved by FCM background handler)
         final messageExists = _storageService.messageExists(messageId);
         debugPrint(
-            '📨 Socket message: $messageId, chatId: $chatId, messageExists: $messageExists, _isScreenActive: $_isScreenActive');
+          '📨 Socket message: $messageId, chatId: $chatId, messageExists: $messageExists, _isScreenActive: $_isScreenActive',
+        );
 
         // Mark as read only if:
         // 1. User is actively viewing this chat screen AND
@@ -709,7 +750,8 @@ class ChatController extends GetxController with WidgetsBindingObserver {
             // Server might send stale 'failed' status after message is already delivered
             if (messages[index].status != MessageStatus.sending) {
               debugPrint(
-                  '📊 Ignoring failed status for $messageId - current status: ${messages[index].status} (not sending)');
+                '📊 Ignoring failed status for $messageId - current status: ${messages[index].status} (not sending)',
+              );
               return;
             }
             newStatus = MessageStatus.failed;
@@ -725,13 +767,15 @@ class ChatController extends GetxController with WidgetsBindingObserver {
         }
 
         debugPrint(
-            '📊 Updating message status: $messageId ${messages[index].status} -> $newStatus');
+          '📊 Updating message status: $messageId ${messages[index].status} -> $newStatus',
+        );
 
         // Prevent status downgrade (e.g., from delivered back to sent, or from sent back to failed)
         final currentStatus = messages[index].status;
         if (_isStatusDowngrade(currentStatus, newStatus)) {
           debugPrint(
-              '📊 Ignoring status downgrade for $messageId: $currentStatus -> $newStatus');
+            '📊 Ignoring status downgrade for $messageId: $currentStatus -> $newStatus',
+          );
           return;
         }
 
@@ -771,7 +815,8 @@ class ChatController extends GetxController with WidgetsBindingObserver {
             data['hasBlockedMe'] == true || data['hasBlockedMe'] == 1;
         isBlocked.value = isBlockedByMe.value || hasBlockedMe.value;
         debugPrint(
-            '🚫 Block state updated - blockedByMe: ${isBlockedByMe.value}, blockedMe: ${hasBlockedMe.value}');
+          '🚫 Block state updated - blockedByMe: ${isBlockedByMe.value}, blockedMe: ${hasBlockedMe.value}',
+        );
       }
     };
 
@@ -851,18 +896,18 @@ class ChatController extends GetxController with WidgetsBindingObserver {
         // Send via socket
         _socketService
             .sendMessage(
-          messageId: messageId,
-          recipientDeviceId: recipientDeviceId,
-          content: 'Hello',
-        )
+              messageId: messageId,
+              recipientDeviceId: recipientDeviceId,
+              content: 'Hello',
+            )
             .then((success) {
-          if (success) {
-            _updateMessageStatusIfNotRead(messageId, MessageStatus.sent);
-          }
-          // If !success (socket disconnected): message stays in 'sending' state.
-          // _flushOutbox() will retry automatically when socket reconnects.
-          // Do not mark as failed immediately - let timeout mechanism handle it.
-        });
+              if (success) {
+                _updateMessageStatusIfNotRead(messageId, MessageStatus.sent);
+              }
+              // If !success (socket disconnected): message stays in 'sending' state.
+              // _flushOutbox() will retry automatically when socket reconnects.
+              // Do not mark as failed immediately - let timeout mechanism handle it.
+            });
 
         _scrollToBottom();
       }
@@ -915,20 +960,21 @@ class ChatController extends GetxController with WidgetsBindingObserver {
     // Send via socket with reply metadata
     _socketService
         .sendMessage(
-      messageId: messageId,
-      recipientDeviceId: recipientDeviceId,
-      content: text,
-      replyTo: replyToData,
-    )
+          messageId: messageId,
+          recipientDeviceId: recipientDeviceId,
+          content: text,
+          replyTo: replyToData,
+        )
         .then((success) {
-      // Don't update status locally - wait for server status update
-      // This prevents race condition where server sends 'failed' before local 'sent' update
-      // Server will send 'sent'/'delivered'/'read' status via onMessageStatus callback
-      if (!success) {
-        debugPrint(
-            '⚠️ Socket send failed for $messageId - keeping in sending state for retry');
-      }
-    });
+          // Don't update status locally - wait for server status update
+          // This prevents race condition where server sends 'failed' before local 'sent' update
+          // Server will send 'sent'/'delivered'/'read' status via onMessageStatus callback
+          if (!success) {
+            debugPrint(
+              '⚠️ Socket send failed for $messageId - keeping in sending state for retry',
+            );
+          }
+        });
 
     // Schedule timeout so message eventually shows as failed if never delivered
     _scheduleMessageTimeout(messageId);
@@ -978,8 +1024,9 @@ class ChatController extends GetxController with WidgetsBindingObserver {
       final chatListController = Get.find<ChatListController>();
 
       // Find the current chat in the list
-      final chatIndex = chatListController.chats
-          .indexWhere((chat) => chat.id == recipientDeviceId);
+      final chatIndex = chatListController.chats.indexWhere(
+        (chat) => chat.id == recipientDeviceId,
+      );
 
       if (chatIndex != -1) {
         // Update existing chat
@@ -1010,15 +1057,17 @@ class ChatController extends GetxController with WidgetsBindingObserver {
         );
 
         // Update filtered chats to trigger UI refresh
-        chatListController.filteredChats.value =
-            List.from(chatListController.chats);
+        chatListController.filteredChats.value = List.from(
+          chatListController.chats,
+        );
 
         debugPrint('✅ Chat list updated after sending message');
       } else {
         // Chat doesn't exist in list yet — create and persist it now so it
         // survives app restarts and appears in the chat list immediately.
         debugPrint(
-            '📝 Chat not in list yet — creating new chat entry for: $recipientDeviceId');
+          '📝 Chat not in list yet — creating new chat entry for: $recipientDeviceId',
+        );
 
         final newChat = ChatEntity(
           id: recipientDeviceId,
@@ -1041,15 +1090,18 @@ class ChatController extends GetxController with WidgetsBindingObserver {
           replyContent: replyToMessage.value?.content,
         );
         chatListController.chats.insert(0, newChatModel);
-        chatListController.filteredChats.value =
-            List.from(chatListController.chats);
+        chatListController.filteredChats.value = List.from(
+          chatListController.chats,
+        );
 
         debugPrint(
-            '✅ New chat entry created and persisted for: $recipientDeviceId');
+          '✅ New chat entry created and persisted for: $recipientDeviceId',
+        );
       }
     } catch (e) {
       debugPrint(
-          '⚠️ ChatListController not found, chat list will update on next load: $e');
+        '⚠️ ChatListController not found, chat list will update on next load: $e',
+      );
     }
   }
 
@@ -1166,7 +1218,8 @@ class ChatController extends GetxController with WidgetsBindingObserver {
           chatListController.loadChats();
         } catch (e) {
           debugPrint(
-              '⚠️ ChatListController not found, changes will be visible on restart');
+            '⚠️ ChatListController not found, changes will be visible on restart',
+          );
         }
 
         Get.snackbar(
@@ -1206,7 +1259,8 @@ class ChatController extends GetxController with WidgetsBindingObserver {
             chatListController.loadChats();
           } catch (e) {
             debugPrint(
-                '⚠️ ChatListController not found, changes will be visible on restart');
+              '⚠️ ChatListController not found, changes will be visible on restart',
+            );
           }
 
           Get.back(); // Close dialog
@@ -1258,7 +1312,8 @@ class ChatController extends GetxController with WidgetsBindingObserver {
         chatListController.loadChats();
       } catch (e) {
         debugPrint(
-            '⚠️ ChatListController not found, changes will be visible on restart');
+          '⚠️ ChatListController not found, changes will be visible on restart',
+        );
       }
 
       debugPrint('✅ All messages cleared successfully for chat: $chatId');
@@ -1437,7 +1492,9 @@ class ChatController extends GetxController with WidgetsBindingObserver {
 
   /// Update message status only if it's not already read (optimization)
   Future<void> _updateMessageStatusIfNotRead(
-      String messageId, MessageStatus newStatus) async {
+    String messageId,
+    MessageStatus newStatus,
+  ) async {
     try {
       // Get current message to check its status
       final index = messages.indexWhere((msg) => msg.id == messageId);
@@ -1451,12 +1508,14 @@ class ChatController extends GetxController with WidgetsBindingObserver {
       // If message is already read, don't update to any other status
       if (currentStatus == MessageStatus.read) {
         debugPrint(
-            '📊 Skipping status update for $messageId - already read (current: $currentStatus, requested: $newStatus)');
+          '📊 Skipping status update for $messageId - already read (current: $currentStatus, requested: $newStatus)',
+        );
         return;
       }
 
       debugPrint(
-          '📊 Updating message status: $messageId $currentStatus -> $newStatus');
+        '📊 Updating message status: $messageId $currentStatus -> $newStatus',
+      );
 
       // Update in storage
       await _storageService.updateMessageStatus(messageId, newStatus);
@@ -1517,7 +1576,8 @@ class ChatController extends GetxController with WidgetsBindingObserver {
   void setScreenActive() {
     _isScreenActive = true;
     debugPrint(
-        '📱 Chat screen active - messages will be marked as read when user opens chat');
+      '📱 Chat screen active - messages will be marked as read when user opens chat',
+    );
 
     // Refresh messages to ensure any background messages are loaded
     refreshMessagesFromStorage();
@@ -1537,7 +1597,8 @@ class ChatController extends GetxController with WidgetsBindingObserver {
         final newTotal = await badgeService.getTotalUnreadCount();
         await badgeService.updateAppIconBadge(newTotal);
         debugPrint(
-            '🔔 Badge decremented by ${chat.unreadCount} for chat $chatId');
+          '🔔 Badge decremented by ${chat.unreadCount} for chat $chatId',
+        );
       }
     } catch (e) {
       debugPrint('⚠️ Error decrementing badge for chat: $e');
@@ -1752,10 +1813,14 @@ class ChatController extends GetxController with WidgetsBindingObserver {
             ),
             const SizedBox(height: 20),
             _buildReportOption('Spam', 'Sending unsolicited messages'),
-            _buildReportOption('Inappropriate Content',
-                'Sharing offensive or harmful content'),
             _buildReportOption(
-                'Harassment', 'Bullying or threatening behavior'),
+              'Inappropriate Content',
+              'Sharing offensive or harmful content',
+            ),
+            _buildReportOption(
+              'Harassment',
+              'Bullying or threatening behavior',
+            ),
             _buildReportOption('Fake Account', 'Impersonating someone else'),
             _buildReportOption('Other', 'Other reason not listed above'),
             const SizedBox(height: 20),
@@ -1781,8 +1846,10 @@ class ChatController extends GetxController with WidgetsBindingObserver {
   Widget _buildReportOption(String title, String subtitle) {
     return ListTile(
       title: Text(title),
-      subtitle: Text(subtitle,
-          style: TextStyle(fontSize: 12, color: Colors.grey[600])),
+      subtitle: Text(
+        subtitle,
+        style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+      ),
       onTap: () {
         Get.back(); // Close bottom sheet
         _submitReport(title);
@@ -1903,7 +1970,8 @@ class ChatController extends GetxController with WidgetsBindingObserver {
     if (message.isImage) {
       thumbnailData = _getCachedImageData(message.id);
       debugPrint(
-          '🔁 Thumbnail data available: ${thumbnailData != null ? "Yes (${thumbnailData.length} chars)" : "No"}');
+        '🔁 Thumbnail data available: ${thumbnailData != null ? "Yes (${thumbnailData.length} chars)" : "No"}',
+      );
     }
 
     replyToMessage.value = ReplyToEntity(

@@ -86,26 +86,8 @@ class AppRoutes {
         Get.put(MembershipController());
       }),
     ),
-    GetPage(
-      name: callIncoming,
-      page: () => const IncomingCallScreen(),
-      binding: BindingsBuilder(() {
-        Get.put(CallController());
-      }),
-    ),
-    GetPage(
-      name: callOutgoing,
-      page: () => const OutgoingCallScreen(),
-      binding: BindingsBuilder(() {
-        Get.put(CallController());
-      }),
-    ),
-    GetPage(
-      name: callActive,
-      page: () => const ActiveCallScreen(),
-      binding: BindingsBuilder(() {
-        Get.put(CallController());
-      }),
-    ),
+    GetPage(name: callIncoming, page: () => const IncomingCallScreen()),
+    GetPage(name: callOutgoing, page: () => const OutgoingCallScreen()),
+    GetPage(name: callActive, page: () => const ActiveCallScreen()),
   ];
 }
