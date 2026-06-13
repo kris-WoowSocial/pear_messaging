@@ -6,7 +6,6 @@ import 'package:get/get.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:socket_io_client/socket_io_client.dart' as IO;
 import 'encryption_service.dart';
-import 'e2ee_service.dart';
 import 'fcm_service.dart';
 import 'block_service.dart';
 import 'connection_request_service.dart';
@@ -42,7 +41,6 @@ class SocketService extends GetxService {
 
   // Callbacks for WebRTC call events
   Function(Map<String, dynamic>)? onIncomingCall;
-  Function(Map<String, dynamic>)? onCallInitiated;
   Function(Map<String, dynamic>)? onCallAccepted;
   Function(Map<String, dynamic>)? onCallRejected;
   Function(Map<String, dynamic>)? onCallTerminated;
@@ -320,14 +318,6 @@ class SocketService extends GetxService {
       }
     });
 
-    // WebRTC Call: Call initiated (backend confirms call ID)
-    _socket?.on('call_initiated', (data) {
-      debugPrint('📞 Call initiated: $data');
-      if (onCallInitiated != null && data != null) {
-        onCallInitiated!(Map<String, dynamic>.from(data));
-      }
-    });
-
     // WebRTC Call: Call accepted
     _socket?.on('call_accepted', (data) {
       debugPrint('📞 Call accepted: $data');
@@ -387,30 +377,9 @@ class SocketService extends GetxService {
     // Detect platform
     final platform = Platform.isAndroid ? 'android' : 'ios';
 
-    // Include E2EE public key if available
-    String? publicKey;
-    try {
-      if (Get.isRegistered<E2EEService>()) {
-        final e2ee = Get.find<E2EEService>();
-        publicKey = e2ee.myPublicKeyBase64;
-      }
-    } catch (e) {
-      debugPrint('⚠️ Could not get E2EE public key: $e');
-    }
-
-    final registerData = <String, dynamic>{
-      'deviceId': _deviceId,
-      'platform': platform,
-    };
-    if (publicKey != null) {
-      registerData['publicKey'] = publicKey;
-    }
-
-    _socket?.emit('register', registerData);
+    _socket?.emit('register', {'deviceId': _deviceId, 'platform': platform});
     isRegistered.value = true;
-    debugPrint(
-      '📝 Device registered: $_deviceId (platform: $platform, publicKey: ${publicKey?.substring(0, 12)}...)',
-    );
+    debugPrint('📝 Device registered: $_deviceId (platform: $platform)');
 
     // Also register FCM token if available
     _registerFCMTokenIfAvailable();
@@ -515,53 +484,30 @@ class SocketService extends GetxService {
 
     final timestamp = DateTime.now().millisecondsSinceEpoch;
 
-    // Try E2EE encryption if recipient's public key is known, otherwise XOR fallback
-    String encryptedContent;
-    String? senderPublicKey;
-    bool usedE2EE = false;
+    // ✅ Encrypt content using EncryptionService
+    final encryptedContent = EncryptionService.encryptMessage(content);
 
-    try {
-      if (Get.isRegistered<E2EEService>()) {
-        final e2ee = Get.find<E2EEService>();
-        senderPublicKey = e2ee.myPublicKeyBase64;
-        final recipientPublicKey = e2ee.getContactPublicKey(recipientDeviceId);
-        if (recipientPublicKey != null && recipientPublicKey.isNotEmpty) {
-          encryptedContent = await e2ee.encryptFor(recipientPublicKey, content);
-          usedE2EE = true;
-          debugPrint('🔐 E2EE encryption used for $recipientDeviceId');
-        }
-      }
-    } catch (e) {
-      debugPrint('⚠️ E2EE encryption failed, falling back to XOR: $e');
+    // Determine notification body - use friendly text for media messages
+    String notificationBody = content;
+    if (content.startsWith('MEDIA:') || content.startsWith('IMAGE:')) {
+      notificationBody = '📷 Photo';
     }
-
-    if (!usedE2EE) {
-      encryptedContent = EncryptionService.encryptMessage(content);
-      debugPrint('🔓 Legacy XOR encryption used for $recipientDeviceId');
-    }
-
-    // Determine message type hint (no content exposed — server uses silent FCM push)
-    final String messageType =
-        (content.startsWith('MEDIA:') || content.startsWith('IMAGE:'))
-        ? 'media'
-        : 'text';
 
     final messageData = {
       'messageId': messageId,
       'senderDeviceId': _deviceId,
       'receiverDeviceId': recipientDeviceId,
-      'encryptedPayload': encryptedContent,
+      'encryptedPayload': encryptedContent, // ✅ Now encrypted
       'timestamp': timestamp,
-      'messageType': messageType,
-      // Include sender's public key so recipient can derive shared secret
-      if (senderPublicKey != null) 'senderPublicKey': senderPublicKey,
-      // Add replyTo if present (replyTo.content is used locally only)
-      if (replyTo != null) 'replyTo': {'messageId': replyTo['messageId']},
+      "body": notificationBody, // User-friendly text for notifications
+      // Don't include sender name - recipient will determine from their local storage
+      // Add replyTo if present
+      if (replyTo != null) 'replyTo': replyTo,
     };
 
     _socket?.emit('send_message', messageData);
     debugPrint(
-      '📤 Message sent: $messageId to $recipientDeviceId (type: $messageType, hasReply: ${replyTo != null})',
+      '📤 Message sent: $messageId to $recipientDeviceId (notification: $notificationBody, hasReply: ${replyTo != null})',
     );
     return true;
   }
@@ -822,32 +768,6 @@ class SocketService extends GetxService {
     return true;
   }
 
-  /// Decrypt a message payload.
-  /// Tries E2EE first (if payload starts with 'E2:' and sender public key is known),
-  /// falls back to legacy XOR decryption for backward compatibility.
-  static String decryptMessage(
-    String encryptedPayload, {
-    String? senderPublicKey,
-  }) {
-    if (E2EEService.isE2EEPayload(encryptedPayload)) {
-      if (senderPublicKey != null && senderPublicKey.isNotEmpty) {
-        try {
-          final e2ee = Get.find<E2EEService>();
-          return e2ee.decryptFrom(senderPublicKey, encryptedPayload);
-        } catch (e) {
-          debugPrint('⚠️ E2EE decryption failed, falling back to XOR: $e');
-          // Fall through to XOR
-        }
-      } else {
-        debugPrint(
-          '⚠️ E2EE payload but no sender public key, falling back to XOR',
-        );
-      }
-    }
-    // Legacy XOR decryption
-    return EncryptionService.xorDecode(encryptedPayload);
-  }
-
   /// Check if a device is online
   void checkPresence(String deviceId) {
     if (!isConnected.value) return;
@@ -940,8 +860,6 @@ class SocketService extends GetxService {
     required String callId,
     required String targetDeviceId,
     required String candidate,
-    String? sdpMid,
-    int? sdpMLineIndex,
   }) {
     if (!isConnected.value) {
       debugPrint('❌ Cannot send ICE candidate: not connected');
@@ -952,12 +870,8 @@ class SocketService extends GetxService {
       'callId': callId,
       'targetDeviceId': targetDeviceId,
       'candidate': candidate,
-      'sdpMid': sdpMid,
-      'sdpMLineIndex': sdpMLineIndex,
     });
-    debugPrint(
-      '📞 ICE candidate sent: sdpMid=$sdpMid, sdpMLineIndex=$sdpMLineIndex',
-    );
+    debugPrint('📞 ICE candidate sent');
   }
 
   /// Notify peer that device is ringing

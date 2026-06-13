@@ -98,8 +98,7 @@ Future<void> onNotificationTap(NotificationResponse response) async {
         // Services not ready yet (app was terminated) — navigation will be
         // handled by checkPendingNotificationNavigation() after app init
         debugPrint(
-          '📱 Services not ready, pending navigation stored for: $senderId',
-        );
+            '📱 Services not ready, pending navigation stored for: $senderId');
       }
     }
   } catch (e) {
@@ -152,10 +151,10 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
       AndroidInitializationSettings('@drawable/ic_stat_ic_notification');
   const DarwinInitializationSettings initializationSettingsIOS =
       DarwinInitializationSettings(
-        requestAlertPermission: true,
-        requestBadgePermission: true,
-        requestSoundPermission: true,
-      );
+    requestAlertPermission: true,
+    requestBadgePermission: true,
+    requestSoundPermission: true,
+  );
   const InitializationSettings initializationSettings = InitializationSettings(
     android: initializationSettingsAndroid,
     iOS: initializationSettingsIOS,
@@ -177,10 +176,9 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
     showBadge: true,
   );
 
-  final androidPlugin = flutterLocalNotificationsPlugin
-      .resolvePlatformSpecificImplementation<
-        AndroidFlutterLocalNotificationsPlugin
-      >();
+  final androidPlugin =
+      flutterLocalNotificationsPlugin.resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin>();
   await androidPlugin?.createNotificationChannel(androidChannel);
 
   // Handle payment confirmed notifications
@@ -226,37 +224,71 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
     return;
   }
 
-  // Now try to save message to storage and show local notification
-  // FCM is a silent data-only push — we decrypt on-device and show the notification ourselves.
-  // Message content never passes through Google/Apple servers.
+  // Show notification immediately
+  try {
+    var title = message.notification?.title ?? 'New Message';
+    final body = message.notification?.body ?? 'You have a new message';
+    final payload = jsonEncode({'senderId': senderId});
+
+    // If title is a raw device ID (no username found), format it as friendly name
+    if (title == senderId && senderId.length > 5) {
+      title = '@user_${senderId.substring(senderId.length - 5)}';
+    }
+
+    await flutterLocalNotificationsPlugin.show(
+      DateTime.now().millisecondsSinceEpoch.remainder(100000),
+      title,
+      body,
+      const NotificationDetails(
+        android: AndroidNotificationDetails(
+          'high_importance_channel',
+          'High Importance Notifications',
+          channelDescription:
+              'This channel is used for important notifications.',
+          importance: Importance.max,
+          priority: Priority.max,
+          playSound: true,
+          enableVibration: true,
+        ),
+        iOS: DarwinNotificationDetails(
+          presentAlert: true,
+          presentBadge: true,
+          presentSound: true,
+        ),
+      ),
+      payload: payload,
+    );
+
+    debugPrint('📱 Background notification shown for sender: $senderId');
+  } catch (e) {
+    debugPrint('❌ Error showing background notification: $e');
+  }
+
+  // Now try to save message to storage (non-critical)
   try {
     await Hive.initFlutter();
     final storageService = LocalStorageService();
     await storageService.init();
 
     final messageId = message.data['messageId'] ?? '';
-    final timestampMs =
-        int.tryParse(message.data['timestamp'] ?? '') ??
+    final timestampMs = int.tryParse(message.data['timestamp'] ?? '') ??
         DateTime.now().millisecondsSinceEpoch;
-    final encryptedContent =
-        message.data['encryptedPayload'] ??
-        message.data['originalMessage'] ??
-        '';
-    final messageType = message.data['messageType'] ?? 'text';
+    final encryptedContent = message.data['originalMessage'] ?? '';
 
     if (messageId.isNotEmpty && senderId.isNotEmpty) {
       // Check if message already exists to prevent duplicate processing
       if (storageService.messageExists(messageId)) {
         debugPrint(
-          '💾 Background: message $messageId already exists in storage, skipping',
-        );
+            '💾 Background: message $messageId already exists in storage, skipping');
         return;
       }
 
-      // Mark message as processed to prevent foreground handler re-processing
+      // Mark message as processed in SharedPreferences to prevent foreground handler from processing it
       try {
         final prefs = await SharedPreferences.getInstance();
-        await prefs.setBool('processed_msg_$messageId', true);
+        final processedKey = 'processed_msg_$messageId';
+        await prefs.setBool(processedKey, true);
+        debugPrint('💾 Background: marked message $messageId as processed');
       } catch (e) {
         debugPrint('⚠️ Background: Error marking message as processed: $e');
       }
@@ -264,77 +296,54 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
       String contentToStore;
       MessageType msgType = MessageType.text;
 
-      // Decrypt the encrypted payload on-device — this is the only place decryption happens
+      // Always try to decrypt encrypted content first to detect image messages
       if (encryptedContent.isNotEmpty) {
         try {
+          debugPrint(
+              '📱 Background: Attempting to decrypt encrypted content...');
           contentToStore = SocketService.decryptMessage(encryptedContent);
           debugPrint(
-            '📱 Background: Decryption successful, length: ${contentToStore.length}',
-          );
+              '📱 Background: Decryption successful, content length: ${contentToStore.length}');
 
+          // Detect media messages only after successful decryption
+          // Check for exact MEDIA: or IMAGE: prefix at the start
           if (contentToStore.startsWith('IMAGE:') ||
               contentToStore.startsWith('MEDIA:')) {
             msgType = MessageType.image;
+            debugPrint('📱 Background: Detected as media message');
+          } else {
+            // For text messages, we can use notification body if it's more readable
+            final notificationBody = message.notification?.body;
+            if (notificationBody != null && notificationBody.isNotEmpty) {
+              debugPrint(
+                  '📱 Background: Using notification body as content for text message');
+              contentToStore = notificationBody;
+            }
           }
         } catch (e) {
           debugPrint('⚠️ Background: Decryption failed: $e');
-          contentToStore = 'New message';
-        }
-      } else if (messageType == 'media') {
-        contentToStore = '📷 Photo';
-        msgType = MessageType.image;
-      } else {
-        contentToStore = 'New message';
-      }
-
-      // Determine notification display text (never from server — always from local decrypt)
-      final notificationBody = msgType == MessageType.image
-          ? '📷 Photo'
-          : contentToStore;
-
-      // Show local notification with the decrypted content
-      try {
-        final payload = jsonEncode({'senderId': senderId});
-        var senderDisplayName =
-            '@user_${senderId.substring(senderId.length > 5 ? senderId.length - 5 : 0)}';
-        try {
-          // Try to load contact name from local storage
-          final chat = storageService.getChat(senderId);
-          if (chat != null &&
-              chat.userName != senderId &&
-              chat.userName.isNotEmpty) {
-            senderDisplayName = chat.userName;
+          debugPrint('⚠️ Background: Falling back to notification body');
+          final notificationBody = message.notification?.body;
+          if (notificationBody != null && notificationBody.isNotEmpty) {
+            contentToStore = notificationBody;
+            msgType = MessageType.text;
+          } else {
+            contentToStore = 'New message';
+            msgType = MessageType.text;
           }
-        } catch (_) {}
-
-        await flutterLocalNotificationsPlugin.show(
-          messageId.hashCode.abs() % 100000,
-          senderDisplayName,
-          notificationBody,
-          const NotificationDetails(
-            android: AndroidNotificationDetails(
-              'high_importance_channel',
-              'High Importance Notifications',
-              channelDescription:
-                  'This channel is used for important notifications.',
-              importance: Importance.max,
-              priority: Priority.max,
-              playSound: true,
-              enableVibration: true,
-            ),
-            iOS: DarwinNotificationDetails(
-              presentAlert: true,
-              presentBadge: true,
-              presentSound: true,
-            ),
-          ),
-          payload: payload,
-        );
-        debugPrint(
-          '📱 Background: local notification shown with decrypted content',
-        );
-      } catch (e) {
-        debugPrint('❌ Background: Error showing local notification: $e');
+        }
+      } else {
+        // No encrypted content, fall back to notification body
+        final notificationBody = message.notification?.body;
+        if (notificationBody != null && notificationBody.isNotEmpty) {
+          debugPrint(
+              '📱 Background: Using notification body as content (no encrypted content)');
+          contentToStore = notificationBody;
+          msgType = MessageType.text;
+        } else {
+          contentToStore = 'New message';
+          msgType = MessageType.text;
+        }
       }
 
       await storageService.saveMessage(
@@ -351,8 +360,7 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
         ),
       );
       debugPrint(
-        '💾 Background: saved message $messageId to local DB with status: delivered',
-      );
+          '💾 Background: saved message $messageId to local DB with status: delivered');
 
       // Update chat entity's last message (but don't increment unreadCount in background)
       // unreadCount will be recalculated when app opens based on actual unread messages
@@ -360,9 +368,8 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
         final chat = storageService.getChat(senderId);
         if (chat != null) {
           final updatedChat = chat.copyWith(
-            lastMessage: msgType == MessageType.image
-                ? '📷 Photo'
-                : contentToStore,
+            lastMessage:
+                msgType == MessageType.image ? '📷 Photo' : contentToStore,
             lastMessageTime: DateTime.fromMillisecondsSinceEpoch(timestampMs),
           );
           await storageService.saveChat(updatedChat);
@@ -372,16 +379,14 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
           final newChat = ChatEntity(
             id: senderId,
             userName: senderId, // Will be updated when user opens chat
-            lastMessage: msgType == MessageType.image
-                ? '📷 Photo'
-                : contentToStore,
+            lastMessage:
+                msgType == MessageType.image ? '📷 Photo' : contentToStore,
             lastMessageTime: DateTime.fromMillisecondsSinceEpoch(timestampMs),
             unreadCount: 0, // Will be recalculated when app opens
           );
           await storageService.saveChat(newChat);
           debugPrint(
-            '💾 Background: created new chat entity for $senderId with unreadCount: 0',
-          );
+              '💾 Background: created new chat entity for $senderId with unreadCount: 0');
         }
       } catch (e) {
         debugPrint('⚠️ Background: Error updating chat entity: $e');
@@ -430,9 +435,8 @@ class FCMService extends GetxService {
     try {
       // Initialize notifications
       debugPrint('🔔 Initializing notifications...');
-      const androidSettings = AndroidInitializationSettings(
-        '@drawable/ic_stat_ic_notification',
-      );
+      const androidSettings =
+          AndroidInitializationSettings('@drawable/ic_stat_ic_notification');
       final iosSettings = DarwinInitializationSettings(
         requestAlertPermission: true,
         requestBadgePermission: true,
@@ -472,10 +476,9 @@ class FCMService extends GetxService {
       );
 
       // Register both channels
-      final androidPlugin = _notifications
-          .resolvePlatformSpecificImplementation<
-            AndroidFlutterLocalNotificationsPlugin
-          >();
+      final androidPlugin =
+          _notifications.resolvePlatformSpecificImplementation<
+              AndroidFlutterLocalNotificationsPlugin>();
       await androidPlugin?.createNotificationChannel(highImportanceChannel);
       await androidPlugin?.createNotificationChannel(disabledChannel);
       debugPrint('✅ Notifications initialized');
@@ -505,8 +508,7 @@ class FCMService extends GetxService {
 
           if (!status.isGranted) {
             debugPrint(
-              '⚠️ Android notification permission not granted - notifications may not work',
-            );
+                '⚠️ Android notification permission not granted - notifications may not work');
           }
         }
 
@@ -522,15 +524,13 @@ class FCMService extends GetxService {
           sound: true,
         );
         debugPrint(
-          '✅ Firebase notification permission: ${settings.authorizationStatus}',
-        );
+            '✅ Firebase notification permission: ${settings.authorizationStatus}');
 
         // iOS-specific debugging
         if (Platform.isIOS) {
           debugPrint('📱 iOS FCM Configuration:');
           debugPrint(
-            '   - Authorization Status: ${settings.authorizationStatus}',
-          );
+              '   - Authorization Status: ${settings.authorizationStatus}');
           debugPrint('   - Alert: ${settings.alert}');
         }
       } catch (e) {
@@ -541,8 +541,7 @@ class FCMService extends GetxService {
       try {
         FirebaseMessaging.onMessage.listen(_handleForegroundMessage);
         FirebaseMessaging.onBackgroundMessage(
-          firebaseMessagingBackgroundHandler,
-        );
+            firebaseMessagingBackgroundHandler);
 
         // Handle notification tap when app is opened from terminated state
         FirebaseMessaging.onMessageOpenedApp.listen(_handleNotificationTap);
@@ -573,11 +572,9 @@ class FCMService extends GetxService {
           debugPrint('✅ FCM token registered with socket during init');
         } else {
           debugPrint(
-            '📱 FCM init: Socket not ready, token will be registered later',
-          );
+              '📱 FCM init: Socket not ready, token will be registered later');
           debugPrint(
-            '📱 Socket status: ${_socketService != null ? "Found but not connected" : "Not found"}',
-          );
+              '📱 Socket status: ${_socketService != null ? "Found but not connected" : "Not found"}');
         }
       } else {
         debugPrint('⚠️ FCM token is null or empty after init');
@@ -598,8 +595,7 @@ class FCMService extends GetxService {
   void _handleForegroundMessage(RemoteMessage message) async {
     debugPrint('📱 Foreground message received: ${message.data}');
     debugPrint(
-      '📱 Firebase notification title: ${message.notification?.title}',
-    );
+        '📱 Firebase notification title: ${message.notification?.title}');
     debugPrint('📱 Firebase notification body: ${message.notification?.body}');
 
     // Handle payment confirmed notification
@@ -613,8 +609,7 @@ class FCMService extends GetxService {
         final membershipService = Get.find();
         await (membershipService as dynamic).activateMembership(
           selectedPlan: planId,
-          purchaseId:
-              message.data['txHash'] ??
+          purchaseId: message.data['txHash'] ??
               'fcm_${DateTime.now().millisecondsSinceEpoch}',
         );
         debugPrint('✅ Membership activated from FCM: $planId');
@@ -639,19 +634,15 @@ class FCMService extends GetxService {
 
     // ── Persist to local DB (socket may be disconnected or slow) ──
     final messageId = message.data['messageId'] ?? '';
-    final timestampMs =
-        int.tryParse(message.data['timestamp'] ?? '') ??
+    final timestampMs = int.tryParse(message.data['timestamp'] ?? '') ??
         DateTime.now().millisecondsSinceEpoch;
-    final encryptedContent = message.data['encryptedPayload'] ??
-        message.data['originalMessage'] ?? '';
-    final messageType = message.data['messageType'] ?? 'text';
+    final encryptedContent = message.data['originalMessage'] ?? '';
 
     if (messageId.isNotEmpty && senderId.isNotEmpty) {
       // Check if message already exists to prevent duplicate processing
       if (_storageService.messageExists(messageId)) {
         debugPrint(
-          '💾 Foreground: message $messageId already exists, skipping',
-        );
+            '💾 Foreground: message $messageId already exists, skipping');
         return;
       }
 
@@ -661,8 +652,7 @@ class FCMService extends GetxService {
         final processedKey = 'processed_msg_$messageId';
         if (prefs.getBool(processedKey) ?? false) {
           debugPrint(
-            '💾 Foreground: message $messageId already processed by background, skipping',
-          );
+              '💾 Foreground: message $messageId already processed by background, skipping');
           // Clean up the processed flag after successful deduplication
           await prefs.remove(processedKey);
           return;
@@ -681,8 +671,7 @@ class FCMService extends GetxService {
             debugPrint('🚫 FCM message from user I blocked $senderId ignored');
           } else if (blockService.hasUserBlockedMe(senderId)) {
             debugPrint(
-              '🚫 FCM message from user who blocked me $senderId ignored',
-            );
+                '🚫 FCM message from user who blocked me $senderId ignored');
           } else {
             debugPrint('🚫 FCM message from $senderId ignored (blocking)');
           }
@@ -697,26 +686,54 @@ class FCMService extends GetxService {
         String contentToStore;
         MessageType msgType = MessageType.text;
 
-        // Decrypt on-device — server no longer sends plaintext in any field
+        // Always try to decrypt encrypted content first to detect image messages
         if (encryptedContent.isNotEmpty) {
           try {
+            debugPrint(
+                '📱 Foreground: Attempting to decrypt encrypted content...');
             contentToStore = SocketService.decryptMessage(encryptedContent);
             debugPrint(
-              '📱 Foreground: Decryption successful, length: ${contentToStore.length}',
-            );
+                '📱 Foreground: Decryption successful, content length: ${contentToStore.length}');
+
+            // Detect media messages only after successful decryption
+            // Check for exact MEDIA: or IMAGE: prefix at the start
             if (contentToStore.startsWith('IMAGE:') ||
                 contentToStore.startsWith('MEDIA:')) {
               msgType = MessageType.image;
+              debugPrint('📱 Foreground: Detected as media message');
+            } else {
+              // For text messages, we can use notification body if it's more readable
+              final notificationBody = message.notification?.body;
+              if (notificationBody != null && notificationBody.isNotEmpty) {
+                debugPrint(
+                    '📱 Foreground: Using notification body as content for text message');
+                contentToStore = notificationBody;
+              }
             }
           } catch (e) {
             debugPrint('⚠️ Foreground: Decryption failed: $e');
-            contentToStore = 'New message';
+            debugPrint('⚠️ Foreground: Falling back to notification body');
+            final notificationBody = message.notification?.body;
+            if (notificationBody != null && notificationBody.isNotEmpty) {
+              contentToStore = notificationBody;
+              msgType = MessageType.text;
+            } else {
+              contentToStore = 'New message';
+              msgType = MessageType.text;
+            }
           }
-        } else if (messageType == 'media') {
-          contentToStore = '📷 Photo';
-          msgType = MessageType.image;
         } else {
-          contentToStore = 'New message';
+          // No encrypted content, fall back to notification body
+          final notificationBody = message.notification?.body;
+          if (notificationBody != null && notificationBody.isNotEmpty) {
+            debugPrint(
+                '📱 Foreground: Using notification body as content (no encrypted content)');
+            contentToStore = notificationBody;
+            msgType = MessageType.text;
+          } else {
+            contentToStore = 'New message';
+            msgType = MessageType.text;
+          }
         }
 
         try {
@@ -734,38 +751,32 @@ class FCMService extends GetxService {
             ),
           );
           debugPrint(
-            '💾 Foreground: saved message $messageId to local DB (type: $msgType)',
-          );
+              '💾 Foreground: saved message $messageId to local DB (type: $msgType)');
 
           // Update chat entity's unreadCount
           try {
             final chat = _storageService.getChat(senderId);
             if (chat != null) {
               final currentUnreadCount = chat.unreadCount;
-              final updatedChat = chat.copyWith(
-                unreadCount: currentUnreadCount + 1,
-              );
+              final updatedChat =
+                  chat.copyWith(unreadCount: currentUnreadCount + 1);
               await _storageService.saveChat(updatedChat);
               debugPrint(
-                '💾 Foreground: updated unreadCount for chat $senderId: $currentUnreadCount -> ${currentUnreadCount + 1}',
-              );
+                  '💾 Foreground: updated unreadCount for chat $senderId: $currentUnreadCount -> ${currentUnreadCount + 1}');
             } else {
               // Create new chat entity if it doesn't exist
               final newChat = ChatEntity(
                 id: senderId,
                 userName: senderId, // Will be updated when user opens chat
-                lastMessage: msgType == MessageType.image
-                    ? '📷 Photo'
-                    : contentToStore,
-                lastMessageTime: DateTime.fromMillisecondsSinceEpoch(
-                  timestampMs,
-                ),
+                lastMessage:
+                    msgType == MessageType.image ? '📷 Photo' : contentToStore,
+                lastMessageTime:
+                    DateTime.fromMillisecondsSinceEpoch(timestampMs),
                 unreadCount: 1,
               );
               await _storageService.saveChat(newChat);
               debugPrint(
-                '💾 Foreground: created new chat entity for $senderId with unreadCount: 1',
-              );
+                  '💾 Foreground: created new chat entity for $senderId with unreadCount: 1');
             }
 
             // Recalculate badge count from local storage
@@ -783,16 +794,14 @@ class FCMService extends GetxService {
             }
           } catch (e) {
             debugPrint(
-              '⚠️ Foreground: Error updating unreadCount for chat $senderId: $e',
-            );
+                '⚠️ Foreground: Error updating unreadCount for chat $senderId: $e');
           }
         } catch (e) {
           debugPrint('💾 Foreground: error saving message to local DB: $e');
         }
       } else {
         debugPrint(
-          '💾 Foreground: message $messageId already in DB, skipping save',
-        );
+            '💾 Foreground: message $messageId already in DB, skipping save');
       }
     }
 
@@ -863,14 +872,11 @@ class FCMService extends GetxService {
 
       // Register new token with socket if available
       if (_socketService != null) {
-        _socketService!
-            .registerFCMToken(token)
-            .then((_) {
-              debugPrint('✅ New FCM token registered with socket');
-            })
-            .catchError((e) {
-              debugPrint('❌ Error registering token with socket: $e');
-            });
+        _socketService!.registerFCMToken(token).then((_) {
+          debugPrint('✅ New FCM token registered with socket');
+        }).catchError((e) {
+          debugPrint('❌ Error registering token with socket: $e');
+        });
       }
     });
   }
@@ -882,12 +888,10 @@ class FCMService extends GetxService {
     debugPrint('   - Token empty: ${_fcmToken?.isEmpty ?? true}');
     debugPrint('   - Token length: ${_fcmToken?.length ?? 0}');
     debugPrint(
-      '   - Token preview: ${_fcmToken?.substring(0, math.min(20, _fcmToken?.length ?? 0))}...',
-    );
+        '   - Token preview: ${_fcmToken?.substring(0, math.min(20, _fcmToken?.length ?? 0))}...');
     debugPrint('   - Socket available: ${_socketService != null}');
     debugPrint(
-      '   - Socket connected: ${_socketService?.isConnected.value ?? false}',
-    );
+        '   - Socket connected: ${_socketService?.isConnected.value ?? false}');
   }
 
   /// Cancel the notification shown for a specific sender (called when chat is opened)
@@ -896,8 +900,7 @@ class FCMService extends GetxService {
     final notificationId = senderId.hashCode.abs() % 100000;
     await _notifications.cancel(notificationId);
     debugPrint(
-      '🔕 Notification cancelled for sender: $senderId (id: $notificationId)',
-    );
+        '🔕 Notification cancelled for sender: $senderId (id: $notificationId)');
   }
 
   /// Register token if socket service becomes available
@@ -906,8 +909,7 @@ class FCMService extends GetxService {
       _socketService ??= Get.find<SocketService>();
       if (_fcmToken != null && _fcmToken!.isNotEmpty) {
         debugPrint(
-          '📱 Registering FCM token: ${_fcmToken!.substring(0, 20)}...',
-        );
+            '📱 Registering FCM token: ${_fcmToken!.substring(0, 20)}...');
         await _socketService!.registerFCMToken(_fcmToken!);
         debugPrint('✅ FCM token registered with socket service');
       } else {
@@ -920,10 +922,7 @@ class FCMService extends GetxService {
 
   /// Show local notification (for testing purposes and iOS fallback)
   Future<void> showTestNotification(
-    String title,
-    String body,
-    String senderId,
-  ) async {
+      String title, String body, String senderId) async {
     try {
       debugPrint('🔔 DEBUG: showTestNotification called');
       debugPrint('🔔 DEBUG: title: $title, body: $body, senderId: $senderId');
@@ -931,9 +930,8 @@ class FCMService extends GetxService {
       final payload = jsonEncode({'senderId': senderId});
       debugPrint('🔔 DEBUG: payload created: $payload');
 
-      final notificationId = DateTime.now().millisecondsSinceEpoch.remainder(
-        100000,
-      );
+      final notificationId =
+          DateTime.now().millisecondsSinceEpoch.remainder(100000);
       debugPrint('🔔 DEBUG: notificationId: $notificationId');
 
       // Get current badge count for notification
@@ -962,9 +960,7 @@ class FCMService extends GetxService {
 
   /// Store acknowledgment request for later processing (static version)
   static void _storeAcknowledgmentRequestStatic(
-    String messageId,
-    String senderId,
-  ) async {
+      String messageId, String senderId) async {
     try {
       final prefs = await SharedPreferences.getInstance();
 
@@ -979,8 +975,7 @@ class FCMService extends GetxService {
       await prefs.setStringList('pending_acknowledgments', acknowledgments);
 
       debugPrint(
-        '💾 Stored acknowledgment request (static) for $messageId from $senderId',
-      );
+          '💾 Stored acknowledgment request (static) for $messageId from $senderId');
     } catch (e) {
       debugPrint('⚠️ Error storing acknowledgment request (static): $e');
     }
@@ -999,14 +994,12 @@ class FCMService extends GetxService {
       }
 
       debugPrint(
-        '📤 Sending ${acknowledgments.length} pending acknowledgments',
-      );
+          '📤 Sending ${acknowledgments.length} pending acknowledgments');
 
       // Get socket service
       if (!Get.isRegistered<SocketService>()) {
         debugPrint(
-          '⚠️ SocketService not registered, cannot send acknowledgments',
-        );
+            '⚠️ SocketService not registered, cannot send acknowledgments');
         return;
       }
 
@@ -1040,13 +1033,10 @@ class FCMService extends GetxService {
           .toList();
 
       await prefs.setStringList(
-        'pending_acknowledgments',
-        remainingAcknowledgments,
-      );
+          'pending_acknowledgments', remainingAcknowledgments);
 
       debugPrint(
-        '📤 Sent ${sentAcknowledgments.length} acknowledgments, ${remainingAcknowledgments.length} remaining',
-      );
+          '📤 Sent ${sentAcknowledgments.length} acknowledgments, ${remainingAcknowledgments.length} remaining');
     } catch (e) {
       debugPrint('⚠️ Error sending pending acknowledgments: $e');
     }
