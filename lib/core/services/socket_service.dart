@@ -41,6 +41,7 @@ class SocketService extends GetxService {
 
   // Callbacks for WebRTC call events
   Function(Map<String, dynamic>)? onIncomingCall;
+  Function(Map<String, dynamic>)? onCallInitiated;
   Function(Map<String, dynamic>)? onCallAccepted;
   Function(Map<String, dynamic>)? onCallRejected;
   Function(Map<String, dynamic>)? onCallTerminated;
@@ -318,6 +319,14 @@ class SocketService extends GetxService {
       }
     });
 
+    // WebRTC Call: Call initiated (backend confirms call ID)
+    _socket?.on('call_initiated', (data) {
+      debugPrint('📞 Call initiated: $data');
+      if (onCallInitiated != null && data != null) {
+        onCallInitiated!(Map<String, dynamic>.from(data));
+      }
+    });
+
     // WebRTC Call: Call accepted
     _socket?.on('call_accepted', (data) {
       debugPrint('📞 Call accepted: $data');
@@ -484,30 +493,29 @@ class SocketService extends GetxService {
 
     final timestamp = DateTime.now().millisecondsSinceEpoch;
 
-    // ✅ Encrypt content using EncryptionService
+    // Encrypt content using EncryptionService
     final encryptedContent = EncryptionService.encryptMessage(content);
 
-    // Determine notification body - use friendly text for media messages
-    String notificationBody = content;
-    if (content.startsWith('MEDIA:') || content.startsWith('IMAGE:')) {
-      notificationBody = '📷 Photo';
-    }
+    // Determine message type hint (no content exposed — server uses silent FCM push)
+    final String messageType =
+        (content.startsWith('MEDIA:') || content.startsWith('IMAGE:'))
+        ? 'media'
+        : 'text';
 
     final messageData = {
       'messageId': messageId,
       'senderDeviceId': _deviceId,
       'receiverDeviceId': recipientDeviceId,
-      'encryptedPayload': encryptedContent, // ✅ Now encrypted
+      'encryptedPayload': encryptedContent,
       'timestamp': timestamp,
-      "body": notificationBody, // User-friendly text for notifications
-      // Don't include sender name - recipient will determine from their local storage
-      // Add replyTo if present
-      if (replyTo != null) 'replyTo': replyTo,
+      'messageType': messageType, // type hint only, no plaintext content
+      // Add replyTo if present (replyTo.content is used locally only)
+      if (replyTo != null) 'replyTo': {'messageId': replyTo['messageId']},
     };
 
     _socket?.emit('send_message', messageData);
     debugPrint(
-      '📤 Message sent: $messageId to $recipientDeviceId (notification: $notificationBody, hasReply: ${replyTo != null})',
+      '📤 Message sent: $messageId to $recipientDeviceId (type: $messageType, hasReply: ${replyTo != null})',
     );
     return true;
   }
@@ -860,6 +868,8 @@ class SocketService extends GetxService {
     required String callId,
     required String targetDeviceId,
     required String candidate,
+    String? sdpMid,
+    int? sdpMLineIndex,
   }) {
     if (!isConnected.value) {
       debugPrint('❌ Cannot send ICE candidate: not connected');
@@ -870,8 +880,12 @@ class SocketService extends GetxService {
       'callId': callId,
       'targetDeviceId': targetDeviceId,
       'candidate': candidate,
+      'sdpMid': sdpMid,
+      'sdpMLineIndex': sdpMLineIndex,
     });
-    debugPrint('📞 ICE candidate sent');
+    debugPrint(
+      '📞 ICE candidate sent: sdpMid=$sdpMid, sdpMLineIndex=$sdpMLineIndex',
+    );
   }
 
   /// Notify peer that device is ringing
