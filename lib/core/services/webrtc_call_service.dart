@@ -1,10 +1,7 @@
 import 'dart:async';
-import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'socket_service.dart';
-import 'secure_key_service.dart';
 
 /// WebRTC Call Service - Manages peer-to-peer audio calls with E2EE
 class WebRTCCallService {
@@ -17,14 +14,8 @@ class WebRTCCallService {
   MediaStream? _localStream;
   MediaStream? _remoteStream;
 
-  // E2EE FrameCryptor
-  FrameCryptor? _senderFrameCryptor;
-  FrameCryptor? _receiverFrameCryptor;
-  FrameCryptorKeyProvider? _keyProvider;
-
   // Call state
   String? _currentCallId;
-  String? _localDeviceId;
   String? _remoteDeviceId;
   bool _isCaller = false;
   bool _isMuted = false;
@@ -34,88 +25,41 @@ class WebRTCCallService {
   Timer? _durationTimer;
   int _callDurationSeconds = 0;
 
+  // Stats timer for diagnostics (logs bytes sent/received)
+  Timer? _statsTimer;
+
   // Callbacks
-  Function(String)? onLocalStream;
+  Function(MediaStream)? onLocalStream;
   Function(MediaStream)? onRemoteStream;
   Function(String)? onCallEnded;
-  Function(String)? onIceCandidate;
+  Function(String candidate, String? sdpMid, int? sdpMLineIndex)?
+  onIceCandidate;
   Function(String)? onCallStateChange;
+  Function(String)? onLocalDescription; // Callback for SDP offer/answer
 
   // ICE servers configuration
-  final List<RTCIceServer> _iceServers = [
-    RTCIceServer(
-      urls: 'stun:stun.l.google.com:19302',
-    ),
-  ];
-
-  // TURN server configuration (will be loaded from environment)
-  RTCIceServer? _turnServer;
+  final Map<String, dynamic> _iceServers = {
+    'iceServers': [
+      {'urls': 'stun:stun.l.google.com:19302'},
+      {
+        'urls': 'turn:54.175.143.63:3478',
+        'username': 'vantchat',
+        'credential': 'Y9FA4x5PA2WDAMwBWfVClL5R7VyH8/BfRql9jTBNg54=',
+      },
+    ],
+  };
 
   /// Initialize the call service
   Future<void> initialize() async {
-    debugPrint('📞 WebRTCCallService initialized');
-
-    // Load TURN server configuration from backend
-    await _loadTurnServerConfig();
-  }
-
-  /// Load TURN server configuration from backend
-  Future<void> _loadTurnServerConfig() async {
-    try {
-      // For now, use hardcoded values from .env
-      // In production, fetch from backend API
-      _turnServer = RTCIceServer(
-        urls: 'turn:54.175.143.63:3478',
-        username: 'vantchat',
-        credential: 'your_secure_turn_password_here',
-      );
-
-      if (_turnServer != null) {
-        _iceServers.add(_turnServer!);
-        debugPrint('📞 TURN server configured');
-      }
-    } catch (e) {
-      debugPrint('⚠️ Failed to load TURN server config: $e');
-    }
-  }
-
-  /// Initialize E2EE with shared secret
-  Future<void> _initializeE2EE(String sharedSecret) async {
-    try {
-      // Create key provider with index-aware allocation
-      _keyProvider = FrameCryptorFactory.createDefaultKeyProvider();
-
-      // Derive key from shared secret (32 bytes for AES-256)
-      final keyBytes = _deriveKeyFromSecret(sharedSecret);
-      await _keyProvider?.setKey(keyBytes, 0);
-
-      debugPrint('🔒 E2EE initialized with FrameCryptor');
-    } catch (e) {
-      debugPrint('❌ Failed to initialize E2EE: $e');
-    }
-  }
-
-  /// Derive 32-byte key from shared secret
-  Uint8List _deriveKeyFromSecret(String secret) {
-    // Simple derivation - in production use proper KDF
-    final bytes = secret.codeUnits;
-    final key = Uint8List(32);
-
-    for (int i = 0; i < 32; i++) {
-      key[i] = bytes[i % bytes.length];
-    }
-
-    return key;
+    debugPrint('� WebRTCCallService initialized');
   }
 
   /// Start an outgoing call
   Future<bool> startCall({
     required String calleeDeviceId,
     required String callerDeviceId,
-    required String sharedSecret,
   }) async {
     try {
-      _localDeviceId = callerDeviceId;
       _remoteDeviceId = calleeDeviceId;
       _isCaller = true;
       _currentCallId = 'call_${DateTime.now().millisecondsSinceEpoch}';
@@ -128,9 +72,6 @@ class WebRTCCallService {
         debugPrint('❌ Microphone permission denied');
         return false;
       }
-
-      // Initialize E2EE
-      await _initializeE2EE(sharedSecret);
 
       // Create peer connection
       await _createPeerConnection();
@@ -145,31 +86,26 @@ class WebRTCCallService {
       onLocalStream?.call(_localStream!);
 
       // Add local stream to peer connection
-      _localStream!.getTracks().forEach((track) async {
+      // CRITICAL FIX: Use for loop instead of forEach - forEach doesn't await async callbacks
+      // Without this fix, createOffer runs before tracks are attached, causing silence
+      for (final track in _localStream!.getTracks()) {
         await _peerConnection!.addTrack(track, _localStream!);
+      }
 
-        // Setup E2EE for sender
-        if (_keyProvider != null) {
-          final sender = _peerConnection!.getSenders().firstWhere(
-                (s) => s.track == track,
-                orElse: () => throw Exception('Sender not found'),
-              );
-
-          _senderFrameCryptor =
-              await FrameCryptorFactory.createFrameCryptorForRtpSender(
-            sender,
-            _keyProvider!,
-            'AES_GCM',
-          );
-
-          await _senderFrameCryptor?.setEnabled(true);
-          debugPrint('🔒 E2EE enabled for sender');
-        }
-      });
+      // Verify tracks were added before creating offer
+      final sendersBeforeOffer = await _peerConnection!.getSenders();
+      debugPrint(
+        '📞 Active senders before createOffer: ${sendersBeforeOffer.length}',
+      );
 
       // Create offer
       final offer = await _peerConnection!.createOffer();
       await _peerConnection!.setLocalDescription(offer);
+
+      // Notify caller of the SDP offer
+      if (offer.sdp != null) {
+        onLocalDescription?.call(offer.sdp!);
+      }
 
       onCallStateChange?.call('dialing');
 
@@ -187,11 +123,9 @@ class WebRTCCallService {
     required String callerDeviceId,
     required String calleeDeviceId,
     required String sdpOffer,
-    required String sharedSecret,
   }) async {
     try {
       _currentCallId = callId;
-      _localDeviceId = calleeDeviceId;
       _remoteDeviceId = callerDeviceId;
       _isCaller = false;
 
@@ -203,9 +137,6 @@ class WebRTCCallService {
         debugPrint('❌ Microphone permission denied');
         return false;
       }
-
-      // Initialize E2EE
-      await _initializeE2EE(sharedSecret);
 
       // Create peer connection
       await _createPeerConnection();
@@ -220,27 +151,16 @@ class WebRTCCallService {
       onLocalStream?.call(_localStream!);
 
       // Add local stream to peer connection
-      _localStream!.getTracks().forEach((track) async {
+      // CRITICAL FIX: Use for loop instead of forEach - forEach doesn't await async callbacks
+      for (final track in _localStream!.getTracks()) {
         await _peerConnection!.addTrack(track, _localStream!);
+      }
 
-        // Setup E2EE for sender
-        if (_keyProvider != null) {
-          final sender = _peerConnection!.getSenders().firstWhere(
-                (s) => s.track == track,
-                orElse: () => throw Exception('Sender not found'),
-              );
-
-          _senderFrameCryptor =
-              await FrameCryptorFactory.createFrameCryptorForRtpSender(
-            sender,
-            _keyProvider!,
-            'AES_GCM',
-          );
-
-          await _senderFrameCryptor?.setEnabled(true);
-          debugPrint('🔒 E2EE enabled for sender');
-        }
-      });
+      // Verify tracks were added before creating answer
+      final sendersBeforeAnswer = await _peerConnection!.getSenders();
+      debugPrint(
+        '📞 Active senders before createAnswer: ${sendersBeforeAnswer.length}',
+      );
 
       // Set remote description (offer)
       await _peerConnection!.setRemoteDescription(
@@ -250,6 +170,11 @@ class WebRTCCallService {
       // Create answer
       final answer = await _peerConnection!.createAnswer();
       await _peerConnection!.setLocalDescription(answer);
+
+      // Notify callee of the SDP answer
+      if (answer.sdp != null) {
+        onLocalDescription?.call(answer.sdp!);
+      }
 
       onCallStateChange?.call('ringing');
 
@@ -263,37 +188,26 @@ class WebRTCCallService {
 
   /// Create peer connection with ICE servers
   Future<void> _createPeerConnection() async {
-    final configuration = RTCConfiguration(
-      iceServers: _iceServers,
-      iceTransportPolicy: 'all',
-    );
-
-    _peerConnection = await createPeerConnection(configuration);
+    _peerConnection = await createPeerConnection(_iceServers);
 
     // Handle ICE candidates
     _peerConnection!.onIceCandidate = (candidate) {
-      debugPrint('📞 ICE candidate: ${candidate.candidate}');
-      onIceCandidate?.call(candidate.candidate ?? '');
+      debugPrint(
+        '📞 ICE candidate generated: ${candidate.candidate}, sdpMid: ${candidate.sdpMid}, sdpMLineIndex: ${candidate.sdpMLineIndex}',
+      );
+      if (candidate.candidate != null && candidate.candidate!.isNotEmpty) {
+        onIceCandidate?.call(
+          candidate.candidate!,
+          candidate.sdpMid,
+          candidate.sdpMLineIndex,
+        );
+      }
     };
 
     // Handle remote stream
     _peerConnection!.onTrack = (event) async {
       debugPrint('📞 Remote track received');
       _remoteStream = event.streams[0];
-
-      // Setup E2EE for receiver
-      if (_keyProvider != null) {
-        _receiverFrameCryptor =
-            FrameCryptorFactory.createFrameCryptorForRtpReceiver(
-          event.receiver,
-          _keyProvider!,
-          'AES_GCM',
-        );
-
-        await _receiverFrameCryptor?.setEnabled(true);
-        debugPrint('🔒 E2EE enabled for receiver');
-      }
-
       onRemoteStream?.call(_remoteStream!);
     };
 
@@ -303,12 +217,23 @@ class WebRTCCallService {
 
       switch (state) {
         case RTCPeerConnectionState.RTCPeerConnectionStateConnected:
+          debugPrint('📞 WebRTC CONNECTED - starting timer and audio');
           onCallStateChange?.call('connected');
           _startDurationTimer();
+          _startStatsLogger();
           break;
         case RTCPeerConnectionState.RTCPeerConnectionStateDisconnected:
+          debugPrint('📞 WebRTC DISCONNECTED');
+          onCallStateChange?.call('disconnected');
+          _stopStatsLogger();
+          break;
         case RTCPeerConnectionState.RTCPeerConnectionStateFailed:
+          debugPrint('📞 WebRTC FAILED');
+          onCallStateChange?.call('ended');
+          _endCall();
+          break;
         case RTCPeerConnectionState.RTCPeerConnectionStateClosed:
+          debugPrint('📞 WebRTC CLOSED');
           onCallStateChange?.call('ended');
           _endCall();
           break;
@@ -352,14 +277,13 @@ class WebRTCCallService {
 
   /// Add ICE candidate
   Future<void> addIceCandidate(
-      String candidate, String sdpMid, int sdpMLineIndex) async {
+    String candidate,
+    String sdpMid,
+    int sdpMLineIndex,
+  ) async {
     try {
       await _peerConnection?.addCandidate(
-        RTCIceCandidate(
-          candidate,
-          sdpMid,
-          sdpMLineIndex,
-        ),
+        RTCIceCandidate(candidate, sdpMid, sdpMLineIndex),
       );
       debugPrint('📞 ICE candidate added');
     } catch (e) {
@@ -416,14 +340,8 @@ class WebRTCCallService {
     _durationTimer?.cancel();
     _durationTimer = null;
 
-    _senderFrameCryptor?.dispose();
-    _senderFrameCryptor = null;
-
-    _receiverFrameCryptor?.dispose();
-    _receiverFrameCryptor = null;
-
-    _keyProvider?.dispose();
-    _keyProvider = null;
+    _statsTimer?.cancel();
+    _statsTimer = null;
 
     _localStream?.getTracks().forEach((track) {
       track.stop();
@@ -441,7 +359,6 @@ class WebRTCCallService {
     onCallEnded?.call(_currentCallId ?? '');
 
     _currentCallId = null;
-    _localDeviceId = null;
     _remoteDeviceId = null;
     _isCaller = false;
     _isMuted = false;
@@ -464,6 +381,45 @@ class WebRTCCallService {
   String? get currentCallId => _currentCallId;
   String? get remoteDeviceId => _remoteDeviceId;
   bool get isCaller => _isCaller;
+
+  /// Start periodic stats logging for diagnostic purposes
+  void _startStatsLogger() {
+    _statsTimer?.cancel();
+    _statsTimer = Timer.periodic(const Duration(seconds: 3), (timer) async {
+      if (_peerConnection == null) {
+        timer.cancel();
+        return;
+      }
+      try {
+        final stats = await _peerConnection!.getStats();
+        for (final report in stats) {
+          if (report.type == 'outbound-rtp' || report.type == 'inbound-rtp') {
+            final bytesSent = report.values['bytesSent'];
+            final bytesReceived = report.values['bytesReceived'];
+            final kind = report.values['kind'] ?? 'unknown';
+            if (bytesSent != null) {
+              debugPrint('📊 outbound-rtp ($kind): bytesSent=$bytesSent');
+            }
+            if (bytesReceived != null) {
+              debugPrint(
+                '📊 inbound-rtp ($kind): bytesReceived=$bytesReceived',
+              );
+            }
+          }
+        }
+      } catch (e) {
+        debugPrint('❌ Error getting stats: $e');
+      }
+    });
+    debugPrint('📊 Stats logger started');
+  }
+
+  /// Stop the stats logger
+  void _stopStatsLogger() {
+    _statsTimer?.cancel();
+    _statsTimer = null;
+    debugPrint('📊 Stats logger stopped');
+  }
 
   /// Dispose
   void dispose() {

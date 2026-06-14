@@ -31,8 +31,11 @@ dependencies:
   url_launcher: ^6.2.2
 
   # WebRTC for Audio Calling
-  flutter_webrtc: ^0.9.48
+  flutter_webrtc: ^0.12.12+hotfix.1
   sensors_plus: ^4.0.2
+  flutter_callkit_incoming: ^2.0.3
+  audioplayers: ^6.1.0
+  flutter_ringtone_player: ^4.0.0+4
 
   # Utilities
   intl: ^0.19.0
@@ -117,6 +120,7 @@ flutter:
   uses-material-design: true
   assets:
     - assets/icons/
+    - assets/audio/
 
   # To add assets to your application, add an assets section, like this:
   # assets:
