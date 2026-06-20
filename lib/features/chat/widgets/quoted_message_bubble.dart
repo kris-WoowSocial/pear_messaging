@@ -12,10 +12,10 @@ class QuotedMessageBubble extends StatelessWidget {
   final VoidCallback? onTap;
 
   const QuotedMessageBubble({
-    Key? key,
+    super.key,
     required this.replyTo,
     this.onTap,
-  }) : super(key: key);
+  });
 
   @override
   Widget build(BuildContext context) {

@@ -11,10 +11,10 @@ class ConnectionRequestItem extends StatefulWidget {
   final VoidCallback? onTap;
 
   const ConnectionRequestItem({
-    Key? key,
+    super.key,
     required this.request,
     this.onTap,
-  }) : super(key: key);
+  });
 
   @override
   State<ConnectionRequestItem> createState() => _ConnectionRequestItemState();

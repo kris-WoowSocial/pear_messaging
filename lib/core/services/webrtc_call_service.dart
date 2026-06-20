@@ -1,7 +1,9 @@
 import 'dart:async';
+import 'dart:io' show Platform;
 import 'package:flutter/foundation.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'call_foreground_service.dart';
 
 /// WebRTC Call Service - Manages peer-to-peer audio calls with E2EE
 class WebRTCCallService {
@@ -38,15 +40,26 @@ class WebRTCCallService {
   Function(String)? onLocalDescription; // Callback for SDP offer/answer
 
   // ICE servers configuration
+  // nginx proxies plain TCP on 443 to coturn 3478; relay-only forces TURN on both peers
   final Map<String, dynamic> _iceServers = {
     'iceServers': [
-      {'urls': 'stun:stun.l.google.com:19302'},
       {
-        'urls': 'turn:54.175.143.63:3478',
+        'urls': 'turn:turn.vant.chat:3478?transport=udp',
+        'username': 'vantchat',
+        'credential': 'Y9FA4x5PA2WDAMwBWfVClL5R7VyH8/BfRql9jTBNg54=',
+      },
+      {
+        'urls': 'turn:turn.vant.chat:3478?transport=tcp',
+        'username': 'vantchat',
+        'credential': 'Y9FA4x5PA2WDAMwBWfVClL5R7VyH8/BfRql9jTBNg54=',
+      },
+      {
+        'urls': 'turn:turn.vant.chat:443?transport=tcp',
         'username': 'vantchat',
         'credential': 'Y9FA4x5PA2WDAMwBWfVClL5R7VyH8/BfRql9jTBNg54=',
       },
     ],
+    'iceTransportPolicy': 'relay',
   };
 
   /// Initialize the call service
@@ -188,6 +201,13 @@ class WebRTCCallService {
 
   /// Create peer connection with ICE servers
   Future<void> _createPeerConnection() async {
+    debugPrint(
+      '🔧 Creating peer connection with ICE servers: ${_iceServers['iceServers'].length} servers',
+    );
+    for (var i = 0; i < _iceServers['iceServers'].length; i++) {
+      final server = _iceServers['iceServers'][i];
+      debugPrint('  ICE Server $i: ${server['urls']}');
+    }
     _peerConnection = await createPeerConnection(_iceServers);
 
     // Handle ICE candidates
@@ -221,6 +241,8 @@ class WebRTCCallService {
           onCallStateChange?.call('connected');
           _startDurationTimer();
           _startStatsLogger();
+          Helper.setSpeakerphoneOn(false);
+          if (Platform.isAndroid) CallForegroundService().start();
           break;
         case RTCPeerConnectionState.RTCPeerConnectionStateDisconnected:
           debugPrint('📞 WebRTC DISCONNECTED');
@@ -305,8 +327,7 @@ class WebRTCCallService {
   /// Toggle speaker
   void toggleSpeaker() {
     _isSpeakerOn = !_isSpeakerOn;
-    // Note: Speaker toggle requires platform-specific implementation
-    // This is a placeholder - actual implementation depends on platform
+    Helper.setSpeakerphoneOn(_isSpeakerOn);
     debugPrint('📞 Speaker toggled: $_isSpeakerOn');
   }
 
@@ -357,6 +378,8 @@ class WebRTCCallService {
     _peerConnection = null;
 
     onCallEnded?.call(_currentCallId ?? '');
+
+    if (Platform.isAndroid) CallForegroundService().stop();
 
     _currentCallId = null;
     _remoteDeviceId = null;

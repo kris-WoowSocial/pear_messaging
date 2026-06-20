@@ -1,12 +1,12 @@
-import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_stripe/flutter_stripe.dart';
 import 'package:get/get.dart';
 import 'api_service.dart';
+import '../constants/security_constants.dart';
 
 class StripeService extends GetxService {
   static const String _stripePublishableKey =
-      'pk_live_51TOkyVIC9vv7zpPxQHj0TE6JA9qRW0RlLQBR0gLsLJqxVwWSObl0uwbTIRzwemrTvgNY8y2mMPhdEB93HIERXhzg00lr6lYUqD';
+      SecurityConstants.stripePublishableKey;
 
   final RxBool isAvailable = false.obs;
   final RxBool isLoading = false.obs;
@@ -15,9 +15,9 @@ class StripeService extends GetxService {
     try {
       Stripe.publishableKey = _stripePublishableKey;
       isAvailable.value = true;
-      print('✅ Stripe Service initialized');
+      debugPrint('✅ Stripe Service initialized');
     } catch (e) {
-      print('❌ Failed to initialize Stripe Service: $e');
+      debugPrint('❌ Failed to initialize Stripe Service: $e');
       isAvailable.value = false;
     }
     return this;
@@ -37,10 +37,10 @@ class StripeService extends GetxService {
           planId: planId,
           amount: amount,
           currency: currency);
-      print('✅ Payment intent created: ${data['paymentIntentId']}');
+      debugPrint('✅ Payment intent created: ${data['paymentIntentId']}');
       return data;
     } catch (e) {
-      print('❌ Error creating payment intent: $e');
+      debugPrint('❌ Error creating payment intent: $e');
       rethrow;
     } finally {
       isLoading.value = false;
@@ -68,10 +68,10 @@ class StripeService extends GetxService {
       // Confirm payment
       await Stripe.instance.presentPaymentSheet();
 
-      print('✅ Payment confirmed: $paymentIntentId');
+      debugPrint('✅ Payment confirmed: $paymentIntentId');
       return true;
     } catch (e) {
-      print('❌ Payment confirmation failed: $e');
+      debugPrint('❌ Payment confirmation failed: $e');
       rethrow;
     } finally {
       isLoading.value = false;
@@ -98,10 +98,10 @@ class StripeService extends GetxService {
         countryCode: countryCode,
         cardCountry: cardCountry,
       );
-      print('✅ Purchase recorded: ${data['success']}');
+      debugPrint('✅ Purchase recorded: ${data['success']}');
       return data['success'] ?? false;
     } catch (e) {
-      print('❌ Error recording purchase: $e');
+      debugPrint('❌ Error recording purchase: $e');
       rethrow;
     }
   }
@@ -145,7 +145,7 @@ class StripeService extends GetxService {
 
       return true;
     } catch (e) {
-      print('❌ Stripe purchase failed: $e');
+      debugPrint('❌ Stripe purchase failed: $e');
       rethrow;
     }
   }

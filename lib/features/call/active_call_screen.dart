@@ -15,8 +15,9 @@ class ActiveCallScreen extends StatelessWidget {
       backgroundColor: Colors.black,
       body: Obx(() {
         // Dim screen when near ear (proximity sensor)
-        final isDimmed = controller.isNearEar.value && !controller.isSpeakerOn.value;
-        
+        final isDimmed =
+            controller.isNearEar.value && !controller.isSpeakerOn.value;
+
         return AnimatedOpacity(
           opacity: isDimmed ? 0.1 : 1.0,
           duration: const Duration(milliseconds: 300),
@@ -35,7 +36,7 @@ class ActiveCallScreen extends StatelessWidget {
         children: [
           // Top section - Contact info and E2EE indicator
           Expanded(
-            flex: 2,
+            flex: 1,
             child: Center(
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
@@ -61,15 +62,15 @@ class ActiveCallScreen extends StatelessWidget {
                   const SizedBox(height: 24),
                   // Contact name
                   Obx(() => Text(
-                    controller.remoteDeviceId.value.isNotEmpty
-                        ? controller.remoteDeviceId.value
-                        : 'Unknown',
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 32,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  )),
+                        controller.remoteDisplayName.value.isNotEmpty
+                            ? controller.remoteDisplayName.value
+                            : 'Unknown',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 32,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      )),
                   const SizedBox(height: 8),
                   // E2EE indicator
                   Row(
@@ -94,13 +95,13 @@ class ActiveCallScreen extends StatelessWidget {
                   const SizedBox(height: 24),
                   // Call duration
                   Obx(() => Text(
-                    controller.callDuration.value,
-                    style: const TextStyle(
-                      color: Colors.white70,
-                      fontSize: 24,
-                      fontWeight: FontWeight.w300,
-                    ),
-                  )),
+                        controller.callDuration.value,
+                        style: const TextStyle(
+                          color: Colors.white70,
+                          fontSize: 24,
+                          fontWeight: FontWeight.w300,
+                        ),
+                      )),
                 ],
               ),
             ),

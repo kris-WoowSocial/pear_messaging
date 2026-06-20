@@ -49,9 +49,7 @@ class QRScannerController extends GetxController {
       String? deviceId = await QRService.validateQRData(qrData);
 
       // 2. Fall back to URL format: https://vant.chat/chat?device_id=XXXX
-      if (deviceId == null) {
-        deviceId = _extractDeviceIdFromUrl(qrData);
-      }
+      deviceId ??= _extractDeviceIdFromUrl(qrData);
 
       if (deviceId != null) {
         // Valid QR code - initialize chat and navigate

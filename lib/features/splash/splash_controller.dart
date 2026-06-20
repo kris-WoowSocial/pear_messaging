@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
+import '../../core/constants/network_constants.dart';
 import '../../core/services/local_auth_service.dart';
 import '../../core/services/local_storage_service.dart';
 import '../../core/services/invitation_storage_service.dart';
@@ -89,7 +90,7 @@ class SplashController extends GetxController {
 
   /// Open Terms of Service in external browser
   Future<void> openTermsOfService() async {
-    final Uri url = Uri.parse('https://vant.chat/terms.html');
+    final Uri url = Uri.parse(NetworkConstants.termsUrl);
     try {
       debugPrint('🌐 Attempting to launch URL: $url');
 
@@ -133,7 +134,7 @@ class SplashController extends GetxController {
 
   /// Open Privacy Policy in external browser
   Future<void> openPrivacyPolicy() async {
-    final Uri url = Uri.parse('https://vant.chat/privacy-policy.html');
+    final Uri url = Uri.parse(NetworkConstants.privacyPolicyUrl);
     try {
       debugPrint('🌐 Attempting to launch URL: $url');
 
@@ -229,7 +230,8 @@ class SplashController extends GetxController {
       final currentRoute = Get.currentRoute;
       if (currentRoute == AppRoutes.chat) {
         debugPrint(
-            '📋 Already in chat route, skipping pending invitation processing');
+          '📋 Already in chat route, skipping pending invitation processing',
+        );
         // Clear any pending invitation since navigation already happened
         if (Get.isRegistered<InvitationStorageService>()) {
           final invitationService = Get.find<InvitationStorageService>();
@@ -245,15 +247,17 @@ class SplashController extends GetxController {
       while (!Get.isRegistered<InvitationStorageService>() &&
           retries < maxRetries) {
         debugPrint(
-            '📋 Waiting for InvitationStorageService... (${retries + 1}/$maxRetries)');
+          '📋 Waiting for InvitationStorageService... (${retries + 1}/$maxRetries)',
+        );
         await Future.delayed(const Duration(milliseconds: 300));
         retries++;
       }
 
       if (!Get.isRegistered<InvitationStorageService>()) {
         debugPrint(
-            '⚠️ InvitationStorageService not available after waiting, navigating to chat list');
-        Get.offAllNamed(AppRoutes.chatList);
+          '⚠️ InvitationStorageService not available after waiting, navigating to chat list',
+        );
+        Get.offAllNamed(AppRoutes.main);
         return;
       }
 
@@ -263,7 +267,8 @@ class SplashController extends GetxController {
       // This handles deferred deep linking where Branch SDK needs time to process the link
       if (!invitationService.hasPendingInvitation()) {
         debugPrint(
-            '📋 No pending invitation yet, waiting for BranchService to process...');
+          '📋 No pending invitation yet, waiting for BranchService to process...',
+        );
         await Future.delayed(const Duration(milliseconds: 1500));
       }
 
@@ -271,7 +276,8 @@ class SplashController extends GetxController {
 
       if (pendingInvitation != null) {
         debugPrint(
-            '📋 Found pending invitation during splash: ${pendingInvitation['deviceId']}');
+          '📋 Found pending invitation during splash: ${pendingInvitation['deviceId']}',
+        );
 
         // Create a connection request and navigate to chat list (NOT directly to chat)
         // The user should see a connection request card and choose to accept/reject
@@ -283,24 +289,28 @@ class SplashController extends GetxController {
           final existingChat = _storageService.getChat(deviceId);
           if (existingChat != null) {
             debugPrint(
-                '📋 Chat already exists for device $deviceId, clearing pending invitation');
+              '📋 Chat already exists for device $deviceId, clearing pending invitation',
+            );
             invitationService.clearPendingInvitation();
-            Get.offAllNamed(AppRoutes.chatList);
+            Get.offAllNamed(AppRoutes.main);
             return;
           }
 
           // Enhanced validation: Check if connection request already exists
           final existingRequests =
               _storageService.getPendingConnectionRequests();
-          final hasExistingRequest = existingRequests.any((request) =>
-              request.senderDeviceId == deviceId ||
-              request.receiverDeviceId == deviceId);
+          final hasExistingRequest = existingRequests.any(
+            (request) =>
+                request.senderDeviceId == deviceId ||
+                request.receiverDeviceId == deviceId,
+          );
 
           if (hasExistingRequest) {
             debugPrint(
-                '📋 Connection request already exists for device $deviceId, clearing pending invitation');
+              '📋 Connection request already exists for device $deviceId, clearing pending invitation',
+            );
             invitationService.clearPendingInvitation();
-            Get.offAllNamed(AppRoutes.chatList);
+            Get.offAllNamed(AppRoutes.main);
             return;
           }
 
@@ -324,17 +334,17 @@ class SplashController extends GetxController {
           invitationService.clearPendingInvitation();
 
           // Navigate to chat list to show the connection request card
-          Get.offAllNamed(AppRoutes.chatList);
+          Get.offAllNamed(AppRoutes.main);
           debugPrint('✅ Navigated to chat list with connection request');
         } catch (e) {
           debugPrint('⚠️ Error creating connection request: $e');
           // Fallback: navigate to chat list anyway
           invitationService.clearPendingInvitation();
-          Get.offAllNamed(AppRoutes.chatList);
+          Get.offAllNamed(AppRoutes.main);
         }
       } else {
         // No pending invitation, navigate to chat list normally
-        Get.offAllNamed(AppRoutes.chatList);
+        Get.offAllNamed(AppRoutes.main);
         debugPrint('🏠 Navigating to chat list (no pending invitation)');
 
         // Auto-trigger review dialog after navigation (for testing)
@@ -343,7 +353,7 @@ class SplashController extends GetxController {
     } catch (e) {
       debugPrint('⚠️ Error checking pending invitations: $e');
       // Fallback to normal navigation
-      Get.offAllNamed(AppRoutes.chatList);
+      Get.offAllNamed(AppRoutes.main);
       debugPrint('🏠 Fallback: Navigating to chat list');
 
       // Auto-trigger review dialog after navigation (for testing)

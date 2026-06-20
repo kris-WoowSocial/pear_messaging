@@ -9,11 +9,11 @@ class ReplyPreviewBar extends StatelessWidget {
   final VoidCallback? onTap;
 
   const ReplyPreviewBar({
-    Key? key,
+    super.key,
     required this.replyTo,
     required this.onCancel,
     this.onTap,
-  }) : super(key: key);
+  });
 
   @override
   Widget build(BuildContext context) {

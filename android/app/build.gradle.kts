@@ -47,6 +47,22 @@ android {
         versionName = flutter.versionName
     }
 
+    flavorDimensions += "env"
+
+    productFlavors {
+        create("dev") {
+            dimension = "env"
+            applicationIdSuffix = ".dev"
+            versionNameSuffix = "-dev"
+            resValue("string", "app_name", "Vant Chat Dev")
+        }
+        create("prod") {
+            dimension = "env"
+            // no suffix - keeps applicationId = com.vant.chat (existing production id)
+            resValue("string", "app_name", "Vant Chat")
+        }
+    }
+
     signingConfigs {
         create("release") {
             keyAlias = keystoreProperties["keyAlias"] as String?

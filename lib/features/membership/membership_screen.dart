@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../../core/constants/app_colors.dart';
+import '../../core/constants/network_constants.dart';
 import '../../core/services/membership_service.dart';
 import '../../core/services/region_service.dart';
 import '../../core/services/crypto_service.dart';
@@ -14,13 +15,8 @@ class MembershipScreen extends GetView<MembershipController> {
   @override
   Widget build(BuildContext context) {
     final membershipService = Get.find<MembershipService>();
-    final regionService = Get.find<RegionService>();
 
-    // Determine pricing based on payment method
-    final paymentMethod = regionService.getPaymentMethod();
-    final region =
-        paymentMethod == 'stripe' ? 'HighPrice' : regionService.region;
-    final pricing = PricingConfig.getPricingForRegion(region);
+    final pricing = PricingConfig.globalPricing;
 
     return Scaffold(
       backgroundColor: const Color(0xFF0A0A0F),
@@ -41,8 +37,10 @@ class MembershipScreen extends GetView<MembershipController> {
               children: [
                 // Custom AppBar
                 Padding(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 8,
+                  ),
                   child: Row(
                     children: [
                       IconButton(
@@ -70,39 +68,47 @@ class MembershipScreen extends GetView<MembershipController> {
                         _buildPaymentMethodSelection(),
                         const SizedBox(height: 24),
                         // Plan cards
-                        Obx(() => _buildPlanCard(
-                              planId: '6_months',
-                              title: '6 Months',
-                              price: pricing.sixMonthDisplay,
-                              period: '/ 6 months',
-                              perMonth: _calculatePerMonth(
-                                  pricing.sixMonthPrice,
-                                  6,
-                                  pricing.currencySymbol),
-                              isPopular: false,
-                              isSelected:
-                                  controller.selectedPlan.value == '6_months',
-                              onTap: () => controller.purchasePlan('6_months'),
-                              isProcessing: controller.isProcessing.value &&
-                                  controller.selectedPlan.value == '6_months',
-                              termsAccepted: controller.termsAccepted.value,
-                            )),
+                        Obx(
+                          () => _buildPlanCard(
+                            planId: '6_months',
+                            title: '6 Months',
+                            price: pricing.sixMonthDisplay,
+                            period: '/ 6 months',
+                            perMonth: _calculatePerMonth(
+                              pricing.sixMonthPrice,
+                              6,
+                              pricing.currencySymbol,
+                            ),
+                            isPopular: false,
+                            isSelected:
+                                controller.selectedPlan.value == '6_months',
+                            onTap: () => controller.purchasePlan('6_months'),
+                            isProcessing: controller.isProcessing.value &&
+                                controller.selectedPlan.value == '6_months',
+                            termsAccepted: controller.termsAccepted.value,
+                          ),
+                        ),
                         const SizedBox(height: 16),
-                        Obx(() => _buildPlanCard(
-                              planId: '1_year',
-                              title: '1 Year',
-                              price: pricing.oneYearDisplay,
-                              period: '/ year',
-                              perMonth: _calculatePerMonth(pricing.oneYearPrice,
-                                  12, pricing.currencySymbol),
-                              isPopular: true,
-                              isSelected:
-                                  controller.selectedPlan.value == '1_year',
-                              onTap: () => controller.purchasePlan('1_year'),
-                              isProcessing: controller.isProcessing.value &&
-                                  controller.selectedPlan.value == '1_year',
-                              termsAccepted: controller.termsAccepted.value,
-                            )),
+                        Obx(
+                          () => _buildPlanCard(
+                            planId: '1_year',
+                            title: '1 Year',
+                            price: pricing.oneYearDisplay,
+                            period: '/ year',
+                            perMonth: _calculatePerMonth(
+                              pricing.oneYearPrice,
+                              12,
+                              pricing.currencySymbol,
+                            ),
+                            isPopular: true,
+                            isSelected:
+                                controller.selectedPlan.value == '1_year',
+                            onTap: () => controller.purchasePlan('1_year'),
+                            isProcessing: controller.isProcessing.value &&
+                                controller.selectedPlan.value == '1_year',
+                            termsAccepted: controller.termsAccepted.value,
+                          ),
+                        ),
                         const SizedBox(height: 36),
                         // Features
                         _buildFeaturesSection(),
@@ -117,34 +123,37 @@ class MembershipScreen extends GetView<MembershipController> {
                         Text(
                           'Payment processed via App Store/Google Play. Manage subscription from your profile.',
                           style: TextStyle(
-                              fontSize: 11,
-                              color: Colors.white.withOpacity(0.35)),
+                            fontSize: 11,
+                            color: Colors.white.withOpacity(0.35),
+                          ),
                           textAlign: TextAlign.center,
                         ),
                         const SizedBox(height: 20),
                         // Restore Purchases Button
-                        Obx(() => TextButton(
-                              onPressed: controller.isRestoring.value
-                                  ? null
-                                  : () => controller.restorePurchases(),
-                              child: controller.isRestoring.value
-                                  ? const SizedBox(
-                                      width: 16,
-                                      height: 16,
-                                      child: CircularProgressIndicator(
-                                        strokeWidth: 2,
-                                        color: Colors.white54,
-                                      ),
-                                    )
-                                  : Text(
-                                      'Restore Purchases',
-                                      style: TextStyle(
-                                        fontSize: 13,
-                                        color: Colors.white.withOpacity(0.6),
-                                        decoration: TextDecoration.underline,
-                                      ),
+                        Obx(
+                          () => TextButton(
+                            onPressed: controller.isRestoring.value
+                                ? null
+                                : () => controller.restorePurchases(),
+                            child: controller.isRestoring.value
+                                ? const SizedBox(
+                                    width: 16,
+                                    height: 16,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                      color: Colors.white54,
                                     ),
-                            )),
+                                  )
+                                : Text(
+                                    'Restore Purchases',
+                                    style: TextStyle(
+                                      fontSize: 13,
+                                      color: Colors.white.withOpacity(0.6),
+                                      decoration: TextDecoration.underline,
+                                    ),
+                                  ),
+                          ),
+                        ),
                         const SizedBox(height: 16),
                       ],
                     ),
@@ -263,7 +272,7 @@ class MembershipScreen extends GetView<MembershipController> {
                     color: AppColors.primary.withOpacity(0.25),
                     blurRadius: 20,
                     offset: const Offset(0, 6),
-                  )
+                  ),
                 ]
               : [],
         ),
@@ -274,8 +283,10 @@ class MembershipScreen extends GetView<MembershipController> {
                 top: 0,
                 right: 16,
                 child: Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 5,
+                  ),
                   decoration: BoxDecoration(
                     color: AppColors.primary,
                     borderRadius: const BorderRadius.vertical(
@@ -478,10 +489,12 @@ class MembershipScreen extends GetView<MembershipController> {
           Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              _buildLegalLink('Terms of Use', 'https://vant.chat/api/terms'),
+              _buildLegalLink('Terms of Use', NetworkConstants.termsUrl),
               const SizedBox(width: 20),
               _buildLegalLink(
-                  'Privacy Policy', 'https://vant.chat/privacy-policy.html'),
+                'Privacy Policy',
+                NetworkConstants.privacyPolicyUrl,
+              ),
             ],
           ),
         ],
@@ -521,11 +534,7 @@ class MembershipScreen extends GetView<MembershipController> {
                     : Colors.transparent,
               ),
               child: controller.termsAccepted.value
-                  ? const Icon(
-                      Icons.check,
-                      color: Colors.black,
-                      size: 14,
-                    )
+                  ? const Icon(Icons.check, color: Colors.black, size: 14)
                   : null,
             ),
           ),
@@ -549,10 +558,12 @@ class MembershipScreen extends GetView<MembershipController> {
                     WidgetSpan(
                       child: InkWell(
                         onTap: () async {
-                          final uri = Uri.parse('https://vant.chat/api/terms');
+                          final uri = Uri.parse(NetworkConstants.termsUrl);
                           if (await canLaunchUrl(uri)) {
-                            await launchUrl(uri,
-                                mode: LaunchMode.externalApplication);
+                            await launchUrl(
+                              uri,
+                              mode: LaunchMode.externalApplication,
+                            );
                           }
                         },
                         child: Text(
@@ -575,11 +586,13 @@ class MembershipScreen extends GetView<MembershipController> {
                     WidgetSpan(
                       child: InkWell(
                         onTap: () async {
-                          final uri = Uri.parse(
-                              'https://vant.chat/privacy-policy.html');
+                          final uri =
+                              Uri.parse(NetworkConstants.privacyPolicyUrl);
                           if (await canLaunchUrl(uri)) {
-                            await launchUrl(uri,
-                                mode: LaunchMode.externalApplication);
+                            await launchUrl(
+                              uri,
+                              mode: LaunchMode.externalApplication,
+                            );
                           }
                         },
                         child: Text(
@@ -625,29 +638,30 @@ class MembershipScreen extends GetView<MembershipController> {
             ),
           ),
           const SizedBox(height: 12),
-          Obx(() => Row(
-                children: [
-                  _buildPaymentMethodChip(
-                    label: 'Crypto',
-                    icon: Icons.currency_bitcoin,
-                    value: 'crypto',
-                    selected:
-                        controller.selectedPaymentMethod.value == 'crypto',
-                  ),
-                  const SizedBox(width: 8),
-                  _buildPaymentMethodChip(
-                    label: regionService.getPaymentMethod() == 'stripe'
-                        ? 'Card'
-                        : 'Google Pay',
-                    icon: regionService.getPaymentMethod() == 'stripe'
-                        ? Icons.credit_card
-                        : Icons.payment,
-                    value: regionService.getPaymentMethod(),
-                    selected: controller.selectedPaymentMethod.value ==
-                        regionService.getPaymentMethod(),
-                  ),
-                ],
-              )),
+          Obx(
+            () => Row(
+              children: [
+                _buildPaymentMethodChip(
+                  label: 'Crypto',
+                  icon: Icons.currency_bitcoin,
+                  value: 'crypto',
+                  selected: controller.selectedPaymentMethod.value == 'crypto',
+                ),
+                const SizedBox(width: 8),
+                _buildPaymentMethodChip(
+                  label: regionService.getPaymentMethod() == 'stripe'
+                      ? 'Card'
+                      : 'Google Pay',
+                  icon: regionService.getPaymentMethod() == 'stripe'
+                      ? Icons.credit_card
+                      : Icons.payment,
+                  value: regionService.getPaymentMethod(),
+                  selected: controller.selectedPaymentMethod.value ==
+                      regionService.getPaymentMethod(),
+                ),
+              ],
+            ),
+          ),
           // Show coin selection when crypto is selected
           Obx(() {
             if (controller.selectedPaymentMethod.value == 'crypto') {
@@ -789,10 +803,7 @@ class MembershipScreen extends GetView<MembershipController> {
         ),
         content: const Text(
           'Please accept the Terms of Use and Privacy Policy to continue with your purchase.',
-          style: TextStyle(
-            color: Colors.white70,
-            fontSize: 14,
-          ),
+          style: TextStyle(color: Colors.white70, fontSize: 14),
         ),
         actions: [
           TextButton(

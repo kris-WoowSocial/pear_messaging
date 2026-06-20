@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'api_service.dart';
 
@@ -17,17 +18,19 @@ class RegionService extends GetxService {
       final countryCode = data['countryCode'] ?? 'US';
       currentCountryCode.value = countryCode;
       currentRegion.value = _mapCountryToRegion(countryCode);
-      print('🌍 IP-based country detection: $countryCode');
-      print('🌍 Payment method: ${getPaymentMethod()}');
+      debugPrint('🌍 IP-based country detection: $countryCode');
+      debugPrint('🌍 Payment method: ${getPaymentMethod()}');
     } catch (e) {
-      print('❌ IP-based detection failed, falling back to device locale: $e');
+      debugPrint(
+        '❌ IP-based detection failed, falling back to device locale: $e',
+      );
       _fallbackToDeviceLocale();
     }
   }
 
   void _fallbackToDeviceLocale() {
     final locale = Platform.localeName;
-    print('🌍 Fallback - Device locale: $locale');
+    debugPrint('🌍 Fallback - Device locale: $locale');
 
     String countryCode = 'US';
     if (locale.contains('_')) {
@@ -36,8 +39,8 @@ class RegionService extends GetxService {
 
     currentCountryCode.value = countryCode;
     currentRegion.value = _mapCountryToRegion(countryCode);
-    print('🌍 Fallback - Detected country code: $countryCode');
-    print('🌍 Payment method: ${getPaymentMethod()}');
+    debugPrint('🌍 Fallback - Detected country code: $countryCode');
+    debugPrint('🌍 Payment method: ${getPaymentMethod()}');
   }
 
   String _mapCountryToRegion(String countryCode) {
@@ -97,9 +100,6 @@ class RegionService extends GetxService {
   String get countryCode => currentCountryCode.value;
 
   String getPaymentMethod() {
-    final lowPriceCountries = ['US', 'IN', 'CA', 'BD'];
-    return lowPriceCountries.contains(currentCountryCode.value)
-        ? 'google_play'
-        : 'stripe';
+    return 'stripe';
   }
 }

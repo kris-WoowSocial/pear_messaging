@@ -75,7 +75,7 @@ class CryptoService extends GetxService {
 
   Future<CryptoService> init() async {
     isAvailable.value = true;
-    print('✅ Multi-Coin Crypto Service initialized');
+    debugPrint('✅ Multi-Coin Crypto Service initialized');
     return this;
   }
 
@@ -148,7 +148,8 @@ class CryptoService extends GetxService {
         countryCode: countryCode,
         coin: selectedCrypto.name,
       );
-      print('✅ ${selectedCrypto.label} address generated: ${data['address']}');
+      debugPrint(
+          '✅ ${selectedCrypto.label} address generated: ${data['address']}');
 
       currentAddress.value = data['address'];
       amount.value = ((data['amount'] ??
@@ -168,7 +169,7 @@ class CryptoService extends GetxService {
 
       return data;
     } catch (e) {
-      print('❌ Error generating crypto address: $e');
+      debugPrint('❌ Error generating crypto address: $e');
       rethrow;
     } finally {
       isLoading.value = false;
@@ -193,11 +194,11 @@ class CryptoService extends GetxService {
         expiryDate.value = data['expiryDate'];
       }
 
-      print(
+      debugPrint(
           '✅ Payment status: ${data['status']}, confirmations: ${data['confirmations']}');
       return data;
     } catch (e) {
-      print('❌ Error checking payment status: $e');
+      debugPrint('❌ Error checking payment status: $e');
       rethrow;
     }
   }
@@ -207,21 +208,21 @@ class CryptoService extends GetxService {
     stopPolling(); // Stop any existing timer
     final selectedCrypto = coin ?? selectedCoin.value;
 
-    print('🔄 Starting ${selectedCrypto.label} payment polling');
+    debugPrint('🔄 Starting ${selectedCrypto.label} payment polling');
 
     _pollingTimer = Timer.periodic(_pollingInterval, (timer) async {
       try {
         final status = await checkPaymentStatus(deviceId, coin: selectedCrypto);
 
         if (status['status'] == 'active' || status['status'] == 'confirmed') {
-          print('✅ Payment confirmed via polling!');
+          debugPrint('✅ Payment confirmed via polling!');
           stopPolling();
         } else if (status['status'] == 'expired') {
-          print('⏰ Payment address expired');
+          debugPrint('⏰ Payment address expired');
           stopPolling();
         }
       } catch (e) {
-        print('⚠️ Polling error: $e');
+        debugPrint('⚠️ Polling error: $e');
       }
     });
   }
@@ -231,7 +232,7 @@ class CryptoService extends GetxService {
     if (_pollingTimer != null) {
       _pollingTimer!.cancel();
       _pollingTimer = null;
-      print('⏹️ Stopped crypto payment polling');
+      debugPrint('⏹️ Stopped crypto payment polling');
     }
   }
 

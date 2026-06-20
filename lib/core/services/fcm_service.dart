@@ -153,10 +153,10 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
       AndroidInitializationSettings('@drawable/ic_stat_ic_notification');
   const DarwinInitializationSettings initializationSettingsIOS =
       DarwinInitializationSettings(
-        requestAlertPermission: true,
-        requestBadgePermission: true,
-        requestSoundPermission: true,
-      );
+    requestAlertPermission: true,
+    requestBadgePermission: true,
+    requestSoundPermission: true,
+  );
   const InitializationSettings initializationSettings = InitializationSettings(
     android: initializationSettingsAndroid,
     iOS: initializationSettingsIOS,
@@ -178,15 +178,16 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
     showBadge: true,
   );
 
-  final androidPlugin = flutterLocalNotificationsPlugin
-      .resolvePlatformSpecificImplementation<
-        AndroidFlutterLocalNotificationsPlugin
-      >();
+  final androidPlugin =
+      flutterLocalNotificationsPlugin.resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin>();
   await androidPlugin?.createNotificationChannel(androidChannel);
 
-  // Handle incoming call notifications - show native CallKit UI
-  if (message.data['type'] == 'incoming_call') {
-    debugPrint('📞 Background: Incoming call received, showing CallKit UI');
+  // Handle incoming call notifications and cancellations via CallKitService
+  if (message.data['type'] == 'incoming_call' ||
+      message.data['type'] == 'call_cancelled') {
+    debugPrint(
+        '📞 Background: call-related message (${message.data['type']}), delegating to CallKitService');
     await CallKitService.handleBackgroundMessage(message);
     return;
   }
@@ -281,8 +282,7 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
     await storageService.init();
 
     final messageId = message.data['messageId'] ?? '';
-    final timestampMs =
-        int.tryParse(message.data['timestamp'] ?? '') ??
+    final timestampMs = int.tryParse(message.data['timestamp'] ?? '') ??
         DateTime.now().millisecondsSinceEpoch;
     final encryptedContent = message.data['originalMessage'] ?? '';
 
@@ -385,9 +385,8 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
         final chat = storageService.getChat(senderId);
         if (chat != null) {
           final updatedChat = chat.copyWith(
-            lastMessage: msgType == MessageType.image
-                ? '📷 Photo'
-                : contentToStore,
+            lastMessage:
+                msgType == MessageType.image ? '📷 Photo' : contentToStore,
             lastMessageTime: DateTime.fromMillisecondsSinceEpoch(timestampMs),
           );
           await storageService.saveChat(updatedChat);
@@ -397,9 +396,8 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
           final newChat = ChatEntity(
             id: senderId,
             userName: senderId, // Will be updated when user opens chat
-            lastMessage: msgType == MessageType.image
-                ? '📷 Photo'
-                : contentToStore,
+            lastMessage:
+                msgType == MessageType.image ? '📷 Photo' : contentToStore,
             lastMessageTime: DateTime.fromMillisecondsSinceEpoch(timestampMs),
             unreadCount: 0, // Will be recalculated when app opens
           );
@@ -435,6 +433,10 @@ class FCMService extends GetxService {
   /// The device ID of the chat currently open on screen.
   /// Foreground notifications are suppressed for this sender.
   static String? activeChatId;
+
+  /// Dedup guard: tracks the last callId shown via CallKit to avoid
+  /// double-triggering when both FCM and socket INCOMING_CALL arrive.
+  static String? _lastShownCallId;
 
   /// Global app foreground state to suppress iOS notifications when app is open
   static bool isAppInForeground = false;
@@ -497,10 +499,9 @@ class FCMService extends GetxService {
       );
 
       // Register both channels
-      final androidPlugin = _notifications
-          .resolvePlatformSpecificImplementation<
-            AndroidFlutterLocalNotificationsPlugin
-          >();
+      final androidPlugin =
+          _notifications.resolvePlatformSpecificImplementation<
+              AndroidFlutterLocalNotificationsPlugin>();
       await androidPlugin?.createNotificationChannel(highImportanceChannel);
       await androidPlugin?.createNotificationChannel(disabledChannel);
       debugPrint('✅ Notifications initialized');
@@ -627,16 +628,35 @@ class FCMService extends GetxService {
     );
     debugPrint('📱 Firebase notification body: ${message.notification?.body}');
 
-    // Handle incoming call notification - show CallKit UI
-    if (message.data['type'] == 'incoming_call') {
+    // Handle call-related FCM messages
+    final msgType = message.data['type'];
+    final callId = message.data['callId'] ?? '';
+
+    if (msgType == 'call_cancelled') {
+      debugPrint(
+          '📞 Foreground: call_cancelled received, dismissing CallKit UI for $callId');
+      if (callId.isNotEmpty) {
+        await CallKitService.dismissCall(callId);
+      }
+      return;
+    }
+
+    if (msgType == 'incoming_call') {
+      // Dedup: don't double-trigger if socket INCOMING_CALL already showed the UI
+      if (callId.isNotEmpty && callId == _lastShownCallId) {
+        debugPrint(
+            '📞 Foreground: Dedup — CallKit UI already shown for $callId, skipping FCM');
+        return;
+      }
+      _lastShownCallId = callId;
       debugPrint('📞 Foreground: Incoming call received, showing CallKit UI');
       try {
         final callKitService = CallKitService();
         await callKitService.showIncomingCall(
-          callId: message.data['callId'] ?? '',
+          callId: callId,
           callerId: message.data['callerId'] ?? '',
           callerName: message.data['callerName'] ?? 'Unknown',
-          sdpOffer: message.data['sdpOffer'] ?? '',
+          // callerAvatarUrl: message.data['callerAvatarUrl'] ?? '',
         );
       } catch (e) {
         debugPrint('❌ Foreground: Error showing CallKit UI: $e');
@@ -655,8 +675,7 @@ class FCMService extends GetxService {
         final membershipService = Get.find();
         await (membershipService as dynamic).activateMembership(
           selectedPlan: planId,
-          purchaseId:
-              message.data['txHash'] ??
+          purchaseId: message.data['txHash'] ??
               'fcm_${DateTime.now().millisecondsSinceEpoch}',
         );
         debugPrint('✅ Membership activated from FCM: $planId');
@@ -681,8 +700,7 @@ class FCMService extends GetxService {
 
     // ── Persist to local DB (socket may be disconnected or slow) ──
     final messageId = message.data['messageId'] ?? '';
-    final timestampMs =
-        int.tryParse(message.data['timestamp'] ?? '') ??
+    final timestampMs = int.tryParse(message.data['timestamp'] ?? '') ??
         DateTime.now().millisecondsSinceEpoch;
     final encryptedContent = message.data['originalMessage'] ?? '';
 
@@ -826,9 +844,8 @@ class FCMService extends GetxService {
               final newChat = ChatEntity(
                 id: senderId,
                 userName: senderId, // Will be updated when user opens chat
-                lastMessage: msgType == MessageType.image
-                    ? '📷 Photo'
-                    : contentToStore,
+                lastMessage:
+                    msgType == MessageType.image ? '📷 Photo' : contentToStore,
                 lastMessageTime: DateTime.fromMillisecondsSinceEpoch(
                   timestampMs,
                 ),
@@ -935,14 +952,11 @@ class FCMService extends GetxService {
 
       // Register new token with socket if available
       if (_socketService != null) {
-        _socketService!
-            .registerFCMToken(token)
-            .then((_) {
-              debugPrint('✅ New FCM token registered with socket');
-            })
-            .catchError((e) {
-              debugPrint('❌ Error registering token with socket: $e');
-            });
+        _socketService!.registerFCMToken(token).then((_) {
+          debugPrint('✅ New FCM token registered with socket');
+        }).catchError((e) {
+          debugPrint('❌ Error registering token with socket: $e');
+        });
       }
     });
   }
@@ -1004,8 +1018,8 @@ class FCMService extends GetxService {
       debugPrint('🔔 DEBUG: payload created: $payload');
 
       final notificationId = DateTime.now().millisecondsSinceEpoch.remainder(
-        100000,
-      );
+            100000,
+          );
       debugPrint('🔔 DEBUG: notificationId: $notificationId');
 
       // Get current badge count for notification

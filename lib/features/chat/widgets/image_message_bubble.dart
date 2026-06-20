@@ -18,12 +18,12 @@ class ImageMessageBubble extends StatefulWidget {
   final VoidCallback? onTap;
 
   const ImageMessageBubble({
-    Key? key,
+    super.key,
     required this.mediaToken,
     this.expiryTimestamp,
     required this.isMe,
     this.onTap,
-  }) : super(key: key);
+  });
 
   @override
   State<ImageMessageBubble> createState() => _ImageMessageBubbleState();
@@ -140,7 +140,7 @@ class _ImageMessageBubbleState extends State<ImageMessageBubble> {
   }
 
   Widget _buildLoadingState() {
-    return Container(
+    return SizedBox(
       height: 200,
       child: Stack(
         children: [
@@ -233,7 +233,7 @@ class _ImageMessageBubbleState extends State<ImageMessageBubble> {
   }
 
   Widget _buildExpiredState() {
-    return Container(
+    return SizedBox(
       height: 150,
       child: Stack(
         children: [
@@ -270,7 +270,7 @@ class _ImageMessageBubbleState extends State<ImageMessageBubble> {
   }
 
   Widget _buildErrorState() {
-    return Container(
+    return SizedBox(
       height: 150,
       child: Stack(
         children: [
@@ -363,12 +363,12 @@ class CompactImagePreview extends StatelessWidget {
   final VoidCallback? onTap;
 
   const CompactImagePreview({
-    Key? key,
+    super.key,
     required this.mediaToken,
     this.expiryTimestamp,
     this.onRemove,
     this.onTap,
-  }) : super(key: key);
+  });
 
   @override
   Widget build(BuildContext context) {

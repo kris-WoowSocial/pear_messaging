@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'call_controller.dart';
+import '../../core/services/ringtone_service.dart';
 
 /// Incoming Call Screen - Full-screen overlay for incoming audio calls
 class IncomingCallScreen extends StatefulWidget {
@@ -41,7 +42,11 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
   @override
   Widget build(BuildContext context) {
     final callData = Get.arguments as Map<String, dynamic>?;
-    final callerId = callData?['callerId'] as String? ?? 'Unknown';
+    final callerId = callData?['callerId'] as String? ?? '';
+    final controller = Get.find<CallController>();
+    if (callerId.isNotEmpty && controller.remoteDisplayName.value.isEmpty) {
+      controller.resolveDisplayNamePublic(callerId);
+    }
 
     return Scaffold(
       backgroundColor: Colors.black,
@@ -83,14 +88,18 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
                     ),
                     const SizedBox(height: 32),
                     // Caller name
-                    Text(
-                      callerId,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 28,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
+                    Obx(() => Text(
+                          controller.remoteDisplayName.value.isNotEmpty
+                              ? controller.remoteDisplayName.value
+                              : (callerId.isNotEmpty
+                                  ? '@user_${callerId.substring(callerId.length >= 5 ? callerId.length - 5 : 0)}'
+                                  : 'Unknown'),
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 28,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        )),
                     const SizedBox(height: 8),
                     // Call status
                     const Text(
@@ -108,7 +117,8 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
             Expanded(
               flex: 1,
               child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 48, vertical: 32),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 48, vertical: 32),
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                   children: [
@@ -183,20 +193,38 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
   void _acceptCall(Map<String, dynamic>? callData) {
     if (callData == null) return;
 
-    final controller = Get.find<CallController>();
-    controller.acceptCall(callData);
+    // Stop ringtone
+    final ringtoneService = RingtoneService();
+    ringtoneService.stopRingtone();
 
-    // Navigate to active call screen
-    Get.offNamed('/call/active');
+    try {
+      final controller = Get.find<CallController>();
+      controller.acceptCall(callData);
+
+      // Navigate to active call screen
+      Get.offNamed('/call/active');
+    } catch (e) {
+      debugPrint('❌ Error accepting call: $e');
+      Get.back();
+    }
   }
 
   void _declineCall(Map<String, dynamic>? callData) {
     if (callData == null) return;
 
-    final controller = Get.find<CallController>();
-    controller.rejectCall(callData);
+    // Stop ringtone
+    final ringtoneService = RingtoneService();
+    ringtoneService.stopRingtone();
 
-    // Go back to previous screen
-    Get.back();
+    try {
+      final controller = Get.find<CallController>();
+      controller.rejectCall(callData);
+
+      // Go back to previous screen
+      Get.back();
+    } catch (e) {
+      debugPrint('❌ Error declining call: $e');
+      Get.back();
+    }
   }
 }

@@ -44,7 +44,7 @@ class MembershipService extends GetxService {
       }
     }
 
-    print(
+    debugPrint(
         '✅ MembershipService initialized - status: ${status.value}, daysInstalled: ${daysInstalled.value}');
     return this;
   }
@@ -109,7 +109,7 @@ class MembershipService extends GetxService {
     plan.value = selectedPlan;
     expiryDate.value = expiry;
 
-    print(
+    debugPrint(
         '✅ Membership activated: $selectedPlan, expires: $expiry, purchaseId: $purchaseId');
   }
 
@@ -135,9 +135,9 @@ class MembershipService extends GetxService {
       plan.value = selectedPlan;
       expiryDate.value = expiry;
 
-      print('✅ Membership restored: $selectedPlan, expires: $expiry');
+      debugPrint('✅ Membership restored: $selectedPlan, expires: $expiry');
     } else {
-      print('⚠️ Cannot restore - membership expired on $expiry');
+      debugPrint('⚠️ Cannot restore - membership expired on $expiry');
     }
   }
 
@@ -148,7 +148,7 @@ class MembershipService extends GetxService {
     status.value = 'free';
     plan.value = '';
     expiryDate.value = null;
-    print('⚠️ Membership expired');
+    debugPrint('⚠️ Membership expired');
   }
 
   String? get purchaseDateFormatted {

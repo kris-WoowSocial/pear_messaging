@@ -7,10 +7,10 @@ import 'onboarding_model.dart';
 
 class OnboardingController extends GetxController {
   final LocalStorageService _storageService = Get.find();
-  
+
   final PageController pageController = PageController();
   final RxInt currentPage = 0.obs;
-  
+
   final List<OnboardingModel> pages = [
     OnboardingModel(
       title: AppStrings.onboardingTitle1,
@@ -48,7 +48,7 @@ class OnboardingController extends GetxController {
 
   Future<void> completeOnboarding() async {
     await _storageService.setOnboardingCompleted(true);
-    Get.offAllNamed(AppRoutes.chatList);
+    Get.offAllNamed(AppRoutes.main);
   }
 
   @override

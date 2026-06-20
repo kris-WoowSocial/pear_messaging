@@ -71,18 +71,12 @@ class MembershipController extends GetxController {
       // Use the selected payment method
       if (selectedPaymentMethod.value == 'crypto') {
         await _purchaseWithCrypto(planId);
-      } else if (selectedPaymentMethod.value == 'stripe') {
-        // Determine payment method based on user's country
-        final paymentMethod = _regionService.getPaymentMethod();
-        final region =
-            paymentMethod == 'stripe' ? 'HighPrice' : _regionService.region;
-        final pricing = PricingConfig.getPricingForRegion(region);
+      } else {
+        // Always use Stripe with global pricing
+        final pricing = PricingConfig.globalPricing;
         final amount = pricing.getPriceForPlan(planId);
         final currency = pricing.currency;
         await _purchaseWithStripe(planId, amount, currency);
-      } else {
-        // Use Google Play for low-price countries
-        await _purchaseWithGooglePlay(planId);
       }
     } catch (e) {
       print('❌ Purchase failed: $e');
@@ -130,8 +124,10 @@ class MembershipController extends GetxController {
       );
 
       // Start polling for payment confirmation
-      _cryptoService.startPolling(deviceId,
-          coin: _cryptoService.selectedCoin.value);
+      _cryptoService.startPolling(
+        deviceId,
+        coin: _cryptoService.selectedCoin.value,
+      );
 
       // Navigate to crypto payment screen
       _showCryptoPaymentScreen(addressInfo, deviceId, planId);
@@ -142,27 +138,34 @@ class MembershipController extends GetxController {
   }
 
   void _showCryptoPaymentScreen(
-      Map<String, dynamic> addressInfo, String deviceId, String planId) {
-    Get.to(() => CryptoPaymentScreen(
-          address: addressInfo['address'],
-          amount: ((addressInfo['amount'] ??
-                  addressInfo['amountUSDT'] ??
-                  addressInfo['amountBTC'] ??
-                  addressInfo['amountETH'] ??
-                  0) as num)
-              .toDouble(),
-          currency: addressInfo['currency'] ??
-              _cryptoService.selectedCoin.value.symbol,
-          coin: _cryptoService.selectedCoin.value,
-          expiry: addressInfo['expiry'],
-          onPaymentConfirmed: () async {
-            _cryptoService.stopPolling();
-            await _handleCryptoPurchaseSuccess(planId);
-          },
-          onCancelled: () {
-            _cryptoService.stopPolling();
-          },
-        ));
+    Map<String, dynamic> addressInfo,
+    String deviceId,
+    String planId,
+  ) {
+    Get.to(
+      () => CryptoPaymentScreen(
+        address: addressInfo['address'],
+        amount:
+            ((addressInfo['amount'] ??
+                        addressInfo['amountUSDT'] ??
+                        addressInfo['amountBTC'] ??
+                        addressInfo['amountETH'] ??
+                        0)
+                    as num)
+                .toDouble(),
+        currency:
+            addressInfo['currency'] ?? _cryptoService.selectedCoin.value.symbol,
+        coin: _cryptoService.selectedCoin.value,
+        expiry: addressInfo['expiry'],
+        onPaymentConfirmed: () async {
+          _cryptoService.stopPolling();
+          await _handleCryptoPurchaseSuccess(planId);
+        },
+        onCancelled: () {
+          _cryptoService.stopPolling();
+        },
+      ),
+    );
   }
 
   Future<void> _handleCryptoPurchaseSuccess(String planId) async {
@@ -203,12 +206,16 @@ class MembershipController extends GetxController {
 
     final productId = _iapService.getProductIdFromPlanId(planId);
     debugPrint(
-        '🛒 Initiating Google Play purchase for plan: $planId, productId: $productId');
+      '🛒 Initiating Google Play purchase for plan: $planId, productId: $productId',
+    );
     await _iapService.purchaseProduct(productId);
   }
 
   Future<void> _purchaseWithStripe(
-      String planId, int amount, String currency) async {
+    String planId,
+    int amount,
+    String currency,
+  ) async {
     if (!_stripeService.isAvailable.value) {
       Get.snackbar(
         'Not Available',
@@ -229,7 +236,8 @@ class MembershipController extends GetxController {
     }
 
     debugPrint(
-        '🛒 Initiating Stripe purchase for plan: $planId, amount: $amount, currency: $currency');
+      '🛒 Initiating Stripe purchase for plan: $planId, amount: $amount, currency: $currency',
+    );
 
     final success = await _stripeService.purchase(
       deviceId: deviceId,
@@ -267,10 +275,12 @@ class MembershipController extends GetxController {
 
   void _handlePurchaseSuccess(PurchaseDetails purchaseDetails) async {
     debugPrint(
-        '✅ Purchase successful in controller: ${purchaseDetails.productID}');
+      '✅ Purchase successful in controller: ${purchaseDetails.productID}',
+    );
 
-    final planId =
-        _iapService.getPlanIdFromProductId(purchaseDetails.productID);
+    final planId = _iapService.getPlanIdFromProductId(
+      purchaseDetails.productID,
+    );
     final planLabel = planId == '1_year' ? '1-Year Plan' : '6-Month Plan';
 
     // Record Google Play purchase to backend
@@ -279,14 +289,16 @@ class MembershipController extends GetxController {
       final deviceId = storageService.deviceId;
 
       if (deviceId != null) {
-        final pricing =
-            PricingConfig.getPricingForRegion(_regionService.region);
+        final pricing = PricingConfig.getPricingForRegion(
+          _regionService.region,
+        );
         final amount = pricing.getPriceForPlan(planId);
 
         // TODO: Call backend to record Google Play purchase
         // This requires extracting Play Store account region from purchase token
         debugPrint(
-            '🛒 Recording Google Play purchase to backend: deviceId=$deviceId, planId=$planId, amount=$amount');
+          '🛒 Recording Google Play purchase to backend: deviceId=$deviceId, planId=$planId, amount=$amount',
+        );
       }
     } catch (e) {
       debugPrint('⚠️ Failed to record Google Play purchase to backend: $e');
@@ -294,7 +306,8 @@ class MembershipController extends GetxController {
 
     await _membershipService.activateMembership(
       selectedPlan: planId,
-      purchaseId: purchaseDetails.purchaseID ??
+      purchaseId:
+          purchaseDetails.purchaseID ??
           purchaseDetails.transactionDate ??
           'unknown',
     );
@@ -345,6 +358,12 @@ class MembershipController extends GetxController {
     }
     if (errorString.contains('Failed to create payment intent')) {
       return 'Unable to process payment. Please try again.';
+    }
+    if (errorString.contains('Crypto payment service unavailable')) {
+      return 'Crypto payment is not available. Please try Stripe instead.';
+    }
+    if (errorString.contains('wallet not configured')) {
+      return 'Crypto wallet not configured. Please try Stripe instead.';
     }
 
     // Default generic message
@@ -538,10 +557,7 @@ class _CryptoPaymentDialogState extends State<CryptoPaymentDialog> {
               child: Center(
                 child: Text(
                   'QR CODE\n(To be implemented)',
-                  style: TextStyle(
-                    color: Colors.black54,
-                    fontSize: 14,
-                  ),
+                  style: TextStyle(color: Colors.black54, fontSize: 14),
                   textAlign: TextAlign.center,
                 ),
               ),
@@ -587,51 +603,58 @@ class _CryptoPaymentDialogState extends State<CryptoPaymentDialog> {
             const SizedBox(height: 20),
 
             // Status
-            Obx(() => Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                  decoration: BoxDecoration(
+            Obx(
+              () => Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 12,
+                ),
+                decoration: BoxDecoration(
+                  color: _cryptoService.paymentStatus.value == 'pending'
+                      ? Colors.orange.withOpacity(0.2)
+                      : Colors.green.withOpacity(0.2),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
                     color: _cryptoService.paymentStatus.value == 'pending'
-                        ? Colors.orange.withOpacity(0.2)
-                        : Colors.green.withOpacity(0.2),
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(
-                      color: _cryptoService.paymentStatus.value == 'pending'
-                          ? Colors.orange
-                          : Colors.green,
-                    ),
+                        ? Colors.orange
+                        : Colors.green,
                   ),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      if (_cryptoService.paymentStatus.value == 'pending')
-                        const SizedBox(
-                          width: 16,
-                          height: 16,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            color: Colors.orange,
-                          ),
-                        )
-                      else
-                        const Icon(Icons.check_circle,
-                            color: Colors.green, size: 20),
-                      const SizedBox(width: 12),
-                      Text(
-                        _cryptoService.paymentStatus.value == 'pending'
-                            ? 'Waiting for payment...'
-                            : 'Payment confirmed!',
-                        style: TextStyle(
-                          color: _cryptoService.paymentStatus.value == 'pending'
-                              ? Colors.orange
-                              : Colors.green,
-                          fontSize: 14,
-                          fontWeight: FontWeight.w600,
+                ),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    if (_cryptoService.paymentStatus.value == 'pending')
+                      const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: Colors.orange,
                         ),
+                      )
+                    else
+                      const Icon(
+                        Icons.check_circle,
+                        color: Colors.green,
+                        size: 20,
                       ),
-                    ],
-                  ),
-                )),
+                    const SizedBox(width: 12),
+                    Text(
+                      _cryptoService.paymentStatus.value == 'pending'
+                          ? 'Waiting for payment...'
+                          : 'Payment confirmed!',
+                      style: TextStyle(
+                        color: _cryptoService.paymentStatus.value == 'pending'
+                            ? Colors.orange
+                            : Colors.green,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
             const SizedBox(height: 16),
 
             // Time Remaining

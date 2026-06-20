@@ -20,11 +20,11 @@ class SecureImagePicker extends StatefulWidget {
   final bool isLoading;
 
   const SecureImagePicker({
-    Key? key,
+    super.key,
     required this.onImageSelected,
     required this.onError,
     this.isLoading = false,
-  }) : super(key: key);
+  });
 
   @override
   State<SecureImagePicker> createState() => _SecureImagePickerState();
@@ -179,11 +179,11 @@ class SecureImageViewer extends StatefulWidget {
   final VoidCallback? onClose;
 
   const SecureImageViewer({
-    Key? key,
+    super.key,
     required this.mediaToken,
     this.expiryTimestamp,
     this.onClose,
-  }) : super(key: key);
+  });
 
   @override
   State<SecureImageViewer> createState() => _SecureImageViewerState();

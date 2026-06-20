@@ -3,13 +3,13 @@ import 'package:flutter/foundation.dart';
 import 'package:get/get.dart';
 import 'package:http/http.dart' as http;
 
-import '../constants/app_constants.dart';
+import '../constants/network_constants.dart';
 
 /// Centralised HTTP client for all backend API calls.
 /// All services must use this instead of constructing raw http.* calls.
 class ApiService extends GetxService {
   static const Duration _timeout = Duration(seconds: 10);
-  static const String _base = AppConstants.apiBaseUrl;
+  static String get _base => NetworkConstants.apiBaseUrl;
 
   // ── Singleton accessor ──────────────────────────────────────────────────────
   static ApiService get to => Get.find<ApiService>();
