@@ -10,10 +10,11 @@ import 'e2ee_service.dart';
 import 'fcm_service.dart';
 import 'block_service.dart';
 import 'connection_request_service.dart';
+import '../constants/network_constants.dart';
 
 class SocketService extends GetxService {
   // Live server URL
-  static const String _serverUrl = "http://vant.chat";
+  static const String _serverUrl = NetworkConstants.socketUrl;
   IO.Socket? _socket;
   String? _deviceId;
   Timer? _reconnectTimer;
@@ -49,6 +50,7 @@ class SocketService extends GetxService {
   Function(Map<String, dynamic>)? onIceCandidate;
   Function(Map<String, dynamic>)? onPeerRinging;
   Function(Map<String, dynamic>)? onIceRestart;
+  Function(Map<String, dynamic>)? onCallResync;
 
   // Getters
   String? get deviceId => _deviceId;
@@ -106,24 +108,21 @@ class SocketService extends GetxService {
         _socket = null;
       }
 
-      _socket = IO.io(
-        _serverUrl,
-        IO.OptionBuilder()
-            .setTransports(['websocket', 'polling']) // Add polling fallback
-            .enableAutoConnect()
-            .setTimeout(10000) // Increased timeout
-            .setReconnectionAttempts(5) // Reduced attempts to prevent spam
-            .setReconnectionDelay(3000) // Longer delay
-            .setReconnectionDelayMax(10000) // Longer max delay
-            .setPath('/socket/secureconnection')
-            .enableForceNew()
-            .build(),
-      );
+      _socket = IO.io(_serverUrl, <String, dynamic>{
+        'transports': ['websocket'],
+        'autoConnect': true,
+        'timeout': 10000,
+        'reconnectionAttempts': 5,
+        'reconnectionDelay': 3000,
+        'reconnectionDelayMax': 10000,
+        'path': '/socket/secureconnection',
+        'forceNew': true,
+      });
 
       debugPrint('🔧 Socket configuration:');
       debugPrint('   - URL: $_serverUrl');
       debugPrint('   - Path: /socket/secureconnection');
-      debugPrint('   - Transports: websocket, polling');
+      debugPrint('   - Transports: polling, websocket');
       debugPrint('   - Timeout: 10s');
       debugPrint('   - Reconnection attempts: 5');
 
@@ -236,9 +235,8 @@ class SocketService extends GetxService {
     _socket?.on('pending_messages', (data) {
       debugPrint('📬 Pending messages received: ${(data as List).length}');
       if (onPendingMessages != null) {
-        final messages = (data)
-            .map((msg) => Map<String, dynamic>.from(msg))
-            .toList();
+        final messages =
+            (data).map((msg) => Map<String, dynamic>.from(msg)).toList();
         onPendingMessages!(messages);
         // Send message acks for all pending messages
         for (final message in messages) {
@@ -373,6 +371,14 @@ class SocketService extends GetxService {
       debugPrint('📞 ICE restart: $data');
       if (onIceRestart != null && data != null) {
         onIceRestart!(Map<String, dynamic>.from(data));
+      }
+    });
+
+    // WebRTC Call: Call resync - server resends SDP offer after cold-start accept
+    _socket?.on('call_resync', (data) {
+      debugPrint('📞 Call resync: $data');
+      if (onCallResync != null && data != null) {
+        onCallResync!(Map<String, dynamic>.from(data));
       }
     });
   }
@@ -869,6 +875,7 @@ class SocketService extends GetxService {
     required String callerId,
     required String calleeId,
     required String sdpOffer,
+    String? callerName,
   }) {
     if (!isConnected.value) {
       debugPrint('❌ Cannot initiate call: not connected');
@@ -879,6 +886,7 @@ class SocketService extends GetxService {
       'callerId': callerId,
       'calleeId': calleeId,
       'sdpOffer': sdpOffer,
+      if (callerName != null && callerName.isNotEmpty) 'callerName': callerName,
     });
     debugPrint('📞 Call initiated: $callerId -> $calleeId');
   }
@@ -986,6 +994,18 @@ class SocketService extends GetxService {
       'targetDeviceId': targetDeviceId,
     });
     debugPrint('📞 ICE restart requested');
+  }
+
+  /// Request call resync - used when app cold-starts after accepting from CallKit
+  /// Server will resend the SDP offer so the callee can answer
+  void requestCallResync({required String callId}) {
+    if (!isConnected.value) {
+      debugPrint('❌ Cannot request call resync: not connected');
+      return;
+    }
+
+    _socket?.emit('call_resync', {'callId': callId});
+    debugPrint('📞 Call resync requested for $callId');
   }
 
   /// Get socket instance for direct event listening

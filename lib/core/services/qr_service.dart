@@ -1,10 +1,11 @@
 import 'dart:convert';
 import 'dart:math';
 import 'package:crypto/crypto.dart';
+import '../constants/security_constants.dart';
 
 class QRService {
   static const String _appSignature = 'PEAR_CHAT_V1';
-  static const String _secretKey = 'pear_messaging_secret_2024';
+  static const String _secretKey = SecurityConstants.qrSecretKey;
 
   /// Generate a secure QR code data for the current user
   static Future<String> generateQRData(String deviceId) async {

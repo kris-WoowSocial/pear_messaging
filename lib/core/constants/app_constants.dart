@@ -1,13 +1,6 @@
 class AppConstants {
-  // API Configuration
-  static const String apiBaseUrl = 'https://vant.chat';
-
-  // Socket Configuration
-  static const String socketUrl = 'https://vant.chat';
-  static const String socketPath = '/socket/secureconnection';
-
   // App Configuration
-  static const String appName = 'Pear Messaging';
+  static const String appName = 'Vant Chat';
   static const String appVersion = '1.0.0';
 
   // Storage Keys

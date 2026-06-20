@@ -1,3 +1,4 @@
+import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:local_auth/local_auth.dart';
 import '../constants/app_strings.dart';
@@ -34,7 +35,7 @@ class LocalAuthService extends GetxService {
       
       return authenticated;
     } catch (e) {
-      print('Authentication error: $e');
+      debugPrint('Authentication error: $e');
       return false;
     }
   }

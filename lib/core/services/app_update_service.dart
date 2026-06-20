@@ -7,6 +7,7 @@ import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'package:package_info_plus/package_info_plus.dart';
 import '../constants/app_colors.dart';
+import '../constants/network_constants.dart';
 import 'dart:math' as math;
 
 class AppUpdateService extends GetxService {
@@ -87,7 +88,7 @@ class AppUpdateService extends GetxService {
       // Get bundle ID from package info
       final bundleId = _packageInfo?.packageName ?? 'com.vant.chat';
       final String url =
-          'https://itunes.apple.com/lookup?bundleId=$bundleId&country=US';
+          '${NetworkConstants.appStoreLookupUrl}?bundleId=$bundleId&country=US';
 
       debugPrint('🔍 Checking App Store for bundle ID: $bundleId');
 
@@ -581,12 +582,12 @@ class AppUpdateService extends GetxService {
 
       if (Platform.isAndroid) {
         final bundleId = _packageInfo?.packageName ?? 'com.vant.chat';
-        url = Uri.parse(
-            'https://play.google.com/store/apps/details?id=$bundleId');
+        url = Uri.parse('${NetworkConstants.playStoreUrl}?id=$bundleId');
         debugPrint('🔄 Opening Play Store for update...');
       } else if (Platform.isIOS) {
         final bundleId = _packageInfo?.packageName ?? 'com.vant.chat';
-        url = Uri.parse('https://apps.apple.com/app/id?bundleId=$bundleId');
+        url = Uri.parse(
+            '${NetworkConstants.appStoreReviewUrl}?bundleId=$bundleId');
         debugPrint('🔄 Opening App Store for update...');
       } else {
         debugPrint('❌ Unsupported platform');

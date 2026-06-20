@@ -1,4 +1,4 @@
-import 'dart:ui';
+import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:share_plus/share_plus.dart';
 import '../utils/string_utils.dart';
@@ -35,9 +35,9 @@ Experience total privacy with military-grade encryption and a direct, peer-to-pe
         subject: 'Chat with me on Pear Messaging',
         sharePositionOrigin: sharePositionOrigin,
       );
-      print('✅ App shared successfully with custom scheme: $link');
+      debugPrint('✅ App shared successfully with custom scheme: $link');
     } catch (e) {
-      print('❌ Error sharing app: $e');
+      debugPrint('❌ Error sharing app: $e');
       Get.snackbar(
         'Share Failed',
         'Unable to share the app. Please try again.',

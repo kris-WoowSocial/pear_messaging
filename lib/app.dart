@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:get/get.dart';
+import 'config/flavor_config.dart';
 import 'core/theme/app_theme.dart';
 import 'core/services/socket_service.dart';
+import 'core/services/webrtc_call_service.dart';
 import 'features/chat_list/chat_list_controller.dart';
 import 'features/chat/chat_controller.dart';
 import 'routes/app_routes.dart';
@@ -10,10 +12,7 @@ import 'routes/app_routes.dart';
 class PearMessagingApp extends StatefulWidget {
   final bool skipSplash;
 
-  const PearMessagingApp({
-    super.key,
-    this.skipSplash = false,
-  });
+  const PearMessagingApp({super.key, this.skipSplash = false});
 
   @override
   State<PearMessagingApp> createState() => _PearMessagingAppState();
@@ -57,11 +56,15 @@ class _PearMessagingAppState extends State<PearMessagingApp>
 
     // 1. Force reconnect if socket is disconnected — Android Doze mode kills
     // WebSocket connections and the internal retry counter may be exhausted
+    // Skip reconnect during active call to avoid interrupting it
     try {
       final socketService = Get.find<SocketService>();
-      if (!socketService.isConnected.value) {
+      final isInCall = WebRTCCallService().isInCall;
+      if (!socketService.isConnected.value && !isInCall) {
         debugPrint('🔄 Socket disconnected on resume, forcing reconnect...');
         socketService.forceReconnect();
+      } else if (isInCall) {
+        debugPrint('📱 Skipping socket reconnect — call is active');
       }
     } catch (e) {
       debugPrint('⚠️ Error checking socket: $e');
@@ -92,11 +95,13 @@ class _PearMessagingAppState extends State<PearMessagingApp>
 
   @override
   Widget build(BuildContext context) {
+    final config = FlavorConfig.instance;
+
     return GestureDetector(
       onTap: () => FocusScope.of(context).unfocus(),
       child: GetMaterialApp(
-        title: 'Pear Messaging',
-        debugShowCheckedModeBanner: false,
+        title: config.appName,
+        debugShowCheckedModeBanner: config.showDebugBanner,
         theme: AppTheme.lightTheme,
         themeMode: ThemeMode.light,
         initialRoute: _getInitialRoute(),
@@ -104,30 +109,45 @@ class _PearMessagingAppState extends State<PearMessagingApp>
 
         // Status bar configuration for iOS
         builder: (context, child) {
+          final appChild = MediaQuery(
+            data: MediaQuery.of(context).copyWith(
+              textScaler: MediaQuery.of(
+                context,
+              ).textScaler.clamp(minScaleFactor: 1.0, maxScaleFactor: 1.2),
+            ),
+            child: child!,
+          );
+
+          // Add DEV banner for dev flavor
+          if (FlavorConfig.isDev()) {
+            return Banner(
+              message: 'DEV',
+              location: BannerLocation.topEnd,
+              color: Colors.redAccent,
+              child: AnnotatedRegion<SystemUiOverlayStyle>(
+                value: const SystemUiOverlayStyle(
+                  statusBarColor: Colors.transparent,
+                  statusBarIconBrightness: Brightness.dark,
+                  statusBarBrightness: Brightness.light,
+                ),
+                child: appChild,
+              ),
+            );
+          }
+
           return AnnotatedRegion<SystemUiOverlayStyle>(
             value: const SystemUiOverlayStyle(
               statusBarColor: Colors.transparent,
               statusBarIconBrightness: Brightness.dark,
               statusBarBrightness: Brightness.light,
             ),
-            child: MediaQuery(
-              data: MediaQuery.of(context).copyWith(
-                textScaler: MediaQuery.of(context).textScaler.clamp(
-                      minScaleFactor: 1.0,
-                      maxScaleFactor: 1.2,
-                    ),
-              ),
-              child: child!,
-            ),
+            child: appChild,
           );
         },
         unknownRoute: GetPage(
           name: '/unknown',
-          page: () => const Scaffold(
-            body: Center(
-              child: CircularProgressIndicator(),
-            ),
-          ),
+          page: () =>
+              const Scaffold(body: Center(child: CircularProgressIndicator())),
         ),
         routingCallback: (routing) {
           if (routing?.current == null) {

@@ -36,7 +36,7 @@ class ActiveCallScreen extends StatelessWidget {
         children: [
           // Top section - Contact info and E2EE indicator
           Expanded(
-            flex: 2,
+            flex: 1,
             child: Center(
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
@@ -61,24 +61,26 @@ class ActiveCallScreen extends StatelessWidget {
                   ),
                   const SizedBox(height: 24),
                   // Contact name
-                  Obx(
-                    () => Text(
-                      controller.remoteDeviceId.value.isNotEmpty
-                          ? controller.remoteDeviceId.value
-                          : 'Unknown',
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 32,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                  ),
+                  Obx(() => Text(
+                        controller.remoteDisplayName.value.isNotEmpty
+                            ? controller.remoteDisplayName.value
+                            : 'Unknown',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 32,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      )),
                   const SizedBox(height: 8),
                   // E2EE indicator
                   Row(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      const Icon(Icons.lock, size: 16, color: Colors.green),
+                      const Icon(
+                        Icons.lock,
+                        size: 16,
+                        color: Colors.green,
+                      ),
                       const SizedBox(width: 4),
                       const Text(
                         'End-to-End Encrypted',
@@ -92,16 +94,14 @@ class ActiveCallScreen extends StatelessWidget {
                   ),
                   const SizedBox(height: 24),
                   // Call duration
-                  Obx(
-                    () => Text(
-                      controller.callDuration.value,
-                      style: const TextStyle(
-                        color: Colors.white70,
-                        fontSize: 24,
-                        fontWeight: FontWeight.w300,
-                      ),
-                    ),
-                  ),
+                  Obx(() => Text(
+                        controller.callDuration.value,
+                        style: const TextStyle(
+                          color: Colors.white70,
+                          fontSize: 24,
+                          fontWeight: FontWeight.w300,
+                        ),
+                      )),
                 ],
               ),
             ),
@@ -110,7 +110,7 @@ class ActiveCallScreen extends StatelessWidget {
           Expanded(
             flex: 1,
             child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 24),
+              padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 48),
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
@@ -132,7 +132,7 @@ class ActiveCallScreen extends StatelessWidget {
                       ),
                     ],
                   ),
-                  const SizedBox(height: 24),
+                  const SizedBox(height: 48),
                   // Second row: End call
                   _buildEndCallButton(controller),
                 ],
@@ -211,7 +211,11 @@ class ActiveCallScreen extends StatelessWidget {
             ),
           ],
         ),
-        child: const Icon(Icons.call_end, size: 32, color: Colors.white),
+        child: const Icon(
+          Icons.call_end,
+          size: 32,
+          color: Colors.white,
+        ),
       ),
     );
   }

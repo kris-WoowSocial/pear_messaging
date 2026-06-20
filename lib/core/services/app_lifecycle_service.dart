@@ -2,6 +2,7 @@ import 'dart:io' show Platform;
 import 'package:flutter/widgets.dart';
 import 'package:get/get.dart';
 import 'socket_service.dart';
+import 'webrtc_call_service.dart';
 
 /// Service to track global app lifecycle state
 /// Used to suppress notifications on iOS when app is in foreground
@@ -50,6 +51,12 @@ class AppLifecycleService extends GetxService with WidgetsBindingObserver {
   void _handleAppResumed() {
     if (Platform.isIOS) {
       try {
+        if (_isCallActive()) {
+          debugPrint(
+            '📱 iOS: Skipping socket reconnect on resume — call is active',
+          );
+          return;
+        }
         if (Get.isRegistered<SocketService>()) {
           final socketService = Get.find<SocketService>();
           debugPrint('📱 iOS: Reconnecting socket after app resumed');
@@ -65,15 +72,30 @@ class AppLifecycleService extends GetxService with WidgetsBindingObserver {
   void _handleAppPaused() {
     if (Platform.isIOS) {
       try {
+        // Do not disconnect socket if a call is active — it would terminate the call
+        if (_isCallActive()) {
+          debugPrint('📱 iOS: Skipping socket disconnect — call is active');
+          return;
+        }
         if (Get.isRegistered<SocketService>()) {
           final socketService = Get.find<SocketService>();
           debugPrint(
-              '📱 iOS: Disconnecting socket when app goes to background (mark device offline)');
+            '📱 iOS: Disconnecting socket when app goes to background (mark device offline)',
+          );
           socketService.disconnect();
         }
       } catch (e) {
         debugPrint('⚠️ iOS: Error disconnecting socket on pause: $e');
       }
+    }
+  }
+
+  /// Check if a WebRTC call is currently active
+  bool _isCallActive() {
+    try {
+      return WebRTCCallService().isInCall;
+    } catch (_) {
+      return false;
     }
   }
 }

@@ -1,0 +1,3 @@
+#include "Generated.xcconfig"
+PRODUCT_BUNDLE_IDENTIFIER = com.vant.chat
+PRODUCT_NAME = Vant Chat

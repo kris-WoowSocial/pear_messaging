@@ -1,12 +1,11 @@
 import 'dart:async';
-import 'dart:io';
+import 'dart:io' show Platform;
 import 'package:flutter/foundation.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'call_foreground_service.dart';
 
-/// WebRTC Call Service - Manages peer-to-peer audio calls
-/// Note: E2EE with FrameCryptor requires flutter_webrtc 1.0.0+
-/// Current implementation uses standard WebRTC with DTLS-SRTP encryption
+/// WebRTC Call Service - Manages peer-to-peer audio calls with E2EE
 class WebRTCCallService {
   static final WebRTCCallService _instance = WebRTCCallService._internal();
   factory WebRTCCallService() => _instance;
@@ -19,7 +18,6 @@ class WebRTCCallService {
 
   // Call state
   String? _currentCallId;
-  String? _localDeviceId;
   String? _remoteDeviceId;
   bool _isCaller = false;
   bool _isMuted = false;
@@ -39,67 +37,42 @@ class WebRTCCallService {
   Function(String candidate, String? sdpMid, int? sdpMLineIndex)?
   onIceCandidate;
   Function(String)? onCallStateChange;
-  Function(String)? onOfferCreated;
-  Function(String)? onAnswerCreated;
+  Function(String)? onLocalDescription; // Callback for SDP offer/answer
 
   // ICE servers configuration
-  final List<Map<String, dynamic>> _iceServers = [
-    {'urls': 'stun:stun.l.google.com:19302'},
-  ];
-
-  // TURN server configuration (will be loaded from environment)
-  Map<String, dynamic>? _turnServer;
+  // nginx proxies plain TCP on 443 to coturn 3478; relay-only forces TURN on both peers
+  final Map<String, dynamic> _iceServers = {
+    'iceServers': [
+      {
+        'urls': 'turn:turn.vant.chat:3478?transport=udp',
+        'username': 'vantchat',
+        'credential': 'Y9FA4x5PA2WDAMwBWfVClL5R7VyH8/BfRql9jTBNg54=',
+      },
+      {
+        'urls': 'turn:turn.vant.chat:3478?transport=tcp',
+        'username': 'vantchat',
+        'credential': 'Y9FA4x5PA2WDAMwBWfVClL5R7VyH8/BfRql9jTBNg54=',
+      },
+      {
+        'urls': 'turn:turn.vant.chat:443?transport=tcp',
+        'username': 'vantchat',
+        'credential': 'Y9FA4x5PA2WDAMwBWfVClL5R7VyH8/BfRql9jTBNg54=',
+      },
+    ],
+    'iceTransportPolicy': 'relay',
+  };
 
   /// Initialize the call service
   Future<void> initialize() async {
-    debugPrint('📞 WebRTCCallService initialized');
-
-    // Load TURN server configuration from backend
-    await _loadTurnServerConfig();
-
-    // Configure audio session for calls
-    await _configureAudioSession();
-  }
-
-  /// Configure audio session for proper call audio routing
-  Future<void> _configureAudioSession() async {
-    try {
-      // Configure audio for voice communication
-      await Helper.setSpeakerphoneOn(false); // Default to earpiece
-      debugPrint('📞 Audio session configured for voice calls');
-    } catch (e) {
-      debugPrint('⚠️ Failed to configure audio session: $e');
-    }
-  }
-
-  /// Load TURN server configuration from backend
-  Future<void> _loadTurnServerConfig() async {
-    try {
-      // For now, use hardcoded values from .env
-      // In production, fetch from backend API
-      _turnServer = {
-        'urls': 'turn:54.175.143.63:3478',
-        'username': 'vantchat',
-        'credential': 'Y9FA4x5PA2WDAMwBWfVClL5R7VyH8/BfRql9jTBNg54=',
-      };
-
-      if (_turnServer != null) {
-        _iceServers.add(_turnServer!);
-        debugPrint('📞 TURN server configured');
-      }
-    } catch (e) {
-      debugPrint('⚠️ Failed to load TURN server config: $e');
-    }
+    debugPrint('� WebRTCCallService initialized');
   }
 
   /// Start an outgoing call
   Future<bool> startCall({
     required String calleeDeviceId,
     required String callerDeviceId,
-    required String sharedSecret,
   }) async {
     try {
-      _localDeviceId = callerDeviceId;
       _remoteDeviceId = calleeDeviceId;
       _isCaller = true;
       _currentCallId = 'call_${DateTime.now().millisecondsSinceEpoch}';
@@ -138,17 +111,16 @@ class WebRTCCallService {
         '📞 Active senders before createOffer: ${sendersBeforeOffer.length}',
       );
 
-      // Create audio-only offer
-      final offer = await _peerConnection!.createOffer({
-        'offerToReceiveAudio': true,
-        'offerToReceiveVideo': false,
-      });
+      // Create offer
+      final offer = await _peerConnection!.createOffer();
       await _peerConnection!.setLocalDescription(offer);
 
-      onCallStateChange?.call('dialing');
+      // Notify caller of the SDP offer
+      if (offer.sdp != null) {
+        onLocalDescription?.call(offer.sdp!);
+      }
 
-      // Send the SDP offer via callback
-      onOfferCreated?.call(offer.sdp ?? '');
+      onCallStateChange?.call('dialing');
 
       debugPrint('📞 Offer created, sending via signaling');
       return true;
@@ -164,11 +136,9 @@ class WebRTCCallService {
     required String callerDeviceId,
     required String calleeDeviceId,
     required String sdpOffer,
-    required String sharedSecret,
   }) async {
     try {
       _currentCallId = callId;
-      _localDeviceId = calleeDeviceId;
       _remoteDeviceId = callerDeviceId;
       _isCaller = false;
 
@@ -210,15 +180,16 @@ class WebRTCCallService {
         RTCSessionDescription(sdpOffer, 'offer'),
       );
 
-      // Create audio-only answer
-      final answer = await _peerConnection!.createAnswer({
-        'offerToReceiveAudio': true,
-        'offerToReceiveVideo': false,
-      });
+      // Create answer
+      final answer = await _peerConnection!.createAnswer();
       await _peerConnection!.setLocalDescription(answer);
 
-      // Send the SDP answer via callback
-      onAnswerCreated?.call(answer.sdp ?? '');
+      // Notify callee of the SDP answer
+      if (answer.sdp != null) {
+        onLocalDescription?.call(answer.sdp!);
+      }
+
+      onCallStateChange?.call('ringing');
 
       debugPrint('📞 Answer created, sending via signaling');
       return true;
@@ -230,19 +201,14 @@ class WebRTCCallService {
 
   /// Create peer connection with ICE servers
   Future<void> _createPeerConnection() async {
-    final configuration = {
-      'iceServers': [
-        {'urls': 'stun:stun.l.google.com:19302'},
-        {
-          'urls': 'turn:54.175.143.63:3478',
-          'username': 'vantchat',
-          'credential': 'Y9FA4x5PA2WDAMwBWfVClL5R7VyH8/BfRql9jTBNg54=',
-        },
-      ],
-      'sdpSemantics': 'unified-plan',
-    };
-
-    _peerConnection = await createPeerConnection(configuration);
+    debugPrint(
+      '🔧 Creating peer connection with ICE servers: ${_iceServers['iceServers'].length} servers',
+    );
+    for (var i = 0; i < _iceServers['iceServers'].length; i++) {
+      final server = _iceServers['iceServers'][i];
+      debugPrint('  ICE Server $i: ${server['urls']}');
+    }
+    _peerConnection = await createPeerConnection(_iceServers);
 
     // Handle ICE candidates
     _peerConnection!.onIceCandidate = (candidate) {
@@ -258,32 +224,16 @@ class WebRTCCallService {
       }
     };
 
-    // Handle ICE gathering state changes
-    _peerConnection!.onIceGatheringState = (state) {
-      debugPrint('📞 ICE gathering state: $state');
-    };
-
-    // Handle signaling state changes
-    _peerConnection!.onSignalingState = (state) {
-      debugPrint('📞 Signaling state: $state');
-    };
-
     // Handle remote stream
-    _peerConnection!.onTrack = (event) {
-      debugPrint('📞 Remote track received: ${event.track.kind}');
+    _peerConnection!.onTrack = (event) async {
+      debugPrint('📞 Remote track received');
       _remoteStream = event.streams[0];
       onRemoteStream?.call(_remoteStream!);
-
-      // Ensure audio track is enabled
-      if (event.track.kind == 'audio') {
-        event.track.enabled = true;
-        debugPrint('📞 Remote audio track enabled');
-      }
     };
 
     // Handle connection state changes
     _peerConnection!.onConnectionState = (state) {
-      debugPrint('📞 Connection state changed: $state');
+      debugPrint('📞 Connection state: $state');
 
       switch (state) {
         case RTCPeerConnectionState.RTCPeerConnectionStateConnected:
@@ -291,6 +241,8 @@ class WebRTCCallService {
           onCallStateChange?.call('connected');
           _startDurationTimer();
           _startStatsLogger();
+          Helper.setSpeakerphoneOn(false);
+          if (Platform.isAndroid) CallForegroundService().start();
           break;
         case RTCPeerConnectionState.RTCPeerConnectionStateDisconnected:
           debugPrint('📞 WebRTC DISCONNECTED');
@@ -373,14 +325,10 @@ class WebRTCCallService {
   }
 
   /// Toggle speaker
-  Future<void> toggleSpeaker() async {
+  void toggleSpeaker() {
     _isSpeakerOn = !_isSpeakerOn;
-    try {
-      await Helper.setSpeakerphoneOn(_isSpeakerOn);
-      debugPrint('📞 Speaker toggled: $_isSpeakerOn');
-    } catch (e) {
-      debugPrint('❌ Failed to toggle speaker: $e');
-    }
+    Helper.setSpeakerphoneOn(_isSpeakerOn);
+    debugPrint('📞 Speaker toggled: $_isSpeakerOn');
   }
 
   /// Start call duration timer
@@ -431,8 +379,9 @@ class WebRTCCallService {
 
     onCallEnded?.call(_currentCallId ?? '');
 
+    if (Platform.isAndroid) CallForegroundService().stop();
+
     _currentCallId = null;
-    _localDeviceId = null;
     _remoteDeviceId = null;
     _isCaller = false;
     _isMuted = false;

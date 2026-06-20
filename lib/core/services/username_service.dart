@@ -1,24 +1,27 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
-import '../constants/app_constants.dart';
+import '../constants/network_constants.dart';
 
 class UsernameService {
-  static const String _baseUrl = AppConstants.apiBaseUrl;
+  static String get _baseUrl => NetworkConstants.apiBaseUrl;
   static const Duration _timeout = Duration(seconds: 10);
 
   /// Set or update username for the current device
-  static Future<UsernameResponse> setUsername(String deviceId, String username) async {
+  static Future<UsernameResponse> setUsername(
+      String deviceId, String username) async {
     try {
-      final response = await http.post(
-        Uri.parse('$_baseUrl/api/username'),
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: jsonEncode({
-          'deviceId': deviceId,
-          'username': username,
-        }),
-      ).timeout(_timeout);
+      final response = await http
+          .post(
+            Uri.parse('$_baseUrl/api/username'),
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: jsonEncode({
+              'deviceId': deviceId,
+              'username': username,
+            }),
+          )
+          .timeout(_timeout);
 
       final responseData = jsonDecode(response.body);
 
@@ -71,27 +74,30 @@ class UsernameService {
   }
 
   /// Get usernames for multiple devices (batch request)
-  static Future<Map<String, UsernameData>> getBatchUsernames(List<String> deviceIds) async {
+  static Future<Map<String, UsernameData>> getBatchUsernames(
+      List<String> deviceIds) async {
     try {
       if (deviceIds.isEmpty) return {};
 
       // Limit batch size to 100 as per API
       final batchIds = deviceIds.take(100).toList();
 
-      final response = await http.post(
-        Uri.parse('$_baseUrl/api/username/batch'),
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: jsonEncode({
-          'deviceIds': batchIds,
-        }),
-      ).timeout(_timeout);
+      final response = await http
+          .post(
+            Uri.parse('$_baseUrl/api/username/batch'),
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: jsonEncode({
+              'deviceIds': batchIds,
+            }),
+          )
+          .timeout(_timeout);
 
       if (response.statusCode == 200) {
         final responseData = jsonDecode(response.body);
         final usernamesMap = <String, UsernameData>{};
-        
+
         final usernames = responseData['usernames'] as Map<String, dynamic>;
         usernames.forEach((deviceId, userData) {
           usernamesMap[deviceId] = UsernameData(
@@ -100,7 +106,7 @@ class UsernameService {
             updatedAt: userData['updatedAt'],
           );
         });
-        
+
         return usernamesMap;
       } else {
         throw Exception('Failed to get batch usernames: ${response.body}');

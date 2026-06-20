@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
+import '../constants/security_constants.dart';
 
 /// Simple XOR encryption (compatible with encrypt_decrypt_plus XOR)
 class _XOR {
@@ -21,7 +22,7 @@ class _XOR {
 }
 
 class EncryptionService extends GetxService {
-  static const String _encryptionKey = 'PearMessagingSecureKey2024!@#\$%';
+  static const String _encryptionKey = SecurityConstants.xorEncryptionKey;
   static final _XOR xor = _XOR(secretKey: _encryptionKey);
 
   /// Encrypt message content using encrypt_decrypt_plus

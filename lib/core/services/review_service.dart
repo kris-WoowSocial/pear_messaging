@@ -5,6 +5,7 @@ import 'package:pear_messaging/core/services/local_storage_service.dart';
 import 'package:pear_messaging/core/services/report_service.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../constants/network_constants.dart';
 import '../widgets/rating_dialog.dart';
 
 class ReviewService extends GetxService {
@@ -40,7 +41,7 @@ class ReviewService extends GetxService {
         .inDays;
     daysInstalled.value = daysSince;
 
-    print(
+    debugPrint(
         '✅ ReviewService initialized - hasReviewed: ${hasReviewed.value}, daysInstalled: $daysSince');
 
     return this;
@@ -57,9 +58,9 @@ class ReviewService extends GetxService {
       await _prefs.remove(_hasReviewedKey);
       await _prefs.remove(_lastCancelledKey);
       hasReviewed.value = false;
-      print('✅ Review status reset - user can review again');
+      debugPrint('✅ Review status reset - user can review again');
     } catch (e) {
-      print('❌ Error resetting review status: $e');
+      debugPrint('❌ Error resetting review status: $e');
     }
   }
 
@@ -133,7 +134,7 @@ class ReviewService extends GetxService {
   /// Trigger App Store review - detects platform and opens correct store
   Future<void> triggerGoogleReview() async {
     try {
-      print('🔄 Opening app store for review...');
+      debugPrint('🔄 Opening app store for review...');
 
       // Show loading feedback
       Get.snackbar(
@@ -167,17 +168,17 @@ class ReviewService extends GetxService {
       );
 
       // Mark as reviewed after a delay (gives user time to actually rate)
-      print('⏳ Store opened - will mark as reviewed after delay');
+      debugPrint('⏳ Store opened - will mark as reviewed after delay');
       Future.delayed(const Duration(minutes: 5), () async {
         try {
           await markAsReviewed();
-          print('✅ Marked as reviewed after delay');
+          debugPrint('✅ Marked as reviewed after delay');
         } catch (e) {
-          print('⚠️ Error marking as reviewed after delay: $e');
+          debugPrint('⚠️ Error marking as reviewed after delay: $e');
         }
       });
     } catch (e) {
-      print('❌ Error opening store: $e');
+      debugPrint('❌ Error opening store: $e');
       Get.snackbar(
         'Error',
         'Could not open store. Please try again later.',
@@ -194,33 +195,34 @@ class ReviewService extends GetxService {
     try {
       const String appId = '6478718953'; // Your App Store ID
       final Uri url = Uri.parse(
-        'https://apps.apple.com/app/id$appId?action=write-review',
+        '${NetworkConstants.appStoreReviewUrl}$appId?action=write-review',
       );
 
       if (await canLaunchUrl(url)) {
-        print('🚀 Opening App Store URL: $url');
+        debugPrint('🚀 Opening App Store URL: $url');
         await launchUrl(
           url,
           mode: LaunchMode.externalApplication,
         );
-        print('✅ App Store opened successfully');
+        debugPrint('✅ App Store opened successfully');
       } else {
-        print('❌ Cannot launch App Store URL');
+        debugPrint('❌ Cannot launch App Store URL');
         // Try generic App Store URL
-        final genericUrl = Uri.parse('https://apps.apple.com/app/id$appId');
+        final genericUrl =
+            Uri.parse('${NetworkConstants.appStoreReviewUrl}$appId');
         if (await canLaunchUrl(genericUrl)) {
-          print('🚀 Opening generic App Store URL: $genericUrl');
+          debugPrint('🚀 Opening generic App Store URL: $genericUrl');
           await launchUrl(
             genericUrl,
             mode: LaunchMode.externalApplication,
           );
-          print('✅ Generic App Store opened successfully');
+          debugPrint('✅ Generic App Store opened successfully');
         } else {
-          print('❌ Cannot launch App Store URL either');
+          debugPrint('❌ Cannot launch App Store URL either');
         }
       }
     } catch (e) {
-      print('❌ Error opening App Store: $e');
+      debugPrint('❌ Error opening App Store: $e');
       rethrow;
     }
   }
@@ -230,33 +232,33 @@ class ReviewService extends GetxService {
     try {
       const String appId = 'com.vant.chat';
       final Uri url = Uri.parse(
-        'https://play.google.com/store/apps/details?id=$appId',
+        '${NetworkConstants.playStoreUrl}?id=$appId',
       );
 
       if (await canLaunchUrl(url)) {
-        print('🚀 Opening Play Store URL: $url');
+        debugPrint('🚀 Opening Play Store URL: $url');
         await launchUrl(
           url,
           mode: LaunchMode.externalApplication,
         );
-        print('✅ Play Store opened successfully');
+        debugPrint('✅ Play Store opened successfully');
       } else {
-        print('❌ Cannot launch Play Store URL');
+        debugPrint('❌ Cannot launch Play Store URL');
         // Try market:// fallback
         final marketUrl = Uri.parse('market://details?id=$appId');
         if (await canLaunchUrl(marketUrl)) {
-          print('🚀 Opening market URL: $marketUrl');
+          debugPrint('🚀 Opening market URL: $marketUrl');
           await launchUrl(
             marketUrl,
             mode: LaunchMode.externalApplication,
           );
-          print('✅ Market opened successfully');
+          debugPrint('✅ Market opened successfully');
         } else {
-          print('❌ Cannot launch market URL either');
+          debugPrint('❌ Cannot launch market URL either');
         }
       }
     } catch (e) {
-      print('❌ Error opening Play Store: $e');
+      debugPrint('❌ Error opening Play Store: $e');
       rethrow;
     }
   }
@@ -264,7 +266,7 @@ class ReviewService extends GetxService {
   /// Submit feedback to contact API (for 1-3 star ratings)
   Future<void> submitFeedback(int stars, String feedback) async {
     try {
-      print('📝 Submitting feedback: $stars stars');
+      debugPrint('📝 Submitting feedback: $stars stars');
 
       final reportService = Get.find<ReportService>();
       final storageService = Get.find<LocalStorageService>();
@@ -282,7 +284,7 @@ class ReviewService extends GetxService {
       );
 
       if (success) {
-        print('✅ Feedback submitted successfully');
+        debugPrint('✅ Feedback submitted successfully');
 
         // Mark as reviewed
         await markAsReviewed();
@@ -294,7 +296,7 @@ class ReviewService extends GetxService {
           snackPosition: SnackPosition.BOTTOM,
         );
       } else {
-        print('❌ Failed to submit feedback');
+        debugPrint('❌ Failed to submit feedback');
         Get.snackbar(
           'Error',
           'Failed to submit feedback. Please try again later.',
@@ -302,7 +304,7 @@ class ReviewService extends GetxService {
         );
       }
     } catch (e) {
-      print('❌ Error submitting feedback: $e');
+      debugPrint('❌ Error submitting feedback: $e');
       Get.snackbar(
         'Error',
         'An error occurred. Please try again later.',
@@ -315,7 +317,7 @@ class ReviewService extends GetxService {
   Future<void> markAsReviewed() async {
     await _prefs.setBool(_hasReviewedKey, true);
     hasReviewed.value = true;
-    print('✅ Marked as reviewed');
+    debugPrint('✅ Marked as reviewed');
   }
 
   /// Update last shown timestamp (for cooldown tracking)
@@ -327,6 +329,6 @@ class ReviewService extends GetxService {
   Future<void> markAsCancelled() async {
     await _prefs.setInt(
         _lastCancelledKey, DateTime.now().millisecondsSinceEpoch);
-    print('⏰ Review cancelled - will show again in $_delayDays days');
+    debugPrint('⏰ Review cancelled - will show again in $_delayDays days');
   }
 }

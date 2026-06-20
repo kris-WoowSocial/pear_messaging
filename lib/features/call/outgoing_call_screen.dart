@@ -9,7 +9,6 @@ class OutgoingCallScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final controller = Get.find<CallController>();
-    final calleeDeviceId = Get.arguments as String? ?? 'Unknown';
 
     return Scaffold(
       backgroundColor: Colors.black,
@@ -43,23 +42,25 @@ class OutgoingCallScreen extends StatelessWidget {
                     ),
                     const SizedBox(height: 32),
                     // Callee name
-                    Text(
-                      calleeDeviceId,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 28,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
+                    Obx(() => Text(
+                          controller.remoteDisplayName.value.isNotEmpty
+                              ? controller.remoteDisplayName.value
+                              : '@user_...',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 28,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        )),
                     const SizedBox(height: 8),
                     // Call status
                     Obx(() => Text(
-                      _getCallStatusText(controller.callState.value),
-                      style: const TextStyle(
-                        color: Colors.white70,
-                        fontSize: 16,
-                      ),
-                    )),
+                          _getCallStatusText(controller.callState.value),
+                          style: const TextStyle(
+                            color: Colors.white70,
+                            fontSize: 16,
+                          ),
+                        )),
                   ],
                 ),
               ),
@@ -68,7 +69,8 @@ class OutgoingCallScreen extends StatelessWidget {
             Expanded(
               flex: 1,
               child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 48, vertical: 32),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 48, vertical: 32),
                 child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [

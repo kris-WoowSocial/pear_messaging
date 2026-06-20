@@ -1,12 +1,10 @@
 import 'dart:io';
-import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../core/services/api_service.dart';
 import 'package:get/get.dart';
 import 'package:android_intent_plus/android_intent.dart';
-import 'package:pear_messaging/core/services/branch_service.dart';
 import '../../core/constants/app_colors.dart';
 import '../../core/constants/app_strings.dart';
 import '../../core/constants/app_sizes.dart';
@@ -19,8 +17,6 @@ import 'connection_request_item.dart';
 
 class ChatListScreen extends GetView<ChatListController> {
   ChatListScreen({super.key});
-
-  final _shareButtonKey = GlobalKey();
 
   @override
   Widget build(BuildContext context) {
@@ -81,10 +77,7 @@ class ChatListScreen extends GetView<ChatListController> {
         centerTitle: true,
         actions: [
           IconButton(
-            icon: const Icon(
-              Icons.settings,
-              color: AppColors.textPrimary,
-            ),
+            icon: const Icon(Icons.settings, color: AppColors.textPrimary),
             onPressed: () => Get.toNamed(AppRoutes.profile),
           ),
         ],
@@ -103,10 +96,7 @@ class ChatListScreen extends GetView<ChatListController> {
             child: Column(
               children: [
                 SizedBox(height: 10),
-                Container(
-                  height: 1,
-                  color: Colors.grey,
-                ),
+                Container(height: 1, color: Colors.grey),
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 16),
                   child: Row(
@@ -126,7 +116,7 @@ class ChatListScreen extends GetView<ChatListController> {
                                 child: Text(
                                   controller.userDisplayName.isNotEmpty
                                       ? controller.userDisplayName[0]
-                                          .toUpperCase()
+                                            .toUpperCase()
                                       : 'U',
                                   style: const TextStyle(
                                     color: AppColors.textPrimary,
@@ -175,8 +165,9 @@ class ChatListScreen extends GetView<ChatListController> {
                                   ),
                                   decoration: const InputDecoration(
                                     isDense: true,
-                                    contentPadding:
-                                        EdgeInsets.symmetric(vertical: 8),
+                                    contentPadding: EdgeInsets.symmetric(
+                                      vertical: 8,
+                                    ),
                                     border: UnderlineInputBorder(),
                                     focusedBorder: UnderlineInputBorder(
                                       borderSide: BorderSide(
@@ -296,7 +287,8 @@ class ChatListScreen extends GetView<ChatListController> {
               );
 
               return ListView.builder(
-                itemCount: controller.pendingConnectionRequests.length +
+                itemCount:
+                    controller.pendingConnectionRequests.length +
                     controller.filteredChats.length,
                 itemBuilder: (context, index) {
                   // First show connection requests, then chats
@@ -304,7 +296,8 @@ class ChatListScreen extends GetView<ChatListController> {
                     // Show connection request item
                     final request = controller.pendingConnectionRequests[index];
                     print(
-                        '🔍 DEBUG: Rendering connection request item - ID: ${request.id}, Sender: ${request.senderDeviceId}');
+                      '🔍 DEBUG: Rendering connection request item - ID: ${request.id}, Sender: ${request.senderDeviceId}',
+                    );
                     return ConnectionRequestItem(request: request);
                   } else {
                     // Show chat item
@@ -322,7 +315,8 @@ class ChatListScreen extends GetView<ChatListController> {
                         if (chatIndex < controller.filteredChats.length - 1)
                           const Divider(
                             height: 1,
-                            indent: AppSizes.paddingM +
+                            indent:
+                                AppSizes.paddingM +
                                 AppSizes.avatarSize +
                                 AppSizes.paddingM,
                             color: AppColors.divider,
@@ -336,43 +330,6 @@ class ChatListScreen extends GetView<ChatListController> {
           ),
         ],
       ),
-      floatingActionButton: InkWell(
-        key: _shareButtonKey,
-        onTap: () => shareApp(),
-        child: Container(
-          decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(7),
-              color: AppColors.primary,
-              boxShadow: [
-                BoxShadow(
-                  spreadRadius: 0.7,
-                  offset: Offset(3, 2),
-                  blurRadius: 7,
-                  blurStyle: BlurStyle.solid,
-                  color: AppColors.primaryDark,
-                ),
-              ]),
-          padding: EdgeInsets.all(10),
-          child: Wrap(
-            children: [
-              const Icon(
-                Icons.share,
-                color: Colors.black,
-                size: 24,
-              ),
-              SizedBox(width: 7),
-              Text(
-                "Invite Friends",
-                style: TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w600,
-                  color: Colors.black,
-                ),
-              )
-            ],
-          ),
-        ),
-      ),
     );
   }
 
@@ -383,45 +340,6 @@ class ChatListScreen extends GetView<ChatListController> {
       backgroundColor: Colors.transparent,
       builder: (context) => const _SelfDestructSheet(),
     );
-  }
-
-  void shareApp() async {
-    try {
-      // Calculate share position origin from the button's position
-      Rect? sharePositionOrigin;
-      if (_shareButtonKey.currentContext != null) {
-        final RenderBox renderBox =
-            _shareButtonKey.currentContext!.findRenderObject() as RenderBox;
-        final Offset offset = renderBox.localToGlobal(Offset.zero);
-        sharePositionOrigin = Rect.fromLTWH(
-          offset.dx,
-          offset.dy,
-          renderBox.size.width,
-          renderBox.size.height,
-        );
-      }
-
-      // Get or initialize Branch service
-      BranchService branchService;
-      try {
-        branchService = Get.find<BranchService>();
-      } catch (e) {
-        // Branch service not initialized, create one
-        branchService = BranchService();
-        Get.put(branchService);
-        await branchService.init();
-      }
-
-      // Share the app
-      await branchService.shareApp(sharePositionOrigin: sharePositionOrigin);
-    } catch (e) {
-      print('❌ Error sharing app: $e');
-      Get.snackbar(
-        'Share Failed',
-        'Unable to share the app. Please try again.',
-        snackPosition: SnackPosition.BOTTOM,
-      );
-    }
   }
 }
 
@@ -447,7 +365,8 @@ class _SelfDestructSheetState extends State<_SelfDestructSheet> {
         if (deviceId != null && deviceId.isNotEmpty) {
           await ApiService.to.unregisterDevice(deviceId);
           debugPrint(
-              '✅ FCM token unregistered from server for device: $deviceId');
+            '✅ FCM token unregistered from server for device: $deviceId',
+          );
         }
       } catch (e) {
         debugPrint('⚠️ Failed to unregister FCM token (continuing wipe): $e');
@@ -583,8 +502,9 @@ class _SelfDestructSheetState extends State<_SelfDestructSheet> {
                 // Cancel button
                 Expanded(
                   child: TextButton(
-                    onPressed:
-                        _isDeleting ? null : () => Navigator.pop(context),
+                    onPressed: _isDeleting
+                        ? null
+                        : () => Navigator.pop(context),
                     style: TextButton.styleFrom(
                       padding: const EdgeInsets.symmetric(vertical: 16),
                       shape: RoundedRectangleBorder(

@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
+import '../constants/network_constants.dart';
 
 /// HTTP-based media upload / download-once service.
 ///
@@ -9,7 +10,7 @@ import 'package:http/http.dart' as http;
 /// only ever stores an opaque encrypted blob.  Each token can be
 /// downloaded exactly once — the server deletes the blob afterwards.
 class MediaUploadService {
-  static const String _baseUrl = 'https://vant.chat';
+  static String get _baseUrl => NetworkConstants.apiBaseUrl;
   static const Duration _timeout = Duration(seconds: 120);
 
   /// Upload an encrypted image blob and return the one-time token.
@@ -24,18 +25,21 @@ class MediaUploadService {
     int maxRetries = 3,
   }) async {
     debugPrint(
-        '📤 MediaUploadService: uploading blob (${encryptedBlob.length} chars)');
+      '📤 MediaUploadService: uploading blob (${encryptedBlob.length} chars)',
+    );
 
     // Check blob size before upload
     if (encryptedBlob.length > 1024 * 1024) {
       debugPrint(
-          '⚠️ MediaUploadService: blob size > 1MB, this may cause timeouts');
+        '⚠️ MediaUploadService: blob size > 1MB, this may cause timeouts',
+      );
     }
 
     for (int attempt = 0; attempt < maxRetries; attempt++) {
       if (attempt > 0) {
         debugPrint(
-            '🔄 MediaUploadService: retry attempt ${attempt + 1}/$maxRetries');
+          '🔄 MediaUploadService: retry attempt ${attempt + 1}/$maxRetries',
+        );
         // Exponential backoff: 2s, 4s, 8s
         await Future.delayed(Duration(seconds: 1 << attempt));
       }
@@ -43,13 +47,15 @@ class MediaUploadService {
       try {
         final token = await _attemptUpload(encryptedBlob, onProgress);
         debugPrint(
-            '✅ MediaUploadService: upload succeeded on attempt ${attempt + 1}');
+          '✅ MediaUploadService: upload succeeded on attempt ${attempt + 1}',
+        );
         return token;
       } on TimeoutException {
         debugPrint('⏰ MediaUploadService: timeout on attempt ${attempt + 1}');
         if (attempt == maxRetries - 1) {
           throw Exception(
-              'Upload timeout after $maxRetries attempts - please check your connection and try again');
+            'Upload timeout after $maxRetries attempts - please check your connection and try again',
+          );
         }
       } catch (e) {
         debugPrint('❌ MediaUploadService: attempt ${attempt + 1} failed: $e');
@@ -82,8 +88,9 @@ class MediaUploadService {
       // (would need dio or custom implementation), so just report completion
       onProgress?.call(1.0);
 
-      final response = await http.Response.fromStream(streamedResponse)
-          .timeout(const Duration(seconds: 30));
+      final response = await http.Response.fromStream(
+        streamedResponse,
+      ).timeout(const Duration(seconds: 30));
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body) as Map<String, dynamic>;
@@ -93,7 +100,8 @@ class MediaUploadService {
       }
 
       throw Exception(
-          'Media upload failed: HTTP ${response.statusCode} – ${response.body}');
+        'Media upload failed: HTTP ${response.statusCode} – ${response.body}',
+      );
     } finally {
       client.close();
     }
@@ -112,8 +120,10 @@ class MediaUploadService {
     debugPrint('📥 MediaUploadService: downloading token=$token');
 
     try {
-      final request =
-          http.Request('GET', Uri.parse('$_baseUrl/api/media/$token'));
+      final request = http.Request(
+        'GET',
+        Uri.parse('$_baseUrl/api/media/$token'),
+      );
       final client = http.Client();
 
       try {
@@ -121,13 +131,15 @@ class MediaUploadService {
 
         if (streamedResponse.statusCode == 410) {
           debugPrint(
-              '⚠️ MediaUploadService: media already downloaded or expired (410)');
+            '⚠️ MediaUploadService: media already downloaded or expired (410)',
+          );
           return null;
         }
 
         if (streamedResponse.statusCode != 200) {
           debugPrint(
-              '❌ MediaUploadService: download failed HTTP ${streamedResponse.statusCode}');
+            '❌ MediaUploadService: download failed HTTP ${streamedResponse.statusCode}',
+          );
           return null;
         }
 
@@ -150,7 +162,8 @@ class MediaUploadService {
 
         onProgress?.call(1.0);
         debugPrint(
-            '✅ MediaUploadService: download succeeded (${blob.length} chars)');
+          '✅ MediaUploadService: download succeeded (${blob.length} chars)',
+        );
         return blob;
       } finally {
         client.close();

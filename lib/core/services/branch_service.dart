@@ -1,12 +1,12 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter_branch_sdk/flutter_branch_sdk.dart';
 import 'package:get/get.dart';
 import 'package:pear_messaging/routes/app_routes.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:http/http.dart' as http;
+import '../constants/network_constants.dart';
 import '../../storage/models/connection_request_entity.dart';
 import '../../storage/models/message_entity.dart';
 import '../../features/chat_list/chat_list_controller.dart';
@@ -235,7 +235,7 @@ class BranchService extends GetxService {
         canonicalIdentifier: 'chat/$deviceId',
         title: 'Chat with $friendlyName on Vant Chat',
         contentDescription: 'Start a secure conversation with $friendlyName',
-        imageUrl: 'https://pearmessaging.com/icon.png',
+        imageUrl: NetworkConstants.branchIconUrl,
         contentMetadata: contentMetadata,
         publiclyIndex: false,
         locallyIndex: true,
@@ -255,7 +255,7 @@ class BranchService extends GetxService {
       lp.addControlParam('\$og_description', 'Start chatting on Vant Chat');
       lp.addControlParam(
         '\$og_image_url',
-        'https://pearmessaging.com/icon.png',
+        NetworkConstants.branchIconUrl,
       );
 
       lp.addControlParam('\$deeplink_no_attribution', 'true');
@@ -271,7 +271,7 @@ class BranchService extends GetxService {
       // Force direct App Store redirect without showing web page
       lp.addControlParam(
         '\$ios_url',
-        'https://apps.apple.com/app/id6758916131',
+        '${NetworkConstants.appStoreReviewUrl}6758916131',
       );
       lp.addControlParam('\$ios_redirect_timeout', '0');
       lp.addControlParam('\$ios_passive_deepview', 'false');
@@ -283,7 +283,7 @@ class BranchService extends GetxService {
       // Android-specific: redirect to Play Store when app is not installed
       lp.addControlParam(
         '\$android_url',
-        'https://play.google.com/store/apps/details?id=com.vant.chat',
+        '${NetworkConstants.playStoreUrl}?id=com.vant.chat',
       );
       lp.addControlParam('\$android_package', 'com.vant.chat');
       lp.addControlParam('\$android_deeplink_path', 'chat');
@@ -291,11 +291,11 @@ class BranchService extends GetxService {
       // Disable the web preview page (Journeys/Deepview)
       lp.addControlParam(
         '\$desktop_url',
-        'https://pearmessaging.com',
+        NetworkConstants.branchWebsiteUrl,
       );
       lp.addControlParam(
         '\$fallback_url',
-        'https://pearmessaging.com',
+        NetworkConstants.branchWebsiteUrl,
       );
 
       // Add device_id as control parameter for backup extraction
@@ -361,7 +361,7 @@ class BranchService extends GetxService {
 
       final response = await http
           .post(
-            Uri.parse('https://api2.branch.io/v1/url'),
+            Uri.parse(NetworkConstants.branchApiUrl),
             headers: {'Content-Type': 'application/json'},
             body: jsonEncode({
               'branch_key': 'key_live_duxqKkJhod2Xdn2FEQ0Aujgjvxhu3F0E',
@@ -374,16 +374,16 @@ class BranchService extends GetxService {
                 '\$uri_redirect_mode': 2,
                 '\$always_deeplink': true,
                 '\$ios_app_store_id': '6758916131',
-                '\$ios_url': 'https://apps.apple.com/app/id6758916131',
+                '\$ios_url': '${NetworkConstants.appStoreReviewUrl}6758916131',
                 '\$ios_redirect_timeout': '0',
                 '\$ios_passive_deepview': 'false',
                 '\$ios_scheme': 'vantchat',
                 '\$ios_package': 'com.vant.chatting',
                 '\$android_url':
-                    'https://play.google.com/store/apps/details?id=com.vant.chat',
+                    '${NetworkConstants.playStoreUrl}?id=com.vant.chat',
                 '\$android_package': 'com.vant.chat',
-                '\$desktop_url': 'https://pearmessaging.com',
-                '\$fallback_url': 'https://pearmessaging.com',
+                '\$desktop_url': NetworkConstants.branchWebsiteUrl,
+                '\$fallback_url': NetworkConstants.branchWebsiteUrl,
               },
             }),
           )

@@ -51,7 +51,7 @@ class ChatScreen extends GetView<ChatController> {
         } else {
           // No navigation stack - navigate to chat list as fallback
           debugPrint('📱 No navigation stack found, navigating to chat list');
-          Get.offAllNamed('/chat-list');
+          Get.offAllNamed('/main');
         }
       },
       child: Scaffold(
@@ -110,7 +110,7 @@ class ChatScreen extends GetView<ChatController> {
                 debugPrint(
                   '📱 No navigation stack found, navigating to chat list',
                 );
-                Get.offAllNamed('/chat-list');
+                Get.offAllNamed('/main');
               }
             },
           ),

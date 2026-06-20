@@ -3,6 +3,7 @@ import '../features/splash/splash_screen.dart';
 import '../features/splash/splash_controller.dart';
 import '../features/onboarding/onboarding_screen.dart';
 import '../features/onboarding/onboarding_controller.dart';
+import '../features/main/main_navigation_screen.dart';
 import '../features/chat_list/chat_list_screen.dart';
 import '../features/chat_list/chat_list_controller.dart';
 import '../features/chat/chat_screen.dart';
@@ -14,16 +15,18 @@ import '../features/qr_scanner/qr_scanner_controller.dart';
 import '../features/notification_permission/notification_permission_screen.dart';
 import '../features/membership/membership_screen.dart';
 import '../features/membership/membership_controller.dart';
-import '../features/call/call_controller.dart';
 import '../features/call/incoming_call_screen.dart';
 import '../features/call/outgoing_call_screen.dart';
 import '../features/call/active_call_screen.dart';
+import '../features/call_history/call_history_screen.dart';
+import '../features/call_history/call_history_controller.dart';
 
 class AppRoutes {
   static const String notificationPermission = '/notification-permission';
   static const String splash = '/splash';
   static const String onboarding = '/onboarding';
-  static const String chatList = '/chat-list';
+  static const String main = '/main'; // 3-tab navigation
+  static const String chatList = '/chat-list'; // Kept for compatibility
   static const String chat = '/chat';
   static const String profile = '/profile';
   static const String qrScanner = '/qr-scanner';
@@ -31,6 +34,7 @@ class AppRoutes {
   static const String callIncoming = '/call/incoming';
   static const String callOutgoing = '/call/outgoing';
   static const String callActive = '/call/active';
+  static const String callHistory = '/call-history';
 
   static final routes = [
     GetPage(
@@ -51,11 +55,32 @@ class AppRoutes {
         Get.put(OnboardingController());
       }),
     ),
+    // Main navigation with 3 tabs (Invite | Chats | Calls)
     GetPage(
-      name: chatList,
-      page: () => ChatListScreen(),
+      name: main,
+      page: () => const MainNavigationScreen(),
       binding: BindingsBuilder(() {
         Get.put(ChatListController());
+        Get.put(CallHistoryController());
+      }),
+    ),
+
+    // Legacy route - redirects to main navigation (Chats tab)
+    GetPage(
+      name: chatList,
+      page: () => const MainNavigationScreen(),
+      binding: BindingsBuilder(() {
+        Get.put(ChatListController());
+        Get.put(CallHistoryController());
+      }),
+    ),
+
+    // Individual screens (for deep linking/navigation)
+    GetPage(
+      name: callHistory,
+      page: () => const CallHistoryScreen(),
+      binding: BindingsBuilder(() {
+        Get.put(CallHistoryController());
       }),
     ),
     GetPage(

@@ -5,6 +5,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../../core/constants/app_colors.dart';
 import '../../core/constants/app_strings.dart';
 import '../../core/constants/app_sizes.dart';
+import '../../core/constants/network_constants.dart';
 import '../../core/services/review_service.dart';
 import '../../core/services/membership_service.dart';
 import '../../routes/app_routes.dart';
@@ -16,12 +17,12 @@ class ProfileScreen extends GetView<ProfileController> {
 
   Future<String> _generateQRData() async {
     final deviceId = controller.deviceId.value;
-    return 'https://vant.chat/chat?device_id=$deviceId';
+    return '${NetworkConstants.chatShareUrl}?device_id=$deviceId';
   }
 
   /// Open Terms of Service in external browser
   void _openTermsOfService() async {
-    final Uri url = Uri.parse('https://vant.chat/privacy-policy.html');
+    final Uri url = Uri.parse(NetworkConstants.privacyPolicyUrl);
     try {
       debugPrint('🌐 Attempting to launch URL: $url');
 
@@ -63,6 +64,7 @@ class ProfileScreen extends GetView<ProfileController> {
     }
   }
 
+  @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: AppColors.background,

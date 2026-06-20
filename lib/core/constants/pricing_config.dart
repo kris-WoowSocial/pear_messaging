@@ -1,63 +1,17 @@
 class PricingConfig {
-  static const Map<String, RegionPricing> regionPricing = {
-    'USA': RegionPricing(
-      region: 'USA',
-      currency: 'USD',
-      currencySymbol: '\$',
-      sixMonthPrice: 999, // in cents
-      oneYearPrice: 1299, // in cents
-      sixMonthDisplay: '\$9.99 USD',
-      oneYearDisplay: '\$12.99 USD',
-    ),
-    'Pakistan': RegionPricing(
-      region: 'Pakistan',
-      currency: 'PKR',
-      currencySymbol: 'PKR',
-      sixMonthPrice: 119900, // in paisa (PKR 1,199)
-      oneYearPrice: 159900, // in paisa (PKR 1,599)
-      sixMonthDisplay: 'PKR 1,199',
-      oneYearDisplay: 'PKR 1,599',
-    ),
-    'India': RegionPricing(
-      region: 'India',
-      currency: 'INR',
-      currencySymbol: '₹',
-      sixMonthPrice: 59900, // in paisa (₹599)
-      oneYearPrice: 79900, // in paisa (₹799)
-      sixMonthDisplay: '₹599',
-      oneYearDisplay: '₹799',
-    ),
-    'UK': RegionPricing(
-      region: 'UK',
-      currency: 'GBP',
-      currencySymbol: '£',
-      sixMonthPrice: 799, // in pence (£7.99)
-      oneYearPrice: 999, // in pence (£9.99)
-      sixMonthDisplay: '£7.99',
-      oneYearDisplay: '£9.99',
-    ),
-    'EU': RegionPricing(
-      region: 'EU',
-      currency: 'EUR',
-      currencySymbol: '€',
-      sixMonthPrice: 7000, // in cents (€70.00)
-      oneYearPrice: 10000, // in cents (€100.00)
-      sixMonthDisplay: '€70.00',
-      oneYearDisplay: '€100.00',
-    ),
-    'HighPrice': RegionPricing(
-      region: 'HighPrice',
-      currency: 'USD',
-      currencySymbol: '\$',
-      sixMonthPrice: 7000, // $70 in cents
-      oneYearPrice: 10000, // $100 in cents
-      sixMonthDisplay: '\$70 USD',
-      oneYearDisplay: '\$100 USD',
-    ),
-  };
+  // Global flat pricing: $70 for 6 months, $100 for 1 year (USD, all countries)
+  static const RegionPricing globalPricing = RegionPricing(
+    region: 'Global',
+    currency: 'USD',
+    currencySymbol: '\$',
+    sixMonthPrice: 7000, // $70.00 in cents
+    oneYearPrice: 10000, // $100.00 in cents
+    sixMonthDisplay: '\$70 USD',
+    oneYearDisplay: '\$100 USD',
+  );
 
   static RegionPricing getPricingForRegion(String region) {
-    return regionPricing[region] ?? regionPricing['USA']!;
+    return globalPricing;
   }
 }
 

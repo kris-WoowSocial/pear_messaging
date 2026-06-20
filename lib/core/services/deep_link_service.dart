@@ -124,9 +124,4 @@ class DeepLinkService extends GetxService {
       }
     }
   }
-
-  @override
-  void onClose() {
-    super.onClose();
-  }
 }
