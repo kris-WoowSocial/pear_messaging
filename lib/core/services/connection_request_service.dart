@@ -44,7 +44,8 @@ class ConnectionRequestService extends GetxService {
   Future<void> cleanupDuplicateConnections() async {
     try {
       foundation.debugPrint(
-          '🧹 Cleaning up duplicate connections on app resume/startup...');
+        '🧹 Cleaning up duplicate connections on app resume/startup...',
+      );
 
       // Get all chats and connection requests
       final allChats = _storageService.getAllChats();
@@ -60,7 +61,8 @@ class ConnectionRequestService extends GetxService {
       for (final entry in chatsByDeviceId.entries) {
         if (entry.value.length > 1) {
           foundation.debugPrint(
-              '🔍 Found duplicate chats for ${entry.key}: ${entry.value.length}');
+            '🔍 Found duplicate chats for ${entry.key}: ${entry.value.length}',
+          );
 
           // Sort by last message time, keep the most recent
           entry.value.sort((a, b) {
@@ -73,8 +75,9 @@ class ConnectionRequestService extends GetxService {
           for (int i = 1; i < entry.value.length; i++) {
             final duplicateChat = entry.value[i];
             await _storageService.deleteChat(duplicateChat.id);
-            foundation
-                .debugPrint('🗑️ Removed duplicate chat: ${duplicateChat.id}');
+            foundation.debugPrint(
+              '🗑️ Removed duplicate chat: ${duplicateChat.id}',
+            );
           }
         }
       }
@@ -85,7 +88,8 @@ class ConnectionRequestService extends GetxService {
         if (existingChat != null) {
           _removeConnectionRequest(request.id);
           foundation.debugPrint(
-              '🗑️ Removed connection request for existing chat: ${request.senderDeviceId}');
+            '🗑️ Removed connection request for existing chat: ${request.senderDeviceId}',
+          );
         }
       }
 
@@ -102,7 +106,8 @@ class ConnectionRequestService extends GetxService {
       for (final entry in requestsByPair.entries) {
         if (entry.value.length > 1) {
           foundation.debugPrint(
-              '🔍 Found duplicate connection requests for pair ${entry.key}: ${entry.value.length}');
+            '🔍 Found duplicate connection requests for pair ${entry.key}: ${entry.value.length}',
+          );
 
           // Sort by timestamp, keep the most recent
           entry.value.sort((a, b) => b.timestamp.compareTo(a.timestamp));
@@ -112,7 +117,8 @@ class ConnectionRequestService extends GetxService {
             final duplicateRequest = entry.value[i];
             _removeConnectionRequest(duplicateRequest.id);
             foundation.debugPrint(
-                '🗑️ Removed duplicate connection request: ${duplicateRequest.id}');
+              '🗑️ Removed duplicate connection request: ${duplicateRequest.id}',
+            );
           }
         }
       }
@@ -188,7 +194,8 @@ class ConnectionRequestService extends GetxService {
     );
     if (incomingRequest != null) {
       debugPrint(
-          '🔄 SENDER LOG: Incoming request already exists from this user, skipping outgoing request');
+        '🔄 SENDER LOG: Incoming request already exists from this user, skipping outgoing request',
+      );
       return;
     }
 
@@ -286,7 +293,8 @@ class ConnectionRequestService extends GetxService {
     if (existingChat != null) {
       // Auto-accept if chat already exists
       debugPrint(
-          '📱 RECIPIENT LOG: Chat already exists with $senderDeviceId, auto-accepting');
+        '📱 RECIPIENT LOG: Chat already exists with $senderDeviceId, auto-accepting',
+      );
       acceptConnectionRequest(requestId, senderDeviceId);
       return;
     }
@@ -299,7 +307,8 @@ class ConnectionRequestService extends GetxService {
     );
     if (existingRequest != null) {
       debugPrint(
-          '🔄 RECIPIENT LOG: Connection request already exists from $senderDeviceId, skipping duplicate');
+        '🔄 RECIPIENT LOG: Connection request already exists from $senderDeviceId, skipping duplicate',
+      );
       return;
     }
 
@@ -311,7 +320,8 @@ class ConnectionRequestService extends GetxService {
     );
     if (outgoingRequest != null) {
       debugPrint(
-          '🔄 RECIPIENT LOG: Already sent request to $senderDeviceId, auto-accepting incoming request');
+        '🔄 RECIPIENT LOG: Already sent request to $senderDeviceId, auto-accepting incoming request',
+      );
       // Accept the incoming request and remove our outgoing one
       _removeConnectionRequest(outgoingRequest.id);
       acceptConnectionRequest(requestId, senderDeviceId);
@@ -321,7 +331,8 @@ class ConnectionRequestService extends GetxService {
     // Use @user_ format - no name fetching for privacy
     final senderName = StringUtils.generateFriendlyName(senderDeviceId);
     debugPrint(
-        '🔍 DEBUG: Using @user_ format for connection request: $senderDeviceId -> $senderName');
+      '🔍 DEBUG: Using @user_ format for connection request: $senderDeviceId -> $senderName',
+    );
 
     // Create connection request entity with message content and sender name
     final request = ConnectionRequestEntity(
@@ -516,7 +527,8 @@ class ConnectionRequestService extends GetxService {
       content: defaultMessage,
     );
     debugPrint(
-        '✅ Default acceptance message sent to recipient: $senderDeviceId');
+      '✅ Default acceptance message sent to recipient: $senderDeviceId',
+    );
 
     final newChat = ChatEntity(
       id: senderDeviceId,
@@ -565,15 +577,18 @@ class ConnectionRequestService extends GetxService {
     String senderDeviceId,
   ) async {
     debugPrint(
-        '🚫 Blocking connection request: $requestId from: $senderDeviceId');
+      '🚫 Blocking connection request: $requestId from: $senderDeviceId',
+    );
 
     // Enhanced validation: Check if there's an existing chat before blocking
     final existingChat = _storageService.getChat(senderDeviceId);
     if (existingChat != null) {
       debugPrint(
-          '⚠️ WARNING: Chat exists with $senderDeviceId - blocking request will NOT delete chat');
+        '⚠️ WARNING: Chat exists with $senderDeviceId - blocking request will NOT delete chat',
+      );
       debugPrint(
-          '🛡️ PROTECTION: Preserving existing chat from accidental deletion');
+        '🛡️ PROTECTION: Preserving existing chat from accidental deletion',
+      );
 
       // Only remove the connection request, NOT the chat
       _removeConnectionRequest(requestId);
@@ -651,10 +666,22 @@ class ConnectionRequestService extends GetxService {
       final existingChat = _storageService.getChat(targetDeviceId);
       ChatEntity updatedChat;
 
+      // Default acceptance message so the sender sees it as the first message too
+      const defaultAcceptMessage =
+          "Hey, I've accepted the request—let's get this chat started.";
+
       if (existingChat != null) {
-        // Update existing chat to reflect acceptance
+        // Preserve the real message if the chat already has one; otherwise show the
+        // default acceptance text until the socket message arrives and overwrites it.
+        final lastMessage =
+            (existingChat.lastMessage != null &&
+                existingChat.lastMessage!.isNotEmpty &&
+                existingChat.lastMessage !=
+                    'Connection accepted - start chatting!')
+            ? existingChat.lastMessage
+            : defaultAcceptMessage;
         updatedChat = existingChat.copyWith(
-          lastMessage: 'Connection accepted - start chatting!',
+          lastMessage: lastMessage,
           lastMessageTime: DateTime.now(),
         );
         debugPrint('🔄 SENDER LOG: Updated existing chat to accepted status');
@@ -663,7 +690,7 @@ class ConnectionRequestService extends GetxService {
         updatedChat = ChatEntity(
           id: targetDeviceId,
           userName: targetName,
-          lastMessage: 'Connection accepted - start chatting!',
+          lastMessage: defaultAcceptMessage,
           lastMessageTime: DateTime.now(),
           unreadCount: 0,
         );

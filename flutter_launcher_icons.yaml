@@ -17,5 +17,5 @@ flutter_launcher_icons:
     image_path: "assets/icons/app_icon.png"
 
   # Notification icon for Android
-  adaptive_icon_background: "#00FF41"  # VANT CHAT green color
-  adaptive_icon_foreground: "assets/icons/app_icon_foreground.png"
+  adaptive_icon_background: "#00FF41" # VANT CHAT green color
+  adaptive_icon_foreground: "assets/icons/app_icon.png"

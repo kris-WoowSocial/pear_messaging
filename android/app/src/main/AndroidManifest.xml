@@ -2,8 +2,11 @@
     xmlns:tools="http://schemas.android.com/tools"
     package="com.vant.chat">
 
-    <!-- Required for incoming call full-screen UI over lock screen (calling apps are exempt from Play policy) -->
+    <!-- Required for incoming call full-screen UI over lock screen -->
+    <!-- Justification: Voice/video calling is a core feature of the app -->
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+    <!-- Required for dismissing keyguard to show call UI over lock screen -->
+    <uses-permission android:name="android.permission.DISABLE_KEYGUARD" />
     <!-- Permissions for biometric authentication -->
     <uses-permission android:name="android.permission.USE_BIOMETRIC"/>
     <uses-permission android:name="android.permission.USE_FINGERPRINT"/>
@@ -33,21 +36,37 @@
     <!-- Audio call permissions -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <!-- Gallery/photo permissions for Android 13+ -->
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <!-- Gallery permissions for older Android versions -->
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
     <!-- Foreground service to keep call alive when app is backgrounded -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_PHONE_CALL" />
+    <!-- Self-managed ConnectionService: allows full-screen incoming call UI over lock screen -->
+    <uses-permission android:name="android.permission.MANAGE_OWN_CALLS" />
+    <!-- <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" /> -->
+    <!-- Proximity sensor wake lock for screen off during calls -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
     
     <application
         android:label="@string/app_name"
         android:name=".MainApplication"
         android:icon="@mipmap/launcher_icon"
         android:usesCleartextTraffic="true"
-        android:enableOnBackInvokedCallback="true">
+        android:enableOnBackInvokedCallback="true"
+        android:allowBackup="false"
+        android:fullBackupContent="false"
+        android:dataExtractionRules="@xml/data_extraction_rules">
+       
         <activity
             android:name=".MainActivity"
             android:exported="true"
             android:launchMode="singleTop"
-            android:taskAffinity=""
+            android:showWhenLocked="true"
+            android:turnScreenOn="true"
             android:theme="@style/LaunchTheme"
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
             android:hardwareAccelerated="true"
@@ -143,14 +162,75 @@
             android:exported="false"
             tools:replace="android:exported" />
 
-        <!-- Firebase Messaging Service -->
+        <!-- flutter_local_notifications foreground service for ongoing call notification -->
         <service
-            android:name="io.flutter.plugins.firebase.messaging.FlutterFirebaseMessagingService"
+            android:name="com.dexterous.flutterlocalnotifications.ForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
+
+        <!-- Disable the library's BootReceiver - starting a microphone foreground
+             service from BOOT_COMPLETED is illegal on Android 12+ and causes a
+             ForegroundServiceStartNotAllowedException crash. The service is only
+             started when an actual call begins (user-initiated). -->
+        <receiver
+            android:name="id.flutter.flutter_background_service.BootReceiver"
+            android:enabled="false"
+            tools:replace="android:enabled" />
+
+        <!-- Disable the library's WatchdogReceiver - it periodically tries to
+             respawn the service from background alarms, which also violates
+             Android 12+ foreground service restrictions for microphone type. -->
+        <receiver
+            android:name="id.flutter.flutter_background_service.WatchdogReceiver"
+            android:enabled="false"
+            tools:replace="android:enabled" />
+
+        <!-- Custom FCM service that handles incoming calls natively when the app is killed -->
+        <service
+            android:name=".VantFirebaseMessagingService"
             android:exported="false">
             <intent-filter>
                 <action android:name="com.google.firebase.MESSAGING_EVENT" />
             </intent-filter>
         </service>
+
+        <!-- Keep default Flutter FCM service — our custom VantFirebaseMessagingService
+             handles the com.google.firebase.MESSAGING_EVENT intent filter so it receives
+             all messages first. Non-call messages are forwarded to Flutter manually.
+             Do NOT remove this service; it is needed for Flutter plugin initialization. -->
+
+        <!-- Incoming call full-screen activity shown over the lock screen -->
+        <activity
+            android:name=".IncomingCallActivity"
+            android:exported="false"
+            android:showOnLockScreen="true"
+            android:showWhenLocked="true"
+            android:turnScreenOn="true"
+            android:excludeFromRecents="true"
+            android:taskAffinity=""
+            android:launchMode="singleInstance"
+            android:theme="@style/IncomingCallTheme" />
+
+        <!-- Self-managed ConnectionService for VoIP calls (like WhatsApp/Telegram).
+             Registers with Android Telecom to guarantee full-screen intent over lock screen. -->
+        <service
+            android:name=".VantConnectionService"
+            android:permission="android.permission.BIND_TELECOM_CONNECTION_SERVICE"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.telecom.ConnectionService" />
+            </intent-filter>
+        </service>
+
+        <!-- Incoming Call Foreground Service - ringing only (no microphone/phoneCall needed)
+             Uses shortService type on Android 14+: no special permissions, can start from background,
+             runs up to ~3 min which is plenty for ringing. Microphone FGS is only needed when
+             the call is actually answered (handled by flutter_background_service). -->
+        <service
+            android:name=".CallForegroundService"
+            android:enabled="true"
+            android:exported="false"
+            android:foregroundServiceType="shortService" />
 
         <!-- Boot receiver for Samsung devices to restart services after device restart -->
         <receiver

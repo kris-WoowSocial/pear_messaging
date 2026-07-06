@@ -2,8 +2,8 @@ import 'dart:async';
 import 'dart:io' show Platform;
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_ringtone_player/flutter_ringtone_player.dart';
-import 'package:flutter_webrtc/flutter_webrtc.dart';
 
 /// Ringtone Service - Manages call ringtone playback
 /// Handles incoming call ringtones and outgoing call tones using system sounds
@@ -11,6 +11,10 @@ class RingtoneService {
   static final RingtoneService _instance = RingtoneService._internal();
   factory RingtoneService() => _instance;
   RingtoneService._internal();
+
+  static const MethodChannel _audioChannel = MethodChannel(
+    'com.pear.messaging/audio',
+  );
 
   bool _isPlaying = false;
   bool _isOutgoing = false;
@@ -78,8 +82,6 @@ class RingtoneService {
       _isPlaying = true;
       _isOutgoing = true;
       _ringCount = 0;
-      // Ensure earpiece routing before playing
-      Helper.setSpeakerphoneOn(false);
       debugPrint(
         '🔔 RingtoneService: Playing outgoing ringback through earpiece',
       );
@@ -91,44 +93,54 @@ class RingtoneService {
     }
   }
 
-  /// Use AudioPlayer with voice-call audio context to route through earpiece
+  /// Start ringback via AudioPlayer routed through earpiece.
+  /// On Android: set MODE_IN_COMMUNICATION via native channel FIRST so the
+  /// AudioPlayer's MediaPlayer inherits the correct audio mode and routes to earpiece.
   Future<void> _startRingbackPlayer() async {
+    // Set earpiece routing BEFORE creating AudioPlayer (critical on Android)
+    if (Platform.isAndroid) {
+      try {
+        await _audioChannel.invokeMethod('setSpeakerphoneOn', {'on': false});
+        debugPrint(
+          '🔔 RingtoneService: Audio mode set to earpiece before ringback',
+        );
+      } catch (e) {
+        debugPrint('⚠️ RingtoneService: Could not set audio mode: $e');
+      }
+    }
+
     await _ringbackPlayer?.dispose();
     _ringbackPlayer = AudioPlayer();
 
-    // On Android: use AudioContextAndroid with USAGE_VOICE_COMMUNICATION so
-    // Use MEDIA content type for ringback so it doesn't interfere with call audio routing
     if (Platform.isAndroid) {
       await _ringbackPlayer!.setAudioContext(
         AudioContext(
           android: AudioContextAndroid(
-            isSpeakerphoneOn: true, // Allow speaker routing
+            isSpeakerphoneOn: false,
             stayAwake: false,
-            contentType: AndroidContentType.music,
-            usageType: AndroidUsageType.media,
-            audioFocus:
-                AndroidAudioFocus.none, // Don't take exclusive audio focus
+            contentType: AndroidContentType.speech,
+            usageType: AndroidUsageType.voiceCommunication,
+            audioFocus: AndroidAudioFocus.none,
           ),
         ),
       );
-    } else if (Platform.isIOS) {
+    } else {
       await _ringbackPlayer!.setAudioContext(
         AudioContext(
           iOS: AudioContextIOS(
-            category: AVAudioSessionCategory.ambient, // Mix with other audio
-            options: {AVAudioSessionOptions.mixWithOthers},
+            category: AVAudioSessionCategory.playAndRecord,
+            options: {},
           ),
         ),
       );
     }
 
-    await _ringbackPlayer!.setVolume(0.6);
-    await _ringbackPlayer!.setReleaseMode(ReleaseMode.loop); // Loop continuously
+    await _ringbackPlayer!.setVolume(0.8);
+    await _ringbackPlayer!.setReleaseMode(ReleaseMode.loop);
+    await _ringbackPlayer!.play(AssetSource('audio/ringback.wav'));
+    debugPrint('🔔 RingtoneService: Ringback player started');
 
-    // Play ringback beep continuously
-    _ringbackPlayer?.play(AssetSource('audio/ringback.wav'));
-
-    // Auto-stop after 2 minutes (120 seconds) max if not stopped
+    // Auto-stop after 2 minutes max
     _ringTimer = Timer(const Duration(seconds: 120), () {
       if (_isPlaying && _isOutgoing) {
         debugPrint(

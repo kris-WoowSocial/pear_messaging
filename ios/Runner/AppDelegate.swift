@@ -2,9 +2,15 @@ import Flutter
 import UIKit
 import Firebase
 import UserNotifications
+import PushKit
+import CallKit
+import flutter_callkit_incoming
 
 @main
-@objc class AppDelegate: FlutterAppDelegate {
+@objc class AppDelegate: FlutterAppDelegate, PKPushRegistryDelegate, CallkitIncomingAppDelegate {
+  // PushKit registry for VoIP pushes (required for CallKit on locked iOS)
+  var pushRegistry: PKPushRegistry?
+
   override func application(
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
@@ -30,6 +36,9 @@ import UserNotifications
     application.registerForRemoteNotifications()
     
     GeneratedPluginRegistrant.register(with: self)
+    
+    // Register for VoIP pushes so CallKit can appear on locked screen
+    setupPushKit()
     
     // Set up App Group UserDefaults method channel
     let controller = window?.rootViewController as! FlutterViewController
@@ -213,5 +222,72 @@ import UserNotifications
     
     // Handle notification tap - this will be processed by Flutter
     completionHandler()
+  }
+
+  // MARK: - PushKit / VoIP Push (required for CallKit on locked iOS)
+
+  private func setupPushKit() {
+    pushRegistry = PKPushRegistry(queue: DispatchQueue.main)
+    pushRegistry?.delegate = self
+    pushRegistry?.desiredPushTypes = [.voIP]
+    print("📱 PushKit: VoIP push registry configured")
+  }
+
+  // MARK: - PKPushRegistryDelegate
+
+  func pushRegistry(_ registry: PKPushRegistry, didUpdate pushCredentials: PKPushCredentials, for type: PKPushType) {
+    let tokenParts = pushCredentials.token.map { String(format: "%02.2hhx", $0) }
+    let token = tokenParts.joined()
+    print("📱 PushKit: VoIP token received: \(token)")
+
+    // Forward token to flutter_callkit_incoming so it can emit it to Dart
+    SwiftFlutterCallkitIncomingPlugin.sharedInstance?.setDevicePushTokenVoIP(token)
+  }
+
+  func pushRegistry(_ registry: PKPushRegistry, didInvalidatePushTokenFor type: PKPushType) {
+    print("📱 PushKit: VoIP token invalidated")
+    SwiftFlutterCallkitIncomingPlugin.sharedInstance?.setDevicePushTokenVoIP("")
+  }
+
+  func pushRegistry(_ registry: PKPushRegistry, didReceiveIncomingPushWith payload: PKPushPayload, for type: PKPushType, completion: @escaping () -> Void) {
+    print("📱 PushKit: Incoming VoIP push received: \(payload.dictionaryPayload)")
+    guard type == .voIP else {
+      completion()
+      return
+    }
+
+    // Extract call data from VoIP push payload
+    let id = payload.dictionaryPayload["callId"] as? String ?? payload.dictionaryPayload["id"] as? String ?? UUID().uuidString
+    let nameCaller = payload.dictionaryPayload["callerName"] as? String ?? "Unknown"
+    let handle = payload.dictionaryPayload["callerId"] as? String ?? ""
+    let isVideo = payload.dictionaryPayload["isVideo"] as? Bool ?? false
+
+    // Build CallKit data and show native incoming call UI on the lock screen
+    let data = flutter_callkit_incoming.Data(id: id, nameCaller: nameCaller, handle: handle, type: isVideo ? 1 : 0)
+    data.extra = payload.dictionaryPayload
+    SwiftFlutterCallkitIncomingPlugin.sharedInstance?.showCallkitIncoming(data, fromPushKit: true) {
+      completion()
+    }
+  }
+
+  // MARK: - CallkitIncomingAppDelegate (optional callbacks)
+
+  func onAccept(_ call: Call, _ action: CXAnswerCallAction) {
+    print("📱 CallKit: onAccept")
+    action.fulfill()
+  }
+
+  func onDecline(_ call: Call, _ action: CXEndCallAction) {
+    print("📱 CallKit: onDecline")
+    action.fulfill()
+  }
+
+  func onEnd(_ call: Call, _ action: CXEndCallAction) {
+    print("📱 CallKit: onEnd")
+    action.fulfill()
+  }
+
+  func onTimeOut(_ call: Call) {
+    print("📱 CallKit: onTimeOut")
   }
 }

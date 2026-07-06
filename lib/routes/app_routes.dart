@@ -4,7 +4,6 @@ import '../features/splash/splash_controller.dart';
 import '../features/onboarding/onboarding_screen.dart';
 import '../features/onboarding/onboarding_controller.dart';
 import '../features/main/main_navigation_screen.dart';
-import '../features/chat_list/chat_list_screen.dart';
 import '../features/chat_list/chat_list_controller.dart';
 import '../features/chat/chat_screen.dart';
 import '../features/chat/chat_controller.dart';
@@ -18,6 +17,7 @@ import '../features/membership/membership_controller.dart';
 import '../features/call/incoming_call_screen.dart';
 import '../features/call/outgoing_call_screen.dart';
 import '../features/call/active_call_screen.dart';
+import '../features/call/call_controller.dart';
 import '../features/call_history/call_history_screen.dart';
 import '../features/call_history/call_history_controller.dart';
 
@@ -62,6 +62,7 @@ class AppRoutes {
       binding: BindingsBuilder(() {
         Get.put(ChatListController());
         Get.put(CallHistoryController());
+        Get.put(CallController());
       }),
     ),
 
@@ -72,6 +73,7 @@ class AppRoutes {
       binding: BindingsBuilder(() {
         Get.put(ChatListController());
         Get.put(CallHistoryController());
+        Get.put(CallController());
       }),
     ),
 
@@ -111,8 +113,32 @@ class AppRoutes {
         Get.put(MembershipController());
       }),
     ),
-    GetPage(name: callIncoming, page: () => const IncomingCallScreen()),
-    GetPage(name: callOutgoing, page: () => const OutgoingCallScreen()),
-    GetPage(name: callActive, page: () => const ActiveCallScreen()),
+    GetPage(
+      name: callIncoming,
+      page: () => const IncomingCallScreen(),
+      binding: BindingsBuilder(() {
+        if (!Get.isRegistered<CallController>()) {
+          Get.put(CallController());
+        }
+      }),
+    ),
+    GetPage(
+      name: callOutgoing,
+      page: () => const OutgoingCallScreen(),
+      binding: BindingsBuilder(() {
+        if (!Get.isRegistered<CallController>()) {
+          Get.put(CallController());
+        }
+      }),
+    ),
+    GetPage(
+      name: callActive,
+      page: () => const ActiveCallScreen(),
+      binding: BindingsBuilder(() {
+        if (!Get.isRegistered<CallController>()) {
+          Get.put(CallController());
+        }
+      }),
+    ),
   ];
 }

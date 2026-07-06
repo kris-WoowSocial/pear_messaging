@@ -1,7 +1,11 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
+import 'package:pear_messaging/core/services/notification_service.dart';
+import 'package:pear_messaging/core/services/socket_service.dart';
 import 'call_controller.dart';
 import '../../core/services/ringtone_service.dart';
+import '../../core/services/callkit_service.dart';
 
 /// Incoming Call Screen - Full-screen overlay for incoming audio calls
 class IncomingCallScreen extends StatefulWidget {
@@ -15,6 +19,7 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
     with SingleTickerProviderStateMixin {
   late AnimationController _animationController;
   late Animation<double> _pulseAnimation;
+  bool _isAccepting = false;
 
   @override
   void initState() {
@@ -88,26 +93,25 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
                     ),
                     const SizedBox(height: 32),
                     // Caller name
-                    Obx(() => Text(
-                          controller.remoteDisplayName.value.isNotEmpty
-                              ? controller.remoteDisplayName.value
-                              : (callerId.isNotEmpty
+                    Obx(
+                      () => Text(
+                        controller.remoteDisplayName.value.isNotEmpty
+                            ? controller.remoteDisplayName.value
+                            : (callerId.isNotEmpty
                                   ? '@user_${callerId.substring(callerId.length >= 5 ? callerId.length - 5 : 0)}'
                                   : 'Unknown'),
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 28,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        )),
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 28,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
                     const SizedBox(height: 8),
                     // Call status
                     const Text(
                       'Incoming call...',
-                      style: TextStyle(
-                        color: Colors.white70,
-                        fontSize: 16,
-                      ),
+                      style: TextStyle(color: Colors.white70, fontSize: 16),
                     ),
                   ],
                 ),
@@ -117,8 +121,10 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
             Expanded(
               flex: 1,
               child: Padding(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 48, vertical: 32),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 48,
+                  vertical: 32,
+                ),
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                   children: [
@@ -127,14 +133,20 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
                       icon: Icons.call_end,
                       color: Colors.red,
                       label: 'Decline',
-                      onTap: () => _declineCall(callData),
+                      onTap: () {
+                        _declineCall(callData);
+                      },
                     ),
                     // Accept button
                     _buildActionButton(
                       icon: Icons.call,
                       color: Colors.green,
-                      label: 'Accept',
-                      onTap: () => _acceptCall(callData),
+                      label: _isAccepting ? 'Connecting...' : 'Accept',
+                      onTap: _isAccepting
+                          ? () {}
+                          : () {
+                              _acceptCall(callData);
+                            },
                     ),
                   ],
                 ),
@@ -170,11 +182,7 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
                 ),
               ],
             ),
-            child: Icon(
-              icon,
-              size: 32,
-              color: Colors.white,
-            ),
+            child: Icon(icon, size: 32, color: Colors.white),
           ),
         ),
         const SizedBox(height: 12),
@@ -190,31 +198,71 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
     );
   }
 
-  void _acceptCall(Map<String, dynamic>? callData) {
-    if (callData == null) return;
+  Future<void> _acceptCall(Map<String, dynamic>? callData) async {
+    if (callData == null || _isAccepting) return;
 
-    // Stop ringtone
-    final ringtoneService = RingtoneService();
-    ringtoneService.stopRingtone();
+    setState(() {
+      _isAccepting = true;
+    });
+
+    final callId = callData['callId'] as String?;
+    final sdpOffer = callData['sdpOffer'] as String?;
 
     try {
       final controller = Get.find<CallController>();
-      controller.acceptCall(callData);
+      final ringtoneService = RingtoneService();
 
-      // Navigate to active call screen
-      Get.offNamed('/call/active');
+      // Stop ringtone immediately so it doesn't keep ringing
+      await ringtoneService.stopRingtone();
+
+      // Cancel incoming call notification
+      if (callId != null && callId.isNotEmpty) {
+        NotificationService().cancelNotification(callId.hashCode);
+      }
+
+      // Dismiss the native CallKit/full-screen notification right away
+      // Only on Android - iOS CallKit handles state transition automatically
+      if (callId != null && callId.isNotEmpty && !Platform.isIOS) {
+        await CallKitService().setCallConnected(callId);
+      }
+
+      // If we have SDP offer (socket was connected), accept directly
+      if (sdpOffer != null && sdpOffer.isNotEmpty) {
+        await controller.acceptCall(callData);
+        Get.offNamed('/call/active');
+      } else {
+        // No SDP offer (socket was disconnected) - request resync from server
+        debugPrint('📞 No SDP offer, requesting call resync for $callId');
+
+        // Set pending auto-accept so resync response is auto-accepted
+        await controller.setPendingAutoAccept(callId ?? '');
+
+        // Request resync from server with retry
+        final socketService = Get.find<SocketService>();
+        _requestResyncWithRetry(socketService, callId ?? '');
+      }
     } catch (e) {
       debugPrint('❌ Error accepting call: $e');
+      setState(() {
+        _isAccepting = false;
+      });
       Get.back();
     }
   }
 
-  void _declineCall(Map<String, dynamic>? callData) {
+  Future<void> _declineCall(Map<String, dynamic>? callData) async {
     if (callData == null) return;
+
+    final callId = callData['callId'] as String?;
 
     // Stop ringtone
     final ringtoneService = RingtoneService();
-    ringtoneService.stopRingtone();
+    await ringtoneService.stopRingtone();
+
+    // Cancel incoming call notification
+    if (callId != null && callId.isNotEmpty) {
+      NotificationService().cancelNotification(callId.hashCode);
+    }
 
     try {
       final controller = Get.find<CallController>();
@@ -224,6 +272,41 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
       Get.back();
     } catch (e) {
       debugPrint('❌ Error declining call: $e');
+      Get.back();
+    }
+  }
+
+  Future<void> _requestResyncWithRetry(
+    SocketService socketService,
+    String callId,
+  ) async {
+    int retryCount = 0;
+    const maxRetries = 30; // 15 seconds total (30 * 500ms)
+
+    while (retryCount < maxRetries && _isAccepting) {
+      if (socketService.isConnected.value) {
+        debugPrint('📞 Socket connected, requesting resync for $callId');
+        socketService.requestCallResync(callId: callId);
+        return;
+      }
+
+      retryCount++;
+      if (retryCount < maxRetries) {
+        await Future.delayed(const Duration(milliseconds: 500));
+      }
+    }
+
+    // If we get here, socket didn't connect in time
+    if (_isAccepting) {
+      debugPrint('❌ Socket failed to connect within timeout');
+      Get.snackbar(
+        'Connection Error',
+        'Please check your internet connection',
+        snackPosition: SnackPosition.BOTTOM,
+      );
+      setState(() {
+        _isAccepting = false;
+      });
       Get.back();
     }
   }

@@ -7,7 +7,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>$(PRODUCT_NAME)</string>
+	<string>Vant Chat</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -50,7 +50,7 @@
 	<key>NSFaceIDUsageDescription</key>
 	<string>This app uses Face ID for secure authentication to protect your messages</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>This app needs microphone access for recording voice messages and video calls</string>
+	<string>This app needs microphone access for voice call</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>This app needs permission to save received images to your photo library</string>
 	<key>NSPhotoLibraryUsageDescription</key>

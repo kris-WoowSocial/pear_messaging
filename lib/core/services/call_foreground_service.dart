@@ -31,7 +31,8 @@ class CallForegroundService {
 
     await notifications
         .resolvePlatformSpecificImplementation<
-            AndroidFlutterLocalNotificationsPlugin>()
+          AndroidFlutterLocalNotificationsPlugin
+        >()
         ?.createNotificationChannel(androidChannel);
 
     await FlutterBackgroundService().configure(
@@ -45,9 +46,7 @@ class CallForegroundService {
         foregroundServiceNotificationId: _notificationId,
         foregroundServiceTypes: [AndroidForegroundType.microphone],
       ),
-      iosConfiguration: IosConfiguration(
-        autoStart: false,
-      ),
+      iosConfiguration: IosConfiguration(autoStart: false),
     );
 
     debugPrint('📞 CallForegroundService initialized');
@@ -59,7 +58,9 @@ class CallForegroundService {
     try {
       await FlutterBackgroundService().startService();
       _isRunning = true;
-      debugPrint('📞 CallForegroundService started — call protected from background kill');
+      debugPrint(
+        '📞 CallForegroundService started — call protected from background kill',
+      );
     } catch (e) {
       debugPrint('⚠️ CallForegroundService start failed: $e');
     }
@@ -67,13 +68,13 @@ class CallForegroundService {
 
   /// Stop the foreground service when the call ends
   Future<void> stop() async {
-    if (!_isRunning) return;
     try {
       FlutterBackgroundService().invoke('stop');
-      _isRunning = false;
-      debugPrint('📞 CallForegroundService stopped');
+      debugPrint('📞 CallForegroundService stop requested');
     } catch (e) {
       debugPrint('⚠️ CallForegroundService stop failed: $e');
+    } finally {
+      _isRunning = false;
     }
   }
 

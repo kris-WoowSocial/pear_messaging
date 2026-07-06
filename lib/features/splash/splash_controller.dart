@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'dart:io' show Platform;
 import '../../core/constants/network_constants.dart';
 import '../../core/services/local_auth_service.dart';
 import '../../core/services/local_storage_service.dart';
@@ -36,6 +38,12 @@ class SplashController extends GetxController {
 
       // If not first launch, proceed with normal initialization
       if (!isFirstLaunch.value) {
+        // On iOS, always check microphone permission on every launch
+        // Small delay ensures the splash UI is fully visible before requesting
+        if (Platform.isIOS) {
+          await Future.delayed(const Duration(milliseconds: 800));
+          await _requestMicrophonePermissionOnSplash();
+        }
         _initializeApp();
       }
     } catch (e) {
@@ -55,6 +63,13 @@ class SplashController extends GetxController {
       isFirstLaunch.value = false;
       isLoading.value = true;
 
+      // Request microphone permission on iOS splash screen (like Android)
+      // Small delay ensures the splash UI is fully visible before requesting
+      if (Platform.isIOS) {
+        await Future.delayed(const Duration(milliseconds: 800));
+        await _requestMicrophonePermissionOnSplash();
+      }
+
       // Proceed with app initialization
       await _initializeApp();
     } catch (e) {
@@ -64,6 +79,50 @@ class SplashController extends GetxController {
         'Failed to continue. Please try again.',
         snackPosition: SnackPosition.BOTTOM,
       );
+    }
+  }
+
+  /// Request microphone permission on splash screen for iOS
+  /// Shows the native iOS permission popup, or opens Settings if permanently denied
+  Future<void> _requestMicrophonePermissionOnSplash() async {
+    try {
+      final status = await Permission.microphone.status;
+      debugPrint('🎤 Splash microphone permission status: $status');
+
+      if (status.isGranted) {
+        debugPrint('✅ Microphone permission already granted');
+        return;
+      }
+
+      if (status.isPermanentlyDenied) {
+        debugPrint(
+          '🎤 Microphone permanently denied - will prompt after navigation',
+        );
+        // Delay until after navigation to home so snackbar is visible
+        Future.delayed(const Duration(seconds: 3), () {
+          Get.snackbar(
+            'Microphone Access Required',
+            'Please enable microphone in Settings to make calls.',
+            snackPosition: SnackPosition.BOTTOM,
+            duration: const Duration(seconds: 8),
+            mainButton: TextButton(
+              onPressed: () => openAppSettings(),
+              child: const Text(
+                'Open Settings',
+                style: TextStyle(color: Colors.white),
+              ),
+            ),
+          );
+        });
+        return;
+      }
+
+      // Request the native iOS microphone permission popup
+      debugPrint('🎤 Requesting microphone permission on splash screen...');
+      final result = await Permission.microphone.request();
+      debugPrint('🎤 Splash microphone permission result: $result');
+    } catch (e) {
+      debugPrint('⚠️ Error requesting microphone permission on splash: $e');
     }
   }
 
@@ -297,8 +356,8 @@ class SplashController extends GetxController {
           }
 
           // Enhanced validation: Check if connection request already exists
-          final existingRequests =
-              _storageService.getPendingConnectionRequests();
+          final existingRequests = _storageService
+              .getPendingConnectionRequests();
           final hasExistingRequest = existingRequests.any(
             (request) =>
                 request.senderDeviceId == deviceId ||

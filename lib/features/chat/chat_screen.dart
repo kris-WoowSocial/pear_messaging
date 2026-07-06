@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -15,6 +16,8 @@ import '../../core/services/membership_service.dart';
 import '../../routes/app_routes.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:flutter_image_compress/flutter_image_compress.dart';
+import 'package:permission_handler/permission_handler.dart';
+import 'package:file_picker/file_picker.dart';
 import '../../core/services/encryption_service.dart';
 import '../../core/services/media_upload_service.dart';
 import '../../core/utils/string_utils.dart';
@@ -82,8 +85,7 @@ class ChatScreen extends GetView<ChatController> {
                   style: TextStyle(
                     fontSize: AppSizes.fontS,
                     fontWeight: FontWeight.w600,
-                    color:
-                        controller.recipientOnline.value ||
+                    color: controller.recipientOnline.value ||
                             (controller.recipientLastSeen.value != null &&
                                 DateTime.now()
                                         .difference(
@@ -192,8 +194,8 @@ class ChatScreen extends GetView<ChatController> {
                                                 height: 24,
                                                 child:
                                                     CircularProgressIndicator(
-                                                      strokeWidth: 2,
-                                                    ),
+                                                  strokeWidth: 2,
+                                                ),
                                               ),
                                             ),
                                           )
@@ -781,8 +783,55 @@ class ChatScreen extends GetView<ChatController> {
   Future<void> _pickAndSendImage(ImagePicker picker, ImageSource source) async {
     String? pendingMsgId;
     try {
-      final XFile? pickedFile = await picker.pickImage(source: source);
-      if (pickedFile == null) return;
+      // Request permission before picking image (required for Samsung gallery)
+      if (source == ImageSource.gallery) {
+        debugPrint('📸 Checking gallery permission for source: $source');
+        final permissionStatus = await _requestGalleryPermission();
+        if (permissionStatus != PermissionStatus.granted) {
+          debugPrint('❌ Gallery permission denied: $permissionStatus');
+          Get.snackbar(
+            'Permission Required',
+            'Please allow access to photos to send images.',
+            snackPosition: SnackPosition.BOTTOM,
+            backgroundColor: Colors.red.shade100,
+            colorText: Colors.red.shade800,
+          );
+          return;
+        }
+        debugPrint('✅ Gallery permission granted');
+      }
+
+      debugPrint('📸 Picking image from source: $source');
+      XFile? pickedFile;
+      if (source == ImageSource.gallery) {
+        // Use file_picker only for gallery for better Samsung compatibility
+        pickedFile = await _pickImageWithFilePicker();
+      } else {
+        // For camera, use image_picker
+        pickedFile = await picker.pickImage(source: source);
+      }
+      if (pickedFile == null) {
+        debugPrint('⚠️ No image selected from picker');
+        return;
+      }
+
+      debugPrint('📸 Image picked: ${pickedFile.path}');
+
+      // Validate file exists and is readable
+      final file = File(pickedFile.path);
+      final exists = await file.exists();
+      debugPrint('📸 File exists: $exists, path: ${pickedFile.path}');
+      if (!exists) {
+        debugPrint('❌ Picked file does not exist at path: ${pickedFile.path}');
+        Get.snackbar(
+          'Error',
+          'Could not access selected image. Please try again.',
+          snackPosition: SnackPosition.BOTTOM,
+          backgroundColor: Colors.red.shade100,
+          colorText: Colors.red.shade800,
+        );
+        return;
+      }
 
       // Step 1: Compress (runs natively — won't block UI)
       final compressedBytes = await _compressImageBytes(pickedFile.path);
@@ -833,6 +882,9 @@ class ChatScreen extends GetView<ChatController> {
         errorMessage = 'Network error. Please check your internet connection.';
       } else if (e.toString().contains('1MB')) {
         errorMessage = 'Image too large. Please choose a smaller image.';
+      } else if (e.toString().contains('permission') ||
+          e.toString().contains('Permission')) {
+        errorMessage = 'Permission denied. Please allow access to photos.';
       }
 
       Get.snackbar(
@@ -843,6 +895,68 @@ class ChatScreen extends GetView<ChatController> {
         colorText: Colors.red.shade800,
         duration: const Duration(seconds: 4),
       );
+    }
+  }
+
+  /// Request appropriate gallery permission based on Android version
+  Future<PermissionStatus> _requestGalleryPermission() async {
+    try {
+      // Android 13+ (API 33+) uses READ_MEDIA_IMAGES
+      if (Platform.isAndroid) {
+        final mediaImages = await Permission.photos.request();
+        debugPrint('📸 Permission.photos status: $mediaImages');
+        if (mediaImages.isGranted) return mediaImages;
+
+        // Fallback for older Android versions
+        final storage = await Permission.storage.request();
+        debugPrint('📸 Permission.storage status: $storage');
+        if (storage.isGranted) return storage;
+
+        // Last resort: try media library
+        final media = await Permission.mediaLibrary.request();
+        debugPrint('📸 Permission.mediaLibrary status: $media');
+        return media;
+      }
+      return PermissionStatus.granted;
+    } catch (e) {
+      debugPrint('❌ Error requesting gallery permission: $e');
+      return PermissionStatus.denied;
+    }
+  }
+
+  /// Image picker using file_picker for better Samsung compatibility
+  Future<XFile?> _pickImageWithFilePicker() async {
+    try {
+      debugPrint('📸 Opening file_picker for image selection');
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.image,
+        allowMultiple: false,
+        withData: true,
+      );
+      if (result == null || result.files.isEmpty) {
+        debugPrint('⚠️ file_picker returned null');
+        return null;
+      }
+      final file = result.files.first;
+      final path = file.path;
+      if (path != null) {
+        debugPrint('📸 file_picker selected: $path');
+        return XFile(path);
+      }
+      // Fallback: save bytes to temp file if path is unavailable
+      if (file.bytes != null) {
+        final tempDir = await Directory.systemTemp.createTemp('vant_chat_');
+        final tempFile = File(
+            '${tempDir.path}/picked_image_${DateTime.now().millisecondsSinceEpoch}.jpg');
+        await tempFile.writeAsBytes(file.bytes!);
+        debugPrint('📸 file_picker saved bytes to temp file: ${tempFile.path}');
+        return XFile(tempFile.path);
+      }
+      debugPrint('⚠️ file_picker returned null path and no bytes');
+      return null;
+    } catch (e) {
+      debugPrint('❌ file_picker error: $e');
+      return null;
     }
   }
 
@@ -910,11 +1024,9 @@ class ChatScreen extends GetView<ChatController> {
     String? lastDateHeader;
 
     // Build in natural order (oldest to newest)
-    for (
-      int messageIndex = 0;
-      messageIndex < controller.messages.length;
-      messageIndex++
-    ) {
+    for (int messageIndex = 0;
+        messageIndex < controller.messages.length;
+        messageIndex++) {
       final message = controller.messages[messageIndex];
       final dateHeader = _formatDateHeader(message.timestamp);
 
@@ -963,6 +1075,15 @@ class ChatScreen extends GetView<ChatController> {
   /// Start an audio call
   void _startAudioCall() {
     try {
+      // Check membership before starting call
+      if (Get.isRegistered<MembershipService>()) {
+        final membershipService = Get.find<MembershipService>();
+        if (!membershipService.canMakeCalls) {
+          Get.toNamed(AppRoutes.membership);
+          return;
+        }
+      }
+
       // Get CallController
       if (!Get.isRegistered<CallController>()) {
         Get.put(CallController());

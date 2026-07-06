@@ -14,25 +14,35 @@ class CallHistoryScreen extends GetView<CallHistoryController> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: AppColors.background,
       appBar: AppBar(
         backgroundColor: AppColors.surface,
+        toolbarHeight: 70,
         elevation: 0,
-        title: const Text(
-          'Calls',
-          style: TextStyle(
-            color: AppColors.textPrimary,
-            fontWeight: FontWeight.bold,
-          ),
+        title: const Column(
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            SizedBox(height: 8),
+            Text(
+              'Calls',
+              style: TextStyle(
+                color: AppColors.textPrimary,
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            SizedBox(height: 2),
+            Text(
+              'E2E-PQC Encrypted Voice Calls',
+              style: TextStyle(
+                color: AppColors.textPrimary,
+                fontSize: 10,
+                fontWeight: FontWeight.w400,
+              ),
+            ),
+          ],
         ),
+        centerTitle: true,
         actions: [
-          // Search icon
-          IconButton(
-            icon: const Icon(Icons.search, color: AppColors.textPrimary),
-            onPressed: () {
-              // TODO: Show search field
-            },
-          ),
           // Clear all
           IconButton(
             icon: const Icon(
@@ -66,12 +76,12 @@ class CallHistoryScreen extends GetView<CallHistoryController> {
   Widget _buildSearchBar() {
     return Container(
       padding: const EdgeInsets.all(AppSizes.paddingM),
-      color: AppColors.surface,
+      color: AppColors.primary,
       child: TextField(
         controller: controller.searchController,
         decoration: InputDecoration(
           hintText: 'Search calls...',
-          prefixIcon: const Icon(Icons.search, color: AppColors.textSecondary),
+          prefixIcon: const Icon(Icons.search, color: AppColors.textPrimary),
           filled: true,
           fillColor: AppColors.background,
           border: OutlineInputBorder(
@@ -92,20 +102,27 @@ class CallHistoryScreen extends GetView<CallHistoryController> {
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(Icons.phone_missed_outlined, size: 64, color: Colors.grey[400]),
+          Icon(
+            Icons.phone_missed_outlined,
+            size: 64,
+            color: AppColors.textPrimary.withOpacity(0.3),
+          ),
           const SizedBox(height: 16),
           Text(
             'No call history yet',
             style: TextStyle(
               fontSize: 18,
-              color: Colors.grey[600],
+              color: AppColors.textPrimary.withOpacity(0.5),
               fontWeight: FontWeight.w500,
             ),
           ),
           const SizedBox(height: 8),
           Text(
             'Your calls will appear here',
-            style: TextStyle(fontSize: 14, color: Colors.grey[500]),
+            style: TextStyle(
+              fontSize: 14,
+              color: AppColors.textPrimary.withOpacity(0.4),
+            ),
           ),
         ],
       ),
@@ -133,7 +150,7 @@ class CallHistoryScreen extends GetView<CallHistoryController> {
                 style: TextStyle(
                   fontSize: 12,
                   fontWeight: FontWeight.w600,
-                  color: AppColors.primary,
+                  color: AppColors.textSecondary,
                 ),
               ),
             ),
@@ -179,56 +196,102 @@ class CallHistoryScreen extends GetView<CallHistoryController> {
       statusText = 'Failed';
     }
 
-    return Dismissible(
-      key: Key(entry.id),
-      direction: DismissDirection.endToStart,
-      background: Container(
-        color: Colors.red,
-        alignment: Alignment.centerRight,
-        padding: const EdgeInsets.only(right: 16),
-        child: const Icon(Icons.delete, color: Colors.white),
-      ),
-      onDismissed: (_) => controller.deleteEntry(entry.id),
-      child: ListTile(
-        leading: _buildAvatar(displayName, avatarUrl, isMissed),
-        title: Text(
-          displayName,
-          style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 16),
-        ),
-        subtitle: Row(
-          children: [
-            Icon(directionIcon, size: 14, color: iconColor),
-            const SizedBox(width: 4),
-            Text(
-              statusText,
-              style: TextStyle(
-                color: isMissed ? Colors.red : Colors.grey[600],
-                fontSize: 13,
+    return SizedBox(
+      height: 65,
+      width: double.infinity,
+      child: Column(
+        children: [
+          SizedBox(
+            height: 64,
+            child: Dismissible(
+              key: Key(entry.id),
+              direction: DismissDirection.endToStart,
+              background: Container(
+                color: AppColors.error,
+                alignment: Alignment.centerRight,
+                padding: const EdgeInsets.only(right: 16),
+                child: const Icon(Icons.delete, color: Colors.white),
+              ),
+              onDismissed: (_) => controller.deleteEntry(entry.id),
+              child: InkWell(
+                onTap: () => _initiateCall(entry.remoteDeviceId, displayName),
+                child: Container(
+                  height: AppSizes.chatItemHeight,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: AppSizes.paddingM,
+                    vertical: AppSizes.paddingS,
+                  ),
+                  child: Row(
+                    children: [
+                      _buildAvatar(displayName, avatarUrl, isMissed),
+                      const SizedBox(width: AppSizes.paddingM),
+                      Expanded(
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    displayName,
+                                    style: const TextStyle(
+                                      fontSize: AppSizes.fontL,
+                                      fontWeight: FontWeight.w600,
+                                      color: AppColors.textPrimary,
+                                    ),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                                Text(
+                                  _formatTime(entry.timestamp),
+                                  style: const TextStyle(
+                                    fontSize: AppSizes.fontS,
+                                    color: AppColors.textPrimary,
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 4),
+                            Row(
+                              children: [
+                                Icon(directionIcon, size: 14, color: iconColor),
+                                const SizedBox(width: 4),
+                                Text(
+                                  statusText,
+                                  style: TextStyle(
+                                    color: isMissed
+                                        ? AppColors.error
+                                        : AppColors.textPrimary
+                                            .withOpacity(0.7),
+                                    fontSize: AppSizes.fontM,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.phone,
+                            color: AppColors.messageText),
+                        onPressed: () =>
+                            _initiateCall(entry.remoteDeviceId, displayName),
+                      ),
+                    ],
+                  ),
+                ),
               ),
             ),
-          ],
-        ),
-        trailing: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            // Timestamp
-            Text(
-              _formatTime(entry.timestamp),
-              style: TextStyle(color: Colors.grey[500], fontSize: 12),
-            ),
-            const SizedBox(width: 12),
-            // Call button
-            IconButton(
-              icon: const Icon(Icons.phone, color: AppColors.primary),
-              onPressed: () => _initiateCall(entry.remoteDeviceId, displayName),
-            ),
-          ],
-        ),
-        onTap: () {
-          // Simple approach: tap initiates call
-          // For WhatsApp-parity with details screen, would show bottom sheet
-          _initiateCall(entry.remoteDeviceId, displayName);
-        },
+          ),
+          const Divider(
+            height: 1,
+            indent: AppSizes.paddingM + AppSizes.avatarSize + AppSizes.paddingM,
+            color: AppColors.divider,
+          ),
+        ],
       ),
     );
   }
@@ -239,21 +302,21 @@ class CallHistoryScreen extends GetView<CallHistoryController> {
     return Stack(
       children: [
         Container(
-          width: 48,
-          height: 48,
+          width: AppSizes.avatarSize,
+          height: AppSizes.avatarSize,
           decoration: BoxDecoration(
             color: isMissed
-                ? Colors.red.withOpacity(0.1)
-                : AppColors.primary.withOpacity(0.1),
+                ? AppColors.error.withOpacity(0.1)
+                : AppColors.senderBubble,
             shape: BoxShape.circle,
           ),
           child: Center(
             child: Text(
               initial,
               style: TextStyle(
-                fontSize: 20,
+                fontSize: AppSizes.fontXL,
                 fontWeight: FontWeight.bold,
-                color: isMissed ? Colors.red : AppColors.primary,
+                color: isMissed ? AppColors.error : AppColors.textPrimary,
               ),
             ),
           ),
@@ -266,7 +329,7 @@ class CallHistoryScreen extends GetView<CallHistoryController> {
               width: 14,
               height: 14,
               decoration: const BoxDecoration(
-                color: Colors.red,
+                color: AppColors.error,
                 shape: BoxShape.circle,
               ),
               child: const Icon(Icons.close, size: 10, color: Colors.white),

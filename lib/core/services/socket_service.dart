@@ -42,6 +42,7 @@ class SocketService extends GetxService {
 
   // Callbacks for WebRTC call events
   Function(Map<String, dynamic>)? onIncomingCall;
+  Function(Map<String, dynamic>)? onCallInitiated;
   Function(Map<String, dynamic>)? onCallAccepted;
   Function(Map<String, dynamic>)? onCallRejected;
   Function(Map<String, dynamic>)? onCallTerminated;
@@ -233,8 +234,9 @@ class SocketService extends GetxService {
     _socket?.on('pending_messages', (data) {
       debugPrint('📬 Pending messages received: ${(data as List).length}');
       if (onPendingMessages != null) {
-        final messages =
-            (data).map((msg) => Map<String, dynamic>.from(msg)).toList();
+        final messages = (data)
+            .map((msg) => Map<String, dynamic>.from(msg))
+            .toList();
         onPendingMessages!(messages);
         // Send message acks for all pending messages
         for (final message in messages) {
@@ -313,6 +315,14 @@ class SocketService extends GetxService {
       debugPrint('📞 Incoming call: $data');
       if (onIncomingCall != null && data != null) {
         onIncomingCall!(Map<String, dynamic>.from(data));
+      }
+    });
+
+    // WebRTC Call: Call initiated (server-assigned callId for caller)
+    _socket?.on('call_initiated', (data) {
+      debugPrint('📞 Call initiated: $data');
+      if (onCallInitiated != null && data != null) {
+        onCallInitiated!(Map<String, dynamic>.from(data));
       }
     });
 
@@ -493,8 +503,11 @@ class SocketService extends GetxService {
     // ✅ Encrypt content using EncryptionService
     final encryptedContent = EncryptionService.encryptMessage(content);
 
-    // Determine notification body - use friendly text for media messages
-    String notificationBody = content;
+    // PRIVACY: Never send actual message content in the notification body.
+    // The server sends a generic "You have a new message" notification body to
+    // FCM/APNs so no message content is ever visible to push servers or on
+    // the lock screen.
+    String notificationBody = 'You have a new message';
     if (content.startsWith('MEDIA:') || content.startsWith('IMAGE:')) {
       notificationBody = '📷 Photo';
     }
@@ -505,7 +518,8 @@ class SocketService extends GetxService {
       'receiverDeviceId': recipientDeviceId,
       'encryptedPayload': encryptedContent, // ✅ Now encrypted
       'timestamp': timestamp,
-      "body": notificationBody, // User-friendly text for notifications
+      "body":
+          notificationBody, // Generic notification label (never actual content)
       // Don't include sender name - recipient will determine from their local storage
       // Add replyTo if present
       if (replyTo != null) 'replyTo': replyTo,

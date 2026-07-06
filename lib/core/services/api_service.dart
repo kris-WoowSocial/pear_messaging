@@ -53,29 +53,6 @@ class ApiService extends GetxService {
 
   // ── Membership ──────────────────────────────────────────────────────────────
 
-  Future<Map<String, dynamic>> generateCryptoAddress({
-    required String deviceId,
-    required String planId,
-    required String countryCode,
-    required String coin,
-  }) async {
-    final res = await _post('/api/membership/generate-crypto-address', {
-      'deviceId': deviceId,
-      'planId': planId,
-      'countryCode': countryCode,
-      'coin': coin,
-    });
-    return _decode(res, 'generateCryptoAddress');
-  }
-
-  Future<Map<String, dynamic>> checkCryptoPayment(String deviceId,
-      {String? coin}) async {
-    final query = coin != null ? '?coin=$coin' : '';
-    final res =
-        await _get('/api/membership/check-crypto-payment/$deviceId$query');
-    return _decode(res, 'checkCryptoPayment');
-  }
-
   Future<Map<String, dynamic>> syncMembershipStatus(String deviceId) async {
     final res = await _get('/api/membership/sync-status/$deviceId');
     return _decode(res, 'syncMembershipStatus');
@@ -86,81 +63,6 @@ class ApiService extends GetxService {
     if (res.statusCode >= 300) {
       throw Exception('[unregisterDevice] HTTP ${res.statusCode}');
     }
-  }
-
-  Future<Map<String, dynamic>> getCryptoPricing({
-    required String deviceId,
-    required String countryCode,
-  }) async {
-    final res = await _post('/api/membership/crypto-pricing', {
-      'deviceId': deviceId,
-      'countryCode': countryCode,
-    });
-    return _decode(res, 'getCryptoPricing');
-  }
-
-  Future<Map<String, dynamic>> createStripePaymentIntent({
-    required String deviceId,
-    required String planId,
-    required String countryCode,
-  }) async {
-    final res = await _post('/api/membership/create-payment-intent', {
-      'deviceId': deviceId,
-      'planId': planId,
-      'countryCode': countryCode,
-    });
-    return _decode(res, 'createStripePaymentIntent');
-  }
-
-  Future<Map<String, dynamic>> confirmStripePayment({
-    required String deviceId,
-    required String paymentIntentId,
-    required String planId,
-    required String countryCode,
-  }) async {
-    final res = await _post('/api/membership/confirm-payment', {
-      'deviceId': deviceId,
-      'paymentIntentId': paymentIntentId,
-      'planId': planId,
-      'countryCode': countryCode,
-    });
-    return _decode(res, 'confirmStripePayment');
-  }
-
-  Future<Map<String, dynamic>> createStripeIntent({
-    required String deviceId,
-    required String planId,
-    required int amount,
-    required String currency,
-  }) async {
-    final res = await _post('/api/membership/create-payment-intent', {
-      'deviceId': deviceId,
-      'planId': planId,
-      'amount': amount,
-      'currency': currency,
-    });
-    return _decode(res, 'createStripeIntent');
-  }
-
-  Future<Map<String, dynamic>> recordStripePurchase({
-    required String deviceId,
-    required String planId,
-    required int amount,
-    required String currency,
-    required String paymentIntentId,
-    required String countryCode,
-    String? cardCountry,
-  }) async {
-    final res = await _post('/api/membership/record-stripe-purchase', {
-      'deviceId': deviceId,
-      'planId': planId,
-      'amount': amount,
-      'currency': currency,
-      'paymentIntentId': paymentIntentId,
-      'countryCode': countryCode,
-      if (cardCountry != null) 'cardCountry': cardCountry,
-    });
-    return _decode(res, 'recordStripePurchase');
   }
 
   // ── Username ─────────────────────────────────────────────────────────────────

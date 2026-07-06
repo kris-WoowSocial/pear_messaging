@@ -61,26 +61,24 @@ class ActiveCallScreen extends StatelessWidget {
                   ),
                   const SizedBox(height: 24),
                   // Contact name
-                  Obx(() => Text(
-                        controller.remoteDisplayName.value.isNotEmpty
-                            ? controller.remoteDisplayName.value
-                            : 'Unknown',
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 32,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      )),
+                  Obx(
+                    () => Text(
+                      controller.remoteDisplayName.value.isNotEmpty
+                          ? controller.remoteDisplayName.value
+                          : 'Unknown',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 32,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
                   const SizedBox(height: 8),
                   // E2EE indicator
                   Row(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      const Icon(
-                        Icons.lock,
-                        size: 16,
-                        color: Colors.green,
-                      ),
+                      const Icon(Icons.lock, size: 16, color: Colors.green),
                       const SizedBox(width: 4),
                       const Text(
                         'End-to-End Encrypted',
@@ -94,14 +92,16 @@ class ActiveCallScreen extends StatelessWidget {
                   ),
                   const SizedBox(height: 24),
                   // Call duration
-                  Obx(() => Text(
-                        controller.callDuration.value,
-                        style: const TextStyle(
-                          color: Colors.white70,
-                          fontSize: 24,
-                          fontWeight: FontWeight.w300,
-                        ),
-                      )),
+                  Obx(
+                    () => Text(
+                      controller.callDuration.value,
+                      style: const TextStyle(
+                        color: Colors.white70,
+                        fontSize: 24,
+                        fontWeight: FontWeight.w300,
+                      ),
+                    ),
+                  ),
                 ],
               ),
             ),
@@ -114,23 +114,27 @@ class ActiveCallScreen extends StatelessWidget {
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  // First row: Mute and Speaker
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                    children: [
-                      _buildControlButton(
-                        icon: Icons.mic,
-                        label: 'Mute',
-                        isActive: controller.isMuted.value,
-                        onTap: controller.toggleMute,
-                      ),
-                      _buildControlButton(
-                        icon: Icons.volume_up,
-                        label: 'Speaker',
-                        isActive: controller.isSpeakerOn.value,
-                        onTap: controller.toggleSpeaker,
-                      ),
-                    ],
+                  // First row: Mute and Speaker (Obx for reactive updates)
+                  Obx(
+                    () => Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                      children: [
+                        _buildControlButton(
+                          icon: controller.isMuted.value
+                              ? Icons.mic_off
+                              : Icons.mic,
+                          label: controller.isMuted.value ? 'Unmute' : 'Mute',
+                          isActive: controller.isMuted.value,
+                          onTap: controller.toggleMute,
+                        ),
+                        _buildControlButton(
+                          icon: Icons.volume_up,
+                          label: 'Speaker',
+                          isActive: controller.isSpeakerOn.value,
+                          onTap: () => controller.toggleSpeaker(),
+                        ),
+                      ],
+                    ),
                   ),
                   const SizedBox(height: 48),
                   // Second row: End call
@@ -211,11 +215,7 @@ class ActiveCallScreen extends StatelessWidget {
             ),
           ],
         ),
-        child: const Icon(
-          Icons.call_end,
-          size: 32,
-          color: Colors.white,
-        ),
+        child: const Icon(Icons.call_end, size: 32, color: Colors.white),
       ),
     );
   }

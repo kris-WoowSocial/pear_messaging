@@ -92,4 +92,8 @@ dependencies {
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.0.4")
     implementation("io.branch.sdk.android:library:5.+")
     implementation("com.google.android.material:material:1.9.0")
+    implementation("com.google.firebase:firebase-messaging:24.1.0")
+    implementation("com.github.bumptech.glide:glide:4.16.0")
+    // Self-managed ConnectionService for incoming call UI over lock screen (Android 14+)
+    implementation("androidx.core:core-telecom:1.0.0")
 }

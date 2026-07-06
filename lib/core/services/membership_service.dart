@@ -58,6 +58,11 @@ class MembershipService extends GetxService {
     return daysInstalled.value < _freeMediaDays;
   }
 
+  bool get canMakeCalls {
+    if (isPremium) return true;
+    return daysInstalled.value < _freeMediaDays;
+  }
+
   int get freeMediaDaysRemaining {
     if (isPremium) return -1;
     final remaining = _freeMediaDays - daysInstalled.value;

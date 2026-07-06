@@ -1,6 +1,8 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:hive_flutter/hive_flutter.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../core/services/api_service.dart';
 import 'package:get/get.dart';
@@ -9,6 +11,7 @@ import '../../core/constants/app_colors.dart';
 import '../../core/constants/app_strings.dart';
 import '../../core/constants/app_sizes.dart';
 import '../../core/services/socket_service.dart';
+import '../../core/utils/device_utils.dart';
 import '../../core/widgets/empty_state.dart';
 import '../../routes/app_routes.dart';
 import 'chat_list_controller.dart';
@@ -116,7 +119,7 @@ class ChatListScreen extends GetView<ChatListController> {
                                 child: Text(
                                   controller.userDisplayName.isNotEmpty
                                       ? controller.userDisplayName[0]
-                                            .toUpperCase()
+                                          .toUpperCase()
                                       : 'U',
                                   style: const TextStyle(
                                     color: AppColors.textPrimary,
@@ -287,8 +290,7 @@ class ChatListScreen extends GetView<ChatListController> {
               );
 
               return ListView.builder(
-                itemCount:
-                    controller.pendingConnectionRequests.length +
+                itemCount: controller.pendingConnectionRequests.length +
                     controller.filteredChats.length,
                 itemBuilder: (context, index) {
                   // First show connection requests, then chats
@@ -315,8 +317,7 @@ class ChatListScreen extends GetView<ChatListController> {
                         if (chatIndex < controller.filteredChats.length - 1)
                           const Divider(
                             height: 1,
-                            indent:
-                                AppSizes.paddingM +
+                            indent: AppSizes.paddingM +
                                 AppSizes.avatarSize +
                                 AppSizes.paddingM,
                             color: AppColors.divider,
@@ -358,7 +359,7 @@ class _SelfDestructSheetState extends State<_SelfDestructSheet> {
     try {
       debugPrint('🔥 Starting self-destruct sequence...');
 
-      // Unregister FCM token from server so no more notifications are sent
+      // 1. Unregister FCM token from server so no more notifications are sent
       try {
         final prefs = await SharedPreferences.getInstance();
         final deviceId = prefs.getString('device_id');
@@ -372,23 +373,88 @@ class _SelfDestructSheetState extends State<_SelfDestructSheet> {
         debugPrint('⚠️ Failed to unregister FCM token (continuing wipe): $e');
       }
 
-      // Clear all Hive boxes
-      debugPrint('🗑️ Clearing Hive boxes...');
-      await Hive.box('chats').clear();
-      debugPrint('✅ Chats box cleared');
-      await Hive.box('messages').clear();
-      debugPrint('✅ Messages box cleared');
-      await Hive.box('connection_requests').clear();
-      debugPrint('✅ Connection requests box cleared');
+      // 2. Clear ALL Hive boxes (chats, messages, connection_requests, call_history, image_cache)
+      debugPrint('🗑️ Clearing all Hive boxes...');
+      final hiveBoxNames = [
+        'chats',
+        'messages',
+        'connection_requests',
+        'call_history',
+        'image_cache',
+      ];
+      for (final boxName in hiveBoxNames) {
+        try {
+          if (Hive.isBoxOpen(boxName)) {
+            await Hive.box(boxName).clear();
+          } else {
+            final box = await Hive.openBox(boxName);
+            await box.clear();
+          }
+          debugPrint('✅ $boxName box cleared');
+        } catch (e) {
+          debugPrint('⚠️ Failed to clear $boxName box: $e');
+        }
+      }
 
-      // Clear all SharedPreferences
+      // 3. Delete encrypted image files from disk
+      debugPrint('🗑️ Deleting encrypted images from disk...');
+      try {
+        final appDir = await getApplicationDocumentsDirectory();
+        final secureImagesDir = Directory('${appDir.path}/secure_images');
+        if (await secureImagesDir.exists()) {
+          await secureImagesDir.delete(recursive: true);
+          debugPrint('✅ Secure images directory deleted');
+        }
+      } catch (e) {
+        debugPrint('⚠️ Failed to delete secure images: $e');
+      }
+
+      // 4. Delete all encryption keys from Flutter Secure Storage
+      debugPrint('🗑️ Clearing Flutter Secure Storage...');
+      try {
+        const secureStorage = FlutterSecureStorage(
+          aOptions: AndroidOptions(encryptedSharedPreferences: true),
+          iOptions: IOSOptions(accountName: 'PearMessagingSecureKey'),
+        );
+        await secureStorage.deleteAll();
+        debugPrint('✅ Flutter Secure Storage cleared');
+      } catch (e) {
+        debugPrint('⚠️ Failed to clear secure storage: $e');
+      }
+
+      // 5. Close all Hive boxes and delete Hive data from disk
+      debugPrint('🗑️ Closing and deleting Hive from disk...');
+      try {
+        await Hive.close();
+        final appDir = await getApplicationDocumentsDirectory();
+        final hiveDir = Directory(appDir.path);
+        final hiveFiles = hiveDir.listSync().where(
+              (f) => f.path.endsWith('.hive') || f.path.endsWith('.lock'),
+            );
+        for (final file in hiveFiles) {
+          try {
+            await file.delete();
+          } catch (_) {}
+        }
+        debugPrint('✅ Hive files deleted from disk');
+      } catch (e) {
+        debugPrint('⚠️ Failed to delete Hive files: $e');
+      }
+
+      // 6. Clear all SharedPreferences
       debugPrint('🗑️ Clearing SharedPreferences...');
       final prefs = await SharedPreferences.getInstance();
       await prefs.clear();
       debugPrint('✅ SharedPreferences cleared');
 
-      // Trigger app uninstall on Android
+      // 7. Platform-specific finalization
       if (Theme.of(context).platform == TargetPlatform.android) {
+        // Generate new device ID so if user cancels uninstall, app starts fresh
+        final freshPrefs = await SharedPreferences.getInstance();
+        final newDeviceId = DeviceUtils.generateNewDeviceId();
+        await freshPrefs.setString('device_id', newDeviceId);
+        debugPrint('🆕 New device ID generated for fresh start: $newDeviceId');
+
         debugPrint('📱 Triggering Android uninstall...');
         final intent = AndroidIntent(
           action: 'android.intent.action.DELETE',
@@ -405,10 +471,8 @@ class _SelfDestructSheetState extends State<_SelfDestructSheet> {
         Get.offAllNamed(AppRoutes.splash);
       }
 
-      // For iOS, set flag to generate new device ID on next launch and exit app
       if (Theme.of(context).platform == TargetPlatform.iOS) {
         debugPrint('🍎 Setting iOS self-destruct flag...');
-        // Need fresh prefs instance since we cleared the previous one
         final freshPrefs = await SharedPreferences.getInstance();
         await freshPrefs.setBool('self_destruct_ios', true);
         debugPrint('✅ iOS self-destruct flag set, exiting app...');
@@ -502,9 +566,8 @@ class _SelfDestructSheetState extends State<_SelfDestructSheet> {
                 // Cancel button
                 Expanded(
                   child: TextButton(
-                    onPressed: _isDeleting
-                        ? null
-                        : () => Navigator.pop(context),
+                    onPressed:
+                        _isDeleting ? null : () => Navigator.pop(context),
                     style: TextButton.styleFrom(
                       padding: const EdgeInsets.symmetric(vertical: 16),
                       shape: RoundedRectangleBorder(

@@ -71,7 +71,8 @@ class CallHistoryController extends GetxController {
     final confirmed = await Get.dialog<bool>(
       AlertDialog(
         title: const Text('Clear Call History?'),
-        content: const Text('This will delete all call history entries. This cannot be undone.'),
+        content: const Text(
+            'This will delete all call history entries. This cannot be undone.'),
         actions: [
           TextButton(
             onPressed: () => Get.back(result: false),
@@ -132,16 +133,18 @@ class CallHistoryController extends GetxController {
   }
 
   String _getWeekdayName(DateTime date) {
-    const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+    const days = [
+      'Monday',
+      'Tuesday',
+      'Wednesday',
+      'Thursday',
+      'Friday',
+      'Saturday',
+      'Sunday'
+    ];
     return days[date.weekday - 1];
   }
 
   /// Count missed calls for badge
   int get missedCallCount => _callHistoryService.getMissedCallCount();
-
-  /// Refresh from storage
-  void refresh() {
-    _callHistoryService.refresh();
-    _loadEntries();
-  }
 }

@@ -31,8 +31,6 @@ import 'core/services/review_service.dart';
 import 'core/services/region_service.dart';
 import 'core/services/membership_service.dart';
 import 'core/services/iap_service.dart';
-import 'core/services/stripe_service.dart';
-import 'core/services/crypto_service.dart';
 import 'core/services/report_service.dart';
 import 'core/services/api_service.dart';
 import 'core/services/app_lifecycle_service.dart';
@@ -43,7 +41,10 @@ import 'core/services/secure_image_storage_service.dart';
 import 'core/services/chat_media_service.dart';
 import 'core/services/call_history_service.dart';
 import 'core/services/webrtc_call_service.dart';
+import 'core/services/call_foreground_service.dart';
 import 'core/services/callkit_service.dart';
+import 'core/services/notification_service.dart';
+import 'core/utils/string_utils.dart';
 import 'features/call/call_controller.dart';
 
 void main() async {
@@ -168,6 +169,10 @@ void initializeNonCriticalServices() async {
     // for deferred deep linking (when user installs app from Play Store after clicking link)
     await Get.putAsync(() => InvitationStorageService().init());
 
+    // Initialize CallKit native UI event listeners BEFORE FCM so any incoming call
+    // shown by FCM can have its accept/decline/end events handled immediately.
+    await CallKitService().initialize();
+
     // Run remaining non-critical initializations in parallel for speed
     await Future.wait([
       // FCM for push notifications - now Firebase is ready
@@ -194,12 +199,6 @@ void initializeNonCriticalServices() async {
 
       // In-app purchase service
       Get.putAsync(() => IAPService().init()),
-
-      // Stripe payment service
-      Get.putAsync(() => StripeService().init()),
-
-      // Crypto payment service
-      Get.putAsync(() => CryptoService().init()),
 
       // URL preview service for link previews
       Get.putAsync(() => UrlPreviewService().init()),
@@ -364,31 +363,4 @@ Future<void> requestMicrophonePermission() async {
   } catch (e) {
     debugPrint('⚠️ Error requesting microphone permission: $e');
   }
-}
-
-/// FCM Background Message Handler - Called when app is killed/backgrounded
-/// This MUST be a top-level function with @pragma('vm:entry-point')
-/// CRITICAL: Background isolate has NO GetX, NO services, NO foreground service access
-/// Only safe operations: Hive, http, FlutterCallkitIncoming, SharedPreferences
-@pragma('vm:entry-point')
-Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
-  final type = message.data['type'];
-
-  if (type == 'incoming_call') {
-    // CallKitService.handleBackgroundMessage is crash-safe and handles everything:
-    // native ringtone, full-screen UI, Accept/Decline buttons, wake lock
-    await CallKitService.handleBackgroundMessage(message);
-    return;
-  }
-
-  if (type == 'call_cancelled') {
-    final callId = message.data['callId'];
-    if (callId != null && callId.isNotEmpty) {
-      await FlutterCallkitIncoming.endCall(callId);
-    }
-    return;
-  }
-
-  // Chat message handling - unchanged
-  // ...
 }

@@ -1,11 +1,10 @@
+import 'dart:io' show Platform;
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../../core/constants/app_colors.dart';
 import '../../core/constants/network_constants.dart';
 import '../../core/services/membership_service.dart';
-import '../../core/services/region_service.dart';
-import '../../core/services/crypto_service.dart';
 import '../../core/constants/pricing_config.dart';
 import 'membership_controller.dart';
 
@@ -64,8 +63,8 @@ class MembershipScreen extends GetView<MembershipController> {
                         // Terms and Conditions Checkbox
                         Obx(() => _buildTermsCheckbox()),
                         const SizedBox(height: 16),
-                        // Payment Method Selection
-                        _buildPaymentMethodSelection(),
+                        // Payment Method Info
+                        _buildPaymentMethodInfo(context),
                         const SizedBox(height: 24),
                         // Plan cards
                         Obx(
@@ -114,19 +113,27 @@ class MembershipScreen extends GetView<MembershipController> {
                         _buildFeaturesSection(),
                         const SizedBox(height: 16),
                         // Required Subscription Information
-                        // _buildSubscriptionInfo(),
-                        // const SizedBox(height: 16),
+                        _buildSubscriptionInfo(),
+                        const SizedBox(height: 16),
                         // Legal Links
                         _buildLegalLinks(),
                         const SizedBox(height: 20),
                         // Disclaimer
-                        Text(
-                          'Payment processed via App Store/Google Play. Manage subscription from your profile.',
-                          style: TextStyle(
-                            fontSize: 11,
-                            color: Colors.white.withOpacity(0.35),
-                          ),
-                          textAlign: TextAlign.center,
+                        Builder(
+                          builder: (context) {
+                            final isAndroid = Theme.of(context).platform ==
+                                TargetPlatform.android;
+                            return Text(
+                              isAndroid
+                                  ? 'Payment processed via Google Play. Manage subscription from your Google Play account.'
+                                  : 'Payment processed via App Store. Manage subscription from your Apple ID account.',
+                              style: TextStyle(
+                                fontSize: 11,
+                                color: Colors.white.withOpacity(0.35),
+                              ),
+                              textAlign: TextAlign.center,
+                            );
+                          },
                         ),
                         const SizedBox(height: 20),
                         // Restore Purchases Button
@@ -330,6 +337,14 @@ class MembershipScreen extends GetView<MembershipController> {
                             fontSize: 13,
                           ),
                         ),
+                        const SizedBox(height: 2),
+                        Text(
+                          'One-time payment \u2022 No auto-renewal',
+                          style: TextStyle(
+                            color: Colors.white.withOpacity(0.35),
+                            fontSize: 10,
+                          ),
+                        ),
                       ],
                     ),
                   ),
@@ -389,7 +404,8 @@ class MembershipScreen extends GetView<MembershipController> {
 
   Widget _buildFeaturesSection() {
     const features = [
-      (Icons.photo_library_rounded, 'Unlimited photo & video sharing'),
+      (Icons.phone_in_talk_rounded, 'Voice calls'),
+      (Icons.photo_library_rounded, 'Unlimited photo sharing'),
       (Icons.attach_file_rounded, 'Send files without limits'),
       (Icons.bolt_rounded, 'Priority customer support'),
       (Icons.new_releases_rounded, 'Early access to new features'),
@@ -434,6 +450,82 @@ class MembershipScreen extends GetView<MembershipController> {
                     style: const TextStyle(color: Colors.white70, fontSize: 14),
                   ),
                 ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSubscriptionInfo() {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(12),
+        color: Colors.white.withOpacity(0.03),
+        border: Border.all(color: Colors.white.withOpacity(0.1)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Purchase Terms',
+            style: TextStyle(
+              color: Colors.white.withOpacity(0.8),
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: 10),
+          _buildTermsItem(
+            'One-time purchase. No auto-renewal or recurring charges.',
+          ),
+          _buildTermsItem(
+            '6-Month Plan: \$70 USD — access expires after 183 days from purchase.',
+          ),
+          _buildTermsItem(
+            '1-Year Plan: \$100 USD — access expires after 365 days from purchase.',
+          ),
+          _buildTermsItem(
+            'After expiry, your account reverts to the free tier. No further charges will be made.',
+          ),
+          _buildTermsItem(
+            'Payment is charged at the time of purchase through your platform app store account.',
+          ),
+          _buildTermsItem(
+            'To manage purchases, go to your device\'s App Store or Google Play subscription settings.',
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTermsItem(String text) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(top: 6),
+            child: Container(
+              width: 4,
+              height: 4,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: Colors.white.withOpacity(0.4),
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              text,
+              style: TextStyle(
+                color: Colors.white.withOpacity(0.55),
+                fontSize: 11.5,
+                height: 1.4,
               ),
             ),
           ),
@@ -586,8 +678,9 @@ class MembershipScreen extends GetView<MembershipController> {
                     WidgetSpan(
                       child: InkWell(
                         onTap: () async {
-                          final uri =
-                              Uri.parse(NetworkConstants.privacyPolicyUrl);
+                          final uri = Uri.parse(
+                            NetworkConstants.privacyPolicyUrl,
+                          );
                           if (await canLaunchUrl(uri)) {
                             await launchUrl(
                               uri,
@@ -615,10 +708,8 @@ class MembershipScreen extends GetView<MembershipController> {
     );
   }
 
-  Widget _buildPaymentMethodSelection() {
-    final regionService = Get.find<RegionService>();
-    final cryptoService = Get.find<CryptoService>();
-
+  Widget _buildPaymentMethodInfo(BuildContext context) {
+    final isAndroid = Platform.isAndroid;
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
@@ -626,165 +717,41 @@ class MembershipScreen extends GetView<MembershipController> {
         color: Colors.white.withOpacity(0.05),
         border: Border.all(color: Colors.white.withOpacity(0.1)),
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      child: Row(
         children: [
-          Text(
-            'Payment Method',
-            style: TextStyle(
-              color: Colors.white.withOpacity(0.8),
-              fontSize: 14,
-              fontWeight: FontWeight.w600,
-            ),
+          Icon(
+            isAndroid ? Icons.payment : Icons.apple,
+            color: AppColors.primary,
+            size: 20,
           ),
-          const SizedBox(height: 12),
-          Obx(
-            () => Row(
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                _buildPaymentMethodChip(
-                  label: 'Crypto',
-                  icon: Icons.currency_bitcoin,
-                  value: 'crypto',
-                  selected: controller.selectedPaymentMethod.value == 'crypto',
-                ),
-                const SizedBox(width: 8),
-                _buildPaymentMethodChip(
-                  label: regionService.getPaymentMethod() == 'stripe'
-                      ? 'Card'
-                      : 'Google Pay',
-                  icon: regionService.getPaymentMethod() == 'stripe'
-                      ? Icons.credit_card
-                      : Icons.payment,
-                  value: regionService.getPaymentMethod(),
-                  selected: controller.selectedPaymentMethod.value ==
-                      regionService.getPaymentMethod(),
-                ),
-              ],
-            ),
-          ),
-          // Show coin selection when crypto is selected
-          Obx(() {
-            if (controller.selectedPaymentMethod.value == 'crypto') {
-              return Column(
-                children: [
-                  const SizedBox(height: 16),
-                  Text(
-                    'Select Cryptocurrency',
-                    style: TextStyle(
-                      color: Colors.white.withOpacity(0.8),
-                      fontSize: 14,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  Row(
-                    children: [
-                      _buildCoinChip(CryptoCoin.btc, cryptoService),
-                      const SizedBox(width: 8),
-                      _buildCoinChip(CryptoCoin.eth, cryptoService),
-                      const SizedBox(width: 8),
-                      _buildCoinChip(CryptoCoin.usdtTrc20, cryptoService),
-                    ],
-                  ),
-                ],
-              );
-            }
-            return const SizedBox.shrink();
-          }),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildCoinChip(CryptoCoin coin, CryptoService cryptoService) {
-    return Expanded(
-      child: Obx(() {
-        final isSelected = cryptoService.selectedCoin.value == coin;
-        return GestureDetector(
-          onTap: () {
-            cryptoService.selectedCoin.value = coin;
-          },
-          child: Container(
-            padding: const EdgeInsets.symmetric(vertical: 10),
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(8),
-              color: isSelected
-                  ? coin.color.withOpacity(0.2)
-                  : Colors.white.withOpacity(0.05),
-              border: Border.all(
-                color: isSelected ? coin.color : Colors.white.withOpacity(0.2),
-                width: 1,
-              ),
-            ),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Icon(
-                  coin.icon,
-                  color: isSelected ? coin.color : Colors.white54,
-                  size: 16,
-                ),
-                const SizedBox(width: 6),
                 Text(
-                  coin.symbol,
+                  'Payment Method',
                   style: TextStyle(
-                    color: isSelected ? coin.color : Colors.white70,
-                    fontSize: 12,
+                    color: Colors.white.withOpacity(0.8),
+                    fontSize: 14,
                     fontWeight: FontWeight.w600,
                   ),
                 ),
+                const SizedBox(height: 4),
+                Text(
+                  isAndroid
+                      ? 'Google Play Billing (cards, Google Pay, carrier billing)'
+                      : 'App Store In-App Purchase',
+                  style: TextStyle(
+                    color: Colors.white.withOpacity(0.55),
+                    fontSize: 12,
+                    height: 1.3,
+                  ),
+                ),
               ],
             ),
           ),
-        );
-      }),
-    );
-  }
-
-  Widget _buildPaymentMethodChip({
-    required String label,
-    required IconData icon,
-    required String value,
-    required bool selected,
-  }) {
-    return Expanded(
-      child: GestureDetector(
-        onTap: () {
-          controller.selectedPaymentMethod.value = value;
-        },
-        child: Container(
-          padding: const EdgeInsets.symmetric(vertical: 12),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(8),
-            color: selected
-                ? AppColors.primary.withOpacity(0.2)
-                : Colors.white.withOpacity(0.05),
-            border: Border.all(
-              color:
-                  selected ? AppColors.primary : Colors.white.withOpacity(0.2),
-              width: 1,
-            ),
-          ),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(
-                icon,
-                color: selected ? AppColors.primary : Colors.white54,
-                size: 18,
-              ),
-              const SizedBox(width: 8),
-              Text(
-                label,
-                style: TextStyle(
-                  color: selected ? AppColors.primary : Colors.white70,
-                  fontSize: 13,
-                  fontWeight: FontWeight.w500,
-                ),
-              ),
-            ],
-          ),
-        ),
+        ],
       ),
     );
   }

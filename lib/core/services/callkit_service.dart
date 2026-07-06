@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import '../constants/network_constants.dart';
 import 'package:flutter_callkit_incoming/entities/android_params.dart';
@@ -20,6 +21,9 @@ import 'package:shared_preferences/shared_preferences.dart';
 /// Works with flutter_callkit_incoming to display Android system-level
 /// incoming call notifications that wake up the app even when closed
 ///
+/// IMPORTANT: CallKit is disabled for China region to comply with MIIT regulations
+/// VoIP calling still works, just without native CallKit UI in China
+///
 /// TODO: iOS VoIP Push requires manual configuration:
 /// 1. Apple Developer account with VoIP Services certificate
 /// 2. APNs Authentication Key (.p8) configured in Firebase Console
@@ -31,15 +35,43 @@ class CallKitService {
   factory CallKitService() => _instance;
   CallKitService._internal();
 
+  // Check if device is in China region (for CallKit compliance)
+  bool _isChinaRegion() {
+    try {
+      final locale = Platform.localeName.toLowerCase();
+      return locale.contains('zh') || locale.contains('cn');
+    } catch (e) {
+      debugPrint('❌ Error detecting region: $e');
+      return false;
+    }
+  }
+
+  // Check if CallKit should be enabled (disabled in China)
+  bool get _isCallKitEnabled => !_isChinaRegion();
+
   // Event controller for UI layer to listen to call events
   final StreamController<CallKitEvent> _eventController =
       StreamController<CallKitEvent>.broadcast();
   Stream<CallKitEvent> get eventStream => _eventController.stream;
 
+  // Map of callId -> callerId for callback actions from missed call notifications
+  static final Map<String, String> _callIdToCallerId = {};
+
+  // Track which calls are currently managed by CallKit to avoid ending non-existent calls
+  static final Set<String> _activeCallKitCalls = {};
+
   /// Initialize CallKit listeners
   /// Must be called from main.dart after Firebase initialization
   Future<void> initialize() async {
     debugPrint('📞 CallKitService: Initializing...');
+
+    // Check if CallKit should be enabled (disabled in China per MIIT regulations)
+    if (!_isCallKitEnabled) {
+      debugPrint(
+        '📞 CallKitService: CallKit disabled for China region - skipping initialization',
+      );
+      return;
+    }
 
     // Listen to CallKit events (accept, decline, end)
     // Using async/await to handle VoIP token registration
@@ -60,14 +92,39 @@ class CallKitService {
   }) async {
     debugPrint('📞 CallKitService: Showing incoming call from $callerName');
 
+    // Check if CallKit is enabled (disabled in China per MIIT regulations)
+    if (!_isCallKitEnabled) {
+      debugPrint(
+        '📞 CallKitService: CallKit disabled for China region - using FCM notification instead',
+      );
+      // In China, rely on FCM notification instead of CallKit
+      // The calling functionality still works, just without native CallKit UI
+      return;
+    }
+
     try {
+      // Store mapping so missed call callback can look up the caller
+      _callIdToCallerId[callId] = callerId;
+
+      // Clear any existing CallKit call to prevent conflicts
+      // This fixes the issue where same user calling again shows no notification
+      try {
+        await FlutterCallkitIncoming.endCall(callId);
+        debugPrint(
+          '📞 CallKitService: Cleared existing call before showing new one',
+        );
+      } catch (e) {
+        // Ignore error if no existing call
+        debugPrint('📞 CallKitService: No existing call to clear (expected)');
+      }
+
       // Build CallKit params for full-screen incoming call UI
-      // avatar: null ensures first letter of name is shown, no random images
+      // Use empty string for avatar to avoid nil crash on iOS (plugin shows first letter)
       final params = CallKitParams(
         id: callId,
         nameCaller: callerName,
         appName: 'Vant Chat',
-        avatar: null,
+        avatar: '',
         handle: callerId,
         type: 0, // 0 = audio call, 1 = video call
         textAccept: 'Accept',
@@ -96,14 +153,16 @@ class CallKitService {
         ),
         android: const AndroidParams(
           isCustomNotification: true,
-          isShowLogo: true,
+          isShowLogo: false, // Hide app logo, show person icon instead
           isShowCallID: false,
           ringtonePath: 'system_ringtone_default',
-          backgroundColor: '#0955fa',
-          actionColor: '#4CAF50',
-          textColor: '#ffffff',
+          backgroundColor:
+              '#000000', // Black background to match IncomingCallScreen
+          actionColor: '#4CAF50', // Green for accept button
+          textColor: '#ffffff', // White text
           incomingCallNotificationChannelName: 'Incoming Call',
           missedCallNotificationChannelName: 'Missed Call',
+          isShowFullLockedScreen: true, // Wake screen when device is locked
         ),
         ios: const IOSParams(
           iconName: 'CallKitLogo',
@@ -126,6 +185,9 @@ class CallKitService {
       // Display native incoming call UI
       await FlutterCallkitIncoming.showCallkitIncoming(params);
 
+      // Track this call as active in CallKit
+      _activeCallKitCalls.add(callId);
+
       debugPrint('📞 CallKitService: Incoming call UI displayed');
     } catch (e) {
       debugPrint('❌ CallKitService: Error showing incoming call: $e');
@@ -145,12 +207,35 @@ class CallKitService {
     );
   }
 
+  /// Mark the call as connected in the native CallKit UI without re-emitting the accept event
+  Future<void> setCallConnected(String callId) async {
+    try {
+      debugPrint('📞 CallKitService: Marking call as connected $callId');
+      await FlutterCallkitIncoming.setCallConnected(callId);
+    } catch (e) {
+      debugPrint('⚠️ CallKitService: setCallConnected failed: $e');
+    }
+  }
+
   /// Decline call from CallKit UI
   /// Triggers when user taps "Decline" on native incoming call screen
   Future<void> declineCall(String callId) async {
     debugPrint('📞 CallKitService: Declining call $callId');
 
-    await FlutterCallkitIncoming.endCall(callId);
+    // Only call endCall if CallKit is actually managing this call
+    if (_activeCallKitCalls.contains(callId)) {
+      try {
+        await FlutterCallkitIncoming.endCall(callId);
+        _activeCallKitCalls.remove(callId);
+      } catch (e) {
+        debugPrint('⚠️ CallKitService: endCall failed in decline: $e');
+        _activeCallKitCalls.remove(callId);
+      }
+    } else {
+      debugPrint(
+        '📞 CallKitService: Call not in active tracking, skipping endCall in decline',
+      );
+    }
 
     _eventController.add(
       CallKitEvent(type: CallKitEventType.decline, callId: callId),
@@ -161,7 +246,24 @@ class CallKitService {
   Future<void> endCall(String callId) async {
     debugPrint('📞 CallKitService: Ending call $callId');
 
-    await FlutterCallkitIncoming.endCall(callId);
+    // Only call endCall if CallKit is actually managing this call
+    if (_activeCallKitCalls.contains(callId)) {
+      try {
+        await FlutterCallkitIncoming.endCall(callId);
+        _activeCallKitCalls.remove(callId);
+        debugPrint('📞 CallKitService: Call removed from active tracking');
+      } catch (e) {
+        debugPrint(
+          '⚠️ CallKitService: endCall failed (call may not exist): $e',
+        );
+        // Remove from tracking anyway to prevent repeated attempts
+        _activeCallKitCalls.remove(callId);
+      }
+    } else {
+      debugPrint(
+        '📞 CallKitService: Call not in active CallKit tracking, skipping endCall',
+      );
+    }
 
     _eventController.add(
       CallKitEvent(type: CallKitEventType.end, callId: callId),
@@ -212,28 +314,51 @@ class CallKitService {
       case Event.actionCallEnded:
         // Call ended
         debugPrint('📞 CallKitService: Call ended');
+        final callId = event.body['id'] as String?;
+        if (callId != null) {
+          _activeCallKitCalls.remove(callId);
+        }
         _eventController.add(
-          CallKitEvent(
-            type: CallKitEventType.end,
-            callId: event.body['id'] as String?,
-          ),
+          CallKitEvent(type: CallKitEventType.end, callId: callId),
         );
         break;
 
       case Event.actionCallTimeout:
         // Call timed out (no answer)
         debugPrint('📞 CallKitService: Call timeout');
+        final callId = event.body['id'] as String?;
+        if (callId != null) {
+          _activeCallKitCalls.remove(callId);
+        }
         _eventController.add(
-          CallKitEvent(
-            type: CallKitEventType.timeout,
-            callId: event.body['id'] as String?,
-          ),
+          CallKitEvent(type: CallKitEventType.timeout, callId: callId),
         );
         break;
 
       case Event.actionCallCallback:
         // User tapped callback from missed call notification
-        debugPrint('📞 CallKitService: Callback requested');
+        final callId = event.body['id'] as String?;
+        // Try to get callerId from the event body (handle/extra) or fallback map
+        var callerId = event.body['handle'] as String?;
+        final extra = event.body['extra'] as Map<dynamic, dynamic>?;
+        if ((callerId == null || callerId.isEmpty) && extra != null) {
+          callerId = extra['callerId'] as String?;
+        }
+        if (callerId == null || callerId.isEmpty) {
+          callerId = callId != null ? _callIdToCallerId[callId] : null;
+        }
+        debugPrint(
+          '📞 CallKitService: Callback requested for callId=$callId callerId=$callerId',
+        );
+        if (callerId != null && callerId.isNotEmpty) {
+          _eventController.add(
+            CallKitEvent(
+              type: CallKitEventType.callback,
+              callId: callId,
+              extra: {'callerId': callerId},
+            ),
+          );
+        }
         break;
 
       case Event.actionCallToggleHold:
@@ -301,7 +426,11 @@ class CallKitService {
           debugPrint(
             '📞 CallKitService: Call cancelled by caller, dismissing UI for $callId',
           );
-          await FlutterCallkitIncoming.endCall(callId);
+          try {
+            await FlutterCallkitIncoming.endCall(callId);
+          } catch (e) {
+            debugPrint('⚠️ CallKitService: endCall failed in background: $e');
+          }
         }
         return;
       }
@@ -369,15 +498,24 @@ class CallKitService {
           deviceId: deviceId,
         );
         debugPrint('📞 CallKitService: REST accept result: $success');
+
+        // Only store pending accepted call ID if REST accept succeeded
+        if (success) {
+          await prefs.setString('pendingAcceptedCallId', callId);
+          await prefs.setBool('launchedForCall', true);
+          debugPrint(
+            '📞 CallKitService: Stored pendingAcceptedCallId = $callId (launchedForCall=true)',
+          );
+        } else {
+          debugPrint(
+            '⚠️ CallKitService: REST accept failed, not storing pending call ID',
+          );
+        }
       } else {
         debugPrint(
           '⚠️ CallKitService: No device ID in SharedPreferences for REST accept',
         );
       }
-
-      // Store pending accepted call ID so main app handles WebRTC on cold start
-      await prefs.setString('pendingAcceptedCallId', callId);
-      debugPrint('📞 CallKitService: Stored pendingAcceptedCallId = $callId');
     } catch (e) {
       debugPrint('❌ CallKitService: Error in background accept: $e');
     }
@@ -397,7 +535,13 @@ class CallKitService {
         );
       }
 
-      await FlutterCallkitIncoming.endCall(callId);
+      try {
+        await FlutterCallkitIncoming.endCall(callId);
+      } catch (e) {
+        debugPrint(
+          '⚠️ CallKitService: endCall failed in background decline: $e',
+        );
+      }
       debugPrint('📞 CallKitService: Background decline complete for $callId');
     } catch (e) {
       debugPrint('❌ CallKitService: Error in background decline: $e');
@@ -412,7 +556,8 @@ class CallKitService {
   }) async {
     try {
       final uri = Uri.parse(
-          '${NetworkConstants.apiBaseUrl}${NetworkConstants.callsRespondPath}/$callId/respond');
+        '${NetworkConstants.apiBaseUrl}${NetworkConstants.callsRespondPath}/$callId/respond',
+      );
       final response = await http
           .post(
             uri,
@@ -443,7 +588,8 @@ class CallKitService {
       if (authToken == null) return;
 
       final uri = Uri.parse(
-          '${NetworkConstants.apiBaseUrl}${NetworkConstants.voipTokenPath}');
+        '${NetworkConstants.apiBaseUrl}${NetworkConstants.voipTokenPath}',
+      );
       await http
           .post(
             uri,
@@ -463,10 +609,20 @@ class CallKitService {
 
   /// Dismiss CallKit UI for a specific call (e.g. when call_cancelled FCM arrives in foreground)
   static Future<void> dismissCall(String callId) async {
-    try {
-      await FlutterCallkitIncoming.endCall(callId);
-    } catch (e) {
-      debugPrint('❌ CallKitService: Failed to dismiss call $callId: $e');
+    if (_activeCallKitCalls.contains(callId)) {
+      try {
+        await FlutterCallkitIncoming.endCall(callId);
+        _activeCallKitCalls.remove(callId);
+      } catch (e) {
+        debugPrint(
+          '⚠️ CallKitService: Failed to dismiss call $callId (may not exist): $e',
+        );
+        _activeCallKitCalls.remove(callId);
+      }
+    } else {
+      debugPrint(
+        '📞 CallKitService: Call not in active tracking, skipping dismissCall',
+      );
     }
   }
 
@@ -524,6 +680,7 @@ enum CallKitEventType {
   end, // Call ended
   timeout, // Call timed out (no answer)
   missed, // Missed call
+  callback, // User tapped call back from missed call notification
 }
 
 /// CallKit event data

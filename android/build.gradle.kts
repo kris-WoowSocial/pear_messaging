@@ -26,6 +26,27 @@ subprojects {
     project.evaluationDependsOn(":app")
 }
 
+// Force all Compose libraries to a consistent version.
+// Some dependencies (e.g. flutter_callkit_incoming, flutter_stripe) pull in
+// activity-compose:1.10.1 which requires Compose UI 1.7.x. Without this,
+// Gradle resolves Compose UI to 1.6.0 causing a NoSuchMethodError for
+// performImeAction$default at runtime on Accessibility interactions.
+val composeVersion = "1.7.8"
+subprojects {
+    configurations.all {
+        resolutionStrategy.eachDependency {
+            if (requested.group == "androidx.compose.ui" ||
+                requested.group == "androidx.compose.foundation" ||
+                requested.group == "androidx.compose.material" ||
+                requested.group == "androidx.compose.runtime" ||
+                requested.group == "androidx.compose.animation"
+            ) {
+                useVersion(composeVersion)
+            }
+        }
+    }
+}
+
 tasks.register<Delete>("clean") {
     delete(rootProject.layout.buildDirectory)
 }

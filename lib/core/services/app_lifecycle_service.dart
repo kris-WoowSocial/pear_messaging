@@ -3,6 +3,7 @@ import 'package:flutter/widgets.dart';
 import 'package:get/get.dart';
 import 'socket_service.dart';
 import 'webrtc_call_service.dart';
+import 'fcm_service.dart';
 
 /// Service to track global app lifecycle state
 /// Used to suppress notifications on iOS when app is in foreground
@@ -33,6 +34,7 @@ class AppLifecycleService extends GetxService with WidgetsBindingObserver {
     switch (state) {
       case AppLifecycleState.resumed:
         _isInForeground.value = true;
+        FCMService.isAppInForeground = true;
         debugPrint('📱 App moved to foreground');
         _handleAppResumed();
         break;
@@ -41,6 +43,7 @@ class AppLifecycleService extends GetxService with WidgetsBindingObserver {
       case AppLifecycleState.detached:
       case AppLifecycleState.hidden:
         _isInForeground.value = false;
+        FCMService.isAppInForeground = false;
         debugPrint('📱 App moved to background');
         _handleAppPaused();
         break;

@@ -268,9 +268,10 @@ class ChatController extends GetxController with WidgetsBindingObserver {
 
       // Keep showing at least as many messages as currently displayed
       final currentCount = messages.length;
+      final maxDisplay = totalCount > 0 ? totalCount : 0;
       final displayCount = currentCount > 0
-          ? currentCount.clamp(_pageSize, totalCount)
-          : _pageSize.clamp(0, totalCount);
+          ? currentCount.clamp(_pageSize.clamp(0, maxDisplay), maxDisplay)
+          : _pageSize.clamp(0, maxDisplay);
 
       // Ensure startIndex is valid
       final startIndex = (totalCount - displayCount).clamp(0, totalCount);
@@ -1958,17 +1959,31 @@ class ChatController extends GetxController with WidgetsBindingObserver {
   void scrollToMessage(String messageId) {
     final index = messages.indexWhere((msg) => msg.id == messageId);
     if (index != -1 && scrollController.hasClients) {
-      // Calculate scroll position
-      final itemHeight = 80.0; // Approximate height of a message bubble
-      final targetPosition = index * itemHeight;
+      try {
+        // Since ListView is reversed, we need to calculate the correct position
+        // In a reversed ListView, index 0 is at the bottom (newest)
+        // The scroll position needs to account for this reversal
+        final reversedIndex = messages.length - 1 - index;
 
-      scrollController.animateTo(
-        targetPosition,
-        duration: Duration(milliseconds: 300),
-        curve: Curves.easeInOut,
-      );
+        // Calculate approximate position based on reversed index
+        final itemHeight = 80.0;
+        final targetPosition = reversedIndex * itemHeight;
 
-      debugPrint('📍 Scrolled to message: $messageId');
+        // Clamp to valid scroll range
+        final maxScroll = scrollController.position.maxScrollExtent;
+        final clampedPosition = targetPosition.clamp(0.0, maxScroll);
+
+        scrollController.animateTo(
+          clampedPosition,
+          duration: Duration(milliseconds: 300),
+          curve: Curves.easeInOut,
+        );
+
+        debugPrint(
+            '📍 Scrolled to message: $messageId at index $index (reversed: $reversedIndex)');
+      } catch (e) {
+        debugPrint('❌ Error scrolling to message: $e');
+      }
     } else {
       debugPrint('⚠️ Message not found: $messageId');
     }

@@ -32,8 +32,6 @@ import 'core/services/region_service.dart';
 import 'core/services/membership_service.dart';
 import 'core/services/notification_service.dart';
 import 'core/services/iap_service.dart';
-import 'core/services/stripe_service.dart';
-import 'core/services/crypto_service.dart';
 import 'core/services/report_service.dart';
 import 'core/services/api_service.dart';
 import 'core/services/app_lifecycle_service.dart';
@@ -46,9 +44,12 @@ import 'core/services/call_history_service.dart';
 import 'core/services/webrtc_call_service.dart';
 import 'core/services/call_foreground_service.dart';
 import 'core/services/callkit_service.dart';
+import 'core/utils/string_utils.dart';
 import 'features/call/call_controller.dart';
 
 void main() async {
+  debugPrint('🚀 main() called - app starting fresh');
+
   // Initialize flavor config for prod
   FlavorConfig(
     flavor: Flavor.prod,
@@ -82,6 +83,11 @@ void main() async {
   // Initialize Hive - CRITICAL for local storage
   await Hive.initFlutter();
 
+  // Register FCM background handler BEFORE Firebase.initializeApp and before
+  // other services. This is required for the handler to be available when the
+  // app is killed and an FCM message arrives.
+  FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
+
   // Initialize only critical services before app launch
   await initializeCriticalServices();
 
@@ -92,9 +98,6 @@ void main() async {
   // This shows the system permission popup immediately
   await requestNotificationPermission();
 
-  // Request microphone permission for audio calls
-  await requestMicrophonePermission();
-
   runApp(PearMessagingApp(skipSplash: termsAccepted));
 
   // Initialize all non-critical services in background after app starts
@@ -104,34 +107,93 @@ void main() async {
 /// Initialize only critical services needed for app to function
 Future<void> initializeCriticalServices() async {
   // Initialize secure key service FIRST - Required for encryption
-  await Get.putAsync(() => SecureKeyService().init());
+  // Wrapped in try-catch to prevent crash if secure storage fails
+  try {
+    await Get.putAsync(() => SecureKeyService().init());
+    debugPrint('✅ SecureKeyService initialized');
+  } catch (e) {
+    debugPrint('❌ SecureKeyService initialization failed: $e');
+    debugPrint('⚠️ App will continue without secure encryption');
+    // Create a dummy service to prevent crashes when other services try to find it
+    Get.put(SecureKeyService());
+  }
 
   // Initialize secure encryption service
-  await Get.putAsync(() => SecureEncryptionService().init());
+  try {
+    await Get.putAsync(() => SecureEncryptionService().init());
+    debugPrint('✅ SecureEncryptionService initialized');
+  } catch (e) {
+    debugPrint('❌ SecureEncryptionService initialization failed: $e');
+    debugPrint('⚠️ App will continue without encryption');
+    // Create a dummy service to prevent crashes
+    Get.put(SecureEncryptionService());
+  }
 
   // Initialize secure image storage service
-  await Get.putAsync(() => SecureImageStorageService().init());
+  try {
+    await Get.putAsync(() => SecureImageStorageService().init());
+    debugPrint('✅ SecureImageStorageService initialized');
+  } catch (e) {
+    debugPrint('❌ SecureImageStorageService initialization failed: $e');
+    debugPrint('⚠️ App will continue without secure image storage');
+    // Create a dummy service to prevent crashes
+    Get.put(SecureImageStorageService());
+  }
 
   // Initialize chat media service
-  await Get.putAsync(() => ChatMediaService().init());
+  try {
+    await Get.putAsync(() => ChatMediaService().init());
+    debugPrint('✅ ChatMediaService initialized');
+  } catch (e) {
+    debugPrint('❌ ChatMediaService initialization failed: $e');
+    debugPrint('⚠️ App will continue without chat media service');
+    // Create a dummy service to prevent crashes
+    Get.put(ChatMediaService());
+  }
 
   // Initialize storage service - CRITICAL for app data
-  final storageService = await Get.putAsync(() => LocalStorageService().init());
+  // This MUST succeed for the app to function
+  try {
+    final storageService = await Get.putAsync(
+      () => LocalStorageService().init(),
+    );
+    debugPrint('✅ LocalStorageService initialized');
 
-  // Get or create device ID - CRITICAL for messaging
-  String deviceId = storageService.deviceId ?? '';
-  if (deviceId.isEmpty) {
-    deviceId = DateTime.now().millisecondsSinceEpoch.toString();
-    await storageService.setDeviceId(deviceId);
+    // Get or create device ID - CRITICAL for messaging
+    String deviceId = storageService.deviceId ?? '';
+    if (deviceId.isEmpty) {
+      deviceId = DateTime.now().millisecondsSinceEpoch.toString();
+      await storageService.setDeviceId(deviceId);
+    }
+  } catch (e) {
+    debugPrint('❌ CRITICAL: LocalStorageService initialization failed: $e');
+    debugPrint('❌ App cannot function without local storage');
+    rethrow; // This is critical - let the app crash with a clear error
   }
 
   // Initialize ApiService - all HTTP calls go through this
-  await Get.putAsync(() => ApiService().init());
+  try {
+    await Get.putAsync(() => ApiService().init());
+    debugPrint('✅ ApiService initialized');
+  } catch (e) {
+    debugPrint('❌ ApiService initialization failed: $e');
+    debugPrint('⚠️ App will continue but network features may not work');
+    // Create a dummy service to prevent crashes
+    Get.put(ApiService());
+  }
 
   // Initialize socket service FIRST - BlockService depends on it
   final socketService = Get.put(SocketService());
   // Don't wait for socket initialization - let it connect in background
-  socketService.init(deviceId); // Fire and forget - don't await
+  try {
+    final storageService = Get.find<LocalStorageService>();
+    final deviceId = storageService.deviceId ?? '';
+    socketService.init(deviceId); // Fire and forget - don't await
+    debugPrint('✅ SocketService initialized');
+  } catch (e) {
+    debugPrint('❌ SocketService initialization failed: $e');
+    debugPrint('⚠️ App will continue but real-time features may not work');
+  }
 
   // Initialize basic services that depend on SocketService
   Get.put(LocalAuthService());
@@ -140,10 +202,29 @@ Future<void> initializeCriticalServices() async {
   Get.put(
     AppLifecycleService(),
   ); // Track app lifecycle for notification suppression
-  Get.put(await Get.putAsync(() => UsernameSyncService().init()));
+
+  try {
+    Get.put(await Get.putAsync(() => UsernameSyncService().init()));
+    debugPrint('✅ UsernameSyncService initialized');
+  } catch (e) {
+    debugPrint('❌ UsernameSyncService initialization failed: $e');
+    debugPrint('⚠️ App will continue without username sync');
+    Get.put(UsernameSyncService());
+  }
 
   // Initialize call history service - must be ready before UI renders
-  await Get.putAsync(() => CallHistoryService().init());
+  try {
+    await Get.putAsync(() => CallHistoryService().init());
+    debugPrint('✅ CallHistoryService initialized');
+  } catch (e) {
+    debugPrint('❌ CallHistoryService initialization failed: $e');
+    debugPrint('⚠️ App will continue without call history');
+    Get.put(CallHistoryService());
+  }
+
+  // Initialize CallController for handling incoming calls when app launches from background
+  Get.put(CallController());
+  debugPrint('✅ CallController initialized');
 }
 
 /// Initialize non-critical services in background after app launches
@@ -152,120 +233,252 @@ void initializeNonCriticalServices() async {
     // Initialize Firebase FIRST - FCM depends on it!
     await _initializeFirebase();
     debugPrint('✅ Firebase initialized');
+  } catch (e) {
+    debugPrint('❌ Firebase initialization failed: $e');
+    debugPrint('⚠️ App will continue without Firebase');
+  }
 
+  try {
     // Initialize Firebase Analytics in background
     _initializeFirebaseAnalytics();
+  } catch (e) {
+    debugPrint('❌ Firebase Analytics initialization failed: $e');
+  }
 
+  try {
     // Set preferred orientations in background
     SystemChrome.setPreferredOrientations([
       DeviceOrientation.portraitUp,
       DeviceOrientation.portraitDown,
     ]);
+  } catch (e) {
+    debugPrint('❌ Failed to set preferred orientations: $e');
+  }
 
+  try {
     // IMPORTANT: Initialize InvitationStorageService FIRST before BranchService
     // BranchService depends on InvitationStorageService to store deep link data
     // for deferred deep linking (when user installs app from Play Store after clicking link)
     await Get.putAsync(() => InvitationStorageService().init());
+    debugPrint('✅ InvitationStorageService initialized');
+  } catch (e) {
+    debugPrint('❌ InvitationStorageService initialization failed: $e');
+    debugPrint('⚠️ App will continue without invitation storage');
+    Get.put(InvitationStorageService());
+  }
 
-    // Run remaining non-critical initializations in parallel for speed
-    await Future.wait([
-      // FCM for push notifications - now Firebase is ready
-      Get.putAsync(() => FCMService().init()),
+  // Initialize CallKit native UI event listeners BEFORE FCM so any incoming call
+  // shown by FCM can have its accept/decline/end events handled immediately.
+  try {
+    await CallKitService().initialize();
+    debugPrint('✅ CallKitService initialized');
+  } catch (e) {
+    debugPrint('❌ CallKitService initialization failed: $e');
+    debugPrint('⚠️ App will continue without native CallKit events');
+  }
 
-      // Image cache - not critical for launch
-      Get.putAsync(() => ImageCacheService().init()),
+  // Run remaining non-critical initializations in parallel for speed
+  // Each wrapped in try-catch to prevent one failure from blocking others
+  final futures = <Future>[];
 
-      // Deep linking services - must run AFTER InvitationStorageService is ready
-      Get.putAsync(() => BranchService().init()),
-      Get.putAsync(() => AppLinkService().init()),
+  // FCM for push notifications - now Firebase is ready
+  futures.add(
+    Get.putAsync(() => FCMService().init()).catchError((e) {
+      debugPrint('❌ FCMService initialization failed: $e');
+      debugPrint('⚠️ App will continue without push notifications');
+      return Get.put(FCMService());
+    }),
+  );
 
-      // App updates - not critical for immediate use
-      Get.putAsync(() => AppUpdateService().init()),
+  // Image cache - not critical for launch
+  futures.add(
+    Get.putAsync(() => ImageCacheService().init()).catchError((e) {
+      debugPrint('❌ ImageCacheService initialization failed: $e');
+      debugPrint('⚠️ App will continue without image cache');
+      return Get.put(ImageCacheService());
+    }),
+  );
 
-      // In-app review - not critical for immediate use
-      Get.putAsync(() => ReviewService().init()),
+  // Deep linking services - must run AFTER InvitationStorageService is ready
+  futures.add(
+    Get.putAsync(() => BranchService().init()).catchError((e) {
+      debugPrint('❌ BranchService initialization failed: $e');
+      debugPrint('⚠️ App will continue without Branch deep linking');
+      return Get.put(BranchService());
+    }),
+  );
 
-      // Region detection for pricing
-      Get.putAsync(() => RegionService().init()),
+  futures.add(
+    Get.putAsync(() => AppLinkService().init()).catchError((e) {
+      debugPrint('❌ AppLinkService initialization failed: $e');
+      debugPrint('⚠️ App will continue without app linking');
+      return Get.put(AppLinkService());
+    }),
+  );
 
-      // Membership tracking
-      Get.putAsync(() => MembershipService().init()),
+  // App updates - not critical for immediate use
+  futures.add(
+    Get.putAsync(() => AppUpdateService().init()).catchError((e) {
+      debugPrint('❌ AppUpdateService initialization failed: $e');
+      debugPrint('⚠️ App will continue without app updates');
+      return Get.put(AppUpdateService());
+    }),
+  );
 
-      // In-app purchase service
-      Get.putAsync(() => IAPService().init()),
+  // In-app review - not critical for immediate use
+  futures.add(
+    Get.putAsync(() => ReviewService().init()).catchError((e) {
+      debugPrint('❌ ReviewService initialization failed: $e');
+      debugPrint('⚠️ App will continue without in-app review');
+      return Get.put(ReviewService());
+    }),
+  );
 
-      // Stripe payment service
-      Get.putAsync(() => StripeService().init()),
+  // Region detection for pricing
+  futures.add(
+    Get.putAsync(() => RegionService().init()).catchError((e) {
+      debugPrint('❌ RegionService initialization failed: $e');
+      debugPrint('⚠️ App will continue without region detection');
+      return Get.put(RegionService());
+    }),
+  );
 
-      // Crypto payment service
-      Get.putAsync(() => CryptoService().init()),
+  // Membership tracking
+  futures.add(
+    Get.putAsync(() => MembershipService().init()).catchError((e) {
+      debugPrint('❌ MembershipService initialization failed: $e');
+      debugPrint('⚠️ App will continue without membership tracking');
+      return Get.put(MembershipService());
+    }),
+  );
 
-      // URL preview service for link previews
-      Get.putAsync(() => UrlPreviewService().init()),
-    ]);
+  // In-app purchase service
+  futures.add(
+    Get.putAsync(() => IAPService().init()).catchError((e) {
+      debugPrint('❌ IAPService initialization failed: $e');
+      debugPrint('⚠️ App will continue without in-app purchases');
+      return Get.put(IAPService());
+    }),
+  );
 
-    // Initialize badge service (not async, doesn't need to be in Future.wait)
+  // URL preview service for link previews
+  futures.add(
+    Get.putAsync(() => UrlPreviewService().init()).catchError((e) {
+      debugPrint('❌ UrlPreviewService initialization failed: $e');
+      debugPrint('⚠️ App will continue without URL previews');
+      return Get.put(UrlPreviewService());
+    }),
+  );
+
+  try {
+    await Future.wait(futures);
+    debugPrint('✅ Non-critical async services initialized');
+  } catch (e) {
+    debugPrint('⚠️ Some non-critical services failed to initialize: $e');
+  }
+
+  // Initialize badge service (not async, doesn't need to be in Future.wait)
+  try {
     Get.put(BadgeService());
+    debugPrint('✅ BadgeService initialized');
+  } catch (e) {
+    debugPrint('❌ BadgeService initialization failed: $e');
+  }
 
-    // Recalculate badge count from local storage on app startup
-    // Count actual unread messages based on message status, not chat.unreadCount
-    try {
-      final storageService = Get.find<LocalStorageService>();
-      final allChats = storageService.getAllChats();
-      int totalUnread = 0;
+  // Recalculate badge count from local storage on app startup
+  // Count actual unread messages based on message status, not chat.unreadCount
+  try {
+    final storageService = Get.find<LocalStorageService>();
+    final allChats = storageService.getAllChats();
+    int totalUnread = 0;
 
-      for (final chat in allChats) {
-        final messages = await storageService.getChatMessages(chat.id);
-        final unreadCount = messages
-            .where((msg) => !msg.isMe && msg.status != MessageStatus.read)
-            .length;
-        totalUnread += unreadCount;
+    for (final chat in allChats) {
+      final messages = await storageService.getChatMessages(chat.id);
+      final unreadCount = messages
+          .where((msg) => !msg.isMe && msg.status != MessageStatus.read)
+          .length;
+      totalUnread += unreadCount;
 
-        // Update chat entity's unreadCount to match actual count
-        if (chat.unreadCount != unreadCount) {
-          final updatedChat = chat.copyWith(unreadCount: unreadCount);
-          await storageService.saveChat(updatedChat);
-        }
+      // Update chat entity's unreadCount to match actual count
+      if (chat.unreadCount != unreadCount) {
+        final updatedChat = chat.copyWith(unreadCount: unreadCount);
+        await storageService.saveChat(updatedChat);
       }
-
-      final badgeService = Get.find<BadgeService>();
-      await badgeService.setTotalUnreadCount(totalUnread);
-      debugPrint('📊 Badge count recalculated on startup: $totalUnread');
-    } catch (e) {
-      debugPrint('⚠️ Error recalculating badge on startup: $e');
     }
 
-    // Initialize report service - not async, very fast
-    Get.put(ReportService());
+    final badgeService = Get.find<BadgeService>();
+    await badgeService.setTotalUnreadCount(totalUnread);
+    debugPrint('📊 Badge count recalculated on startup: $totalUnread');
+  } catch (e) {
+    debugPrint('⚠️ Error recalculating badge on startup: $e');
+  }
 
-    // Initialize foreground service channel for Android call persistence
+  // Initialize report service - not async, very fast
+  try {
+    Get.put(ReportService());
+    debugPrint('✅ ReportService initialized');
+  } catch (e) {
+    debugPrint('❌ ReportService initialization failed: $e');
+  }
+
+  // Initialize foreground service channel for Android call persistence
+  try {
     if (Platform.isAndroid) {
       await CallForegroundService.initialize();
+      debugPrint('✅ CallForegroundService initialized');
     }
+  } catch (e) {
+    debugPrint('❌ CallForegroundService initialization failed: $e');
+  }
 
-    // Initialize notification service for WhatsApp-style call notifications
+  // Initialize notification service for WhatsApp-style call notifications
+  try {
     await NotificationService().initialize();
+    debugPrint('✅ NotificationService initialized');
+  } catch (e) {
+    debugPrint('❌ NotificationService initialization failed: $e');
+  }
 
-    // Initialize WebRTC call service
+  // Initialize WebRTC call service
+  try {
     Get.put(WebRTCCallService());
     await Get.find<WebRTCCallService>().initialize();
+    debugPrint('✅ WebRTCCallService initialized');
+  } catch (e) {
+    debugPrint('❌ WebRTCCallService initialization failed: $e');
+    debugPrint('⚠️ App will continue without WebRTC calls');
+    Get.put(WebRTCCallService());
+  }
 
-    // Initialize CallController to listen for incoming calls
+  // Initialize CallController to listen for incoming calls
+  try {
     Get.put(CallController());
+    debugPrint('✅ CallController initialized');
+  } catch (e) {
+    debugPrint('❌ CallController initialization failed: $e');
+  }
 
-    // Check if user accepted a call while app was killed (cold-start resync)
+  // Check if user accepted a call while app was killed (cold-start resync)
+  try {
     await _handlePendingAcceptedCall();
+  } catch (e) {
+    debugPrint('❌ Error handling pending accepted call: $e');
+  }
 
-    debugPrint('✅ Non-critical services initialized in background');
+  debugPrint('✅ Non-critical services initialized in background');
 
-    // Handle notification tap that arrived while app was terminated
+  // Handle notification tap that arrived while app was terminated
+  try {
     await checkPendingNotificationNavigation();
+  } catch (e) {
+    debugPrint('❌ Error handling pending notification navigation: $e');
+  }
 
-    // Check app link handler status after initialization
+  // Check app link handler status after initialization
+  try {
     _checkAppLinkHandler();
   } catch (e) {
-    debugPrint('⚠️ Error initializing non-critical services: $e');
-    // Don't block the app if non-critical services fail
+    debugPrint('❌ Error checking app link handler: $e');
   }
 }
 
@@ -355,22 +568,30 @@ Future<void> requestNotificationPermission() async {
 
 /// Request microphone permission for audio calls
 /// Shows the system permission popup immediately on app launch
+/// NOTE: On iOS, if permission was previously denied, the system won't show the dialog again
+/// The user must manually enable it in Settings
 Future<void> requestMicrophonePermission() async {
   try {
     final status = await Permission.microphone.status;
     debugPrint('🎤 Microphone permission status: $status');
 
-    if (status.isDenied) {
-      debugPrint('🎤 Requesting microphone permission...');
-      final result = await Permission.microphone.request();
-      debugPrint('🎤 Microphone permission result: $result');
-    } else if (status.isPermanentlyDenied) {
-      debugPrint(
-        '⚠️ Microphone permission permanently denied - user must enable in settings',
-      );
-    } else if (status.isGranted) {
+    if (status.isGranted) {
       debugPrint('✅ Microphone permission already granted');
+      return;
     }
+
+    if (status.isPermanentlyDenied) {
+      debugPrint(
+        '⚠️ Microphone permission permanently denied - user must enable in Settings',
+      );
+      // Snackbar is shown by SplashController where Get context is ready
+      return;
+    }
+
+    // Request permission if not granted (including denied but not permanently)
+    debugPrint('🎤 Requesting microphone permission...');
+    final result = await Permission.microphone.request();
+    debugPrint('🎤 Microphone permission result: $result');
   } catch (e) {
     debugPrint('⚠️ Error requesting microphone permission: $e');
   }
@@ -404,37 +625,10 @@ Future<void> _handlePendingAcceptedCall() async {
 
     // Set auto-accept flag and emit resync to get SDP offer
     final callController = Get.find<CallController>();
-    callController.setPendingAutoAccept(pendingCallId);
+    await callController.setPendingAutoAccept(pendingCallId);
     socketService.socket?.emit('call_resync', {'callId': pendingCallId});
     debugPrint('📞 Cold start: emitted call_resync for $pendingCallId');
   } catch (e) {
     debugPrint('📞 Error handling pending accepted call: $e');
   }
-}
-
-/// FCM Background Message Handler - Called when app is killed/backgrounded
-/// This MUST be a top-level function with @pragma('vm:entry-point')
-/// CRITICAL: Background isolate has NO GetX, NO services, NO foreground service access
-/// Only safe operations: Hive, http, FlutterCallkitIncoming, SharedPreferences
-@pragma('vm:entry-point')
-Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
-  final type = message.data['type'];
-
-  if (type == 'incoming_call') {
-    // CallKitService.handleBackgroundMessage is crash-safe and handles everything:
-    // native ringtone, full-screen UI, Accept/Decline buttons, wake lock
-    await CallKitService.handleBackgroundMessage(message);
-    return;
-  }
-
-  if (type == 'call_cancelled') {
-    final callId = message.data['callId'];
-    if (callId != null && callId.isNotEmpty) {
-      await FlutterCallkitIncoming.endCall(callId);
-    }
-    return;
-  }
-
-  // Chat message handling - unchanged
-  // ...
 }

@@ -58,6 +58,21 @@ post_install do |installer|
       
       # Exclude PassKit framework since we don't use Apple Pay
       config.build_settings['EXCLUDED_FRAMEWORKS'] = ['PassKit.framework']
+
+      # permission_handler compile-time macros.
+      # Without these, permission_handler strips the permission code at build
+      # time and returns permanentlyDenied instantly (no iOS dialog is shown).
+      config.build_settings['GCC_PREPROCESSOR_DEFINITIONS'] ||= ['$(inherited)']
+      config.build_settings['GCC_PREPROCESSOR_DEFINITIONS'] += [
+        ## dart: PermissionGroup.microphone
+        'PERMISSION_MICROPHONE=1',
+        ## dart: PermissionGroup.notification
+        'PERMISSION_NOTIFICATIONS=1',
+        ## dart: PermissionGroup.camera
+        'PERMISSION_CAMERA=1',
+        ## dart: PermissionGroup.photos
+        'PERMISSION_PHOTOS=1',
+      ]
       
       # Fix Info.plist generation conflict for NotificationService
       if target.name == 'NotificationService'

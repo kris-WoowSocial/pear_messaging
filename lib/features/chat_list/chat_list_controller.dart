@@ -122,19 +122,23 @@ class ChatListController extends GetxController {
         final existingChat = _storageService.getChat(deviceId);
         if (existingChat != null) {
           debugPrint(
-              '📋 Chat already exists for device $deviceId, clearing pending invitation');
+            '📋 Chat already exists for device $deviceId, clearing pending invitation',
+          );
           invitationService.clearPendingInvitation();
           return;
         }
 
         // Enhanced validation: Check for any connection request involving this device
-        final anyExistingRequest = pendingConnectionRequests.any((request) =>
-            request.senderDeviceId == deviceId ||
-            request.receiverDeviceId == deviceId);
+        final anyExistingRequest = pendingConnectionRequests.any(
+          (request) =>
+              request.senderDeviceId == deviceId ||
+              request.receiverDeviceId == deviceId,
+        );
 
         if (anyExistingRequest) {
           debugPrint(
-              '📋 Connection request already exists involving device $deviceId, clearing pending invitation');
+            '📋 Connection request already exists involving device $deviceId, clearing pending invitation',
+          );
           invitationService.clearPendingInvitation();
           return;
         }
@@ -224,7 +228,8 @@ class ChatListController extends GetxController {
           final usernameSyncService = Get.find<UsernameSyncService>();
           await usernameSyncService.syncUsername(deviceId, trimmedName);
           debugPrint(
-              '🔄 Username synced to backend: $deviceId -> $trimmedName');
+            '🔄 Username synced to backend: $deviceId -> $trimmedName',
+          );
         }
       } catch (e) {
         debugPrint('⚠️ Failed to sync username to backend: $e');
@@ -280,7 +285,8 @@ class ChatListController extends GetxController {
         final replyTo = data['replyTo'] as Map<String, dynamic>;
         replyToEntity = ReplyToEntity.fromJson(replyTo);
         debugPrint(
-            '🔁 CHAT LIST LOG: Reply metadata parsed - content: ${replyToEntity.content}');
+          '🔁 CHAT LIST LOG: Reply metadata parsed - content: ${replyToEntity.content}',
+        );
       } catch (e) {
         debugPrint('⚠️ CHAT LIST LOG: Failed to parse reply metadata: $e');
       }
@@ -294,7 +300,8 @@ class ChatListController extends GetxController {
     // Check if this message has already been processed (in-memory)
     if (_processedMessageIds.contains(messageId)) {
       debugPrint(
-          '⚠️ Message already processed (in-memory), skipping: $messageId');
+        '⚠️ Message already processed (in-memory), skipping: $messageId',
+      );
       return;
     }
 
@@ -302,7 +309,8 @@ class ChatListController extends GetxController {
     final messageWasAlreadyInStorage = _storageService.messageExists(messageId);
     if (messageWasAlreadyInStorage) {
       debugPrint(
-          '🔁 Message $messageId already in Hive (FCM), skipping insert and notification');
+        '🔁 Message $messageId already in Hive (FCM), skipping insert and notification',
+      );
       return;
     }
 
@@ -314,11 +322,13 @@ class ChatListController extends GetxController {
     final messageTime = DateTime.fromMillisecondsSinceEpoch(timestamp);
 
     // Check if this is an image message (MEDIA: token or legacy IMAGE: base64)
-    final bool isImageMessage = decryptedContent.startsWith('MEDIA:') ||
+    final bool isImageMessage =
+        decryptedContent.startsWith('MEDIA:') ||
         decryptedContent.startsWith('IMAGE:');
     final String content = decryptedContent;
-    final MessageType messageType =
-        isImageMessage ? MessageType.image : MessageType.text;
+    final MessageType messageType = isImageMessage
+        ? MessageType.image
+        : MessageType.text;
 
     // Check if chat exists for this sender
     final existingChatIndex = chats.indexWhere((chat) => chat.id == senderId);
@@ -406,7 +416,8 @@ class ChatListController extends GetxController {
             '📋 CHAT LIST LOG: Found invitation chat: ${invitationChat.toJson()}',
           );
 
-          final displayName = invitationChat.userName.isNotEmpty &&
+          final displayName =
+              invitationChat.userName.isNotEmpty &&
                   invitationChat.userName != invitationChat.id
               ? invitationChat.userName
               : StringUtils.generateFriendlyName(senderId);
@@ -616,14 +627,16 @@ class ChatListController extends GetxController {
         }
       } else {
         foundation.debugPrint(
-            '📋 Message already in Hive (FCM), skipping insert but sending ack: $messageId');
+          '📋 Message already in Hive (FCM), skipping insert but sending ack: $messageId',
+        );
       }
     }
 
     // Send delivery acknowledgments for all received messages
     if (messageIdsToAck.isNotEmpty) {
       foundation.debugPrint(
-          '📤 Sending delivery acknowledgments for ${messageIdsToAck.length} messages');
+        '📤 Sending delivery acknowledgments for ${messageIdsToAck.length} messages',
+      );
       for (final messageId in messageIdsToAck) {
         _socketService.sendMessageAck(messageId);
       }
@@ -708,8 +721,8 @@ class ChatListController extends GetxController {
             (chat) =>
                 chat.userName.toLowerCase().contains(query.toLowerCase()) ||
                 (chat.lastMessage?.toLowerCase().contains(
-                          query.toLowerCase(),
-                        ) ??
+                      query.toLowerCase(),
+                    ) ??
                     false),
           )
           .toList();
