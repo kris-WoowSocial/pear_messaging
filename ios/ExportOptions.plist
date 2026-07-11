@@ -15,7 +15,7 @@
     <key>provisioningProfiles</key>
     <dict>
         <key>com.vant.chatting</key>
-        <string>Vant Chat App Store</string>
+        <string>Vant_Chat_App_Store</string>
     </dict>
 </dict>
 </plist>

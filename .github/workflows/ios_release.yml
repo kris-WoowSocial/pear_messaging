@@ -75,7 +75,7 @@ jobs:
             if ($in && /name = Release;/) { $in = 0 }
             s/CODE_SIGN_IDENTITY = "Apple Development";/CODE_SIGN_IDENTITY = "Apple Distribution";/ if $in;
             s/CODE_SIGN_STYLE = Automatic;/CODE_SIGN_STYLE = Manual;/ if $in;
-            s/PROVISIONING_PROFILE_SPECIFIER = "";/PROVISIONING_PROFILE_SPECIFIER = "Vant Chat App Store";/ if $in;
+            s/PROVISIONING_PROFILE_SPECIFIER = "";/PROVISIONING_PROFILE_SPECIFIER = "Vant_Chat_App_Store";/ if $in;
           ' ios/Runner.xcodeproj/project.pbxproj
           grep -A1 "CODE_SIGN_STYLE\|PROVISIONING_PROFILE_SPECIFIER\|CODE_SIGN_IDENTITY" ios/Runner.xcodeproj/project.pbxproj | head -20
 
