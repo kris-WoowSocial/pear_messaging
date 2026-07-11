@@ -88,6 +88,7 @@ jobs:
         run: |
           flutter build ipa \
             --release \
+            --target=lib/main_prod.dart \
             --build-name=${{ env.VERSION_NAME }} \
             --build-number=${{ env.VERSION_CODE }} \
             --export-options-plist=ios/ExportOptions.plist

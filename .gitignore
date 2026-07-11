@@ -87,7 +87,7 @@ fabric.properties
 .env.development.local
 .env.test.local
 .env.production.local
-config/
+/config/
 secrets.properties
 api_keys.properties
 
