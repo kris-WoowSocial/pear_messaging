@@ -440,7 +440,7 @@ class CallController extends GetxController {
 
         switch (event.type) {
           case CallKitEventType.accept:
-            _handleCallKitAccept(event.callId);
+            _handleCallKitAccept(event.callId, event.extra);
             break;
           case CallKitEventType.decline:
             _handleCallKitDecline(event.callId);
@@ -656,7 +656,10 @@ class CallController extends GetxController {
   }
 
   /// Handle accept from CallKit UI (app in foreground/background)
-  Future<void> _handleCallKitAccept(String? callId) async {
+  Future<void> _handleCallKitAccept(
+    String? callId,
+    Map<String, dynamic>? extra,
+  ) async {
     if (callId == null || callId.isEmpty) return;
     debugPrint('📞 CallKit accept received for $callId');
 
@@ -679,9 +682,59 @@ class CallController extends GetxController {
       return;
     }
 
-    // Otherwise, we're still waiting for the socket event (e.g. app was killed).
-    // Persist the callId so _handleIncomingCall auto-accepts when it arrives.
+    // Otherwise, we're still waiting for the socket event (e.g. app was killed
+    // or in background when the accept happened). Mirror the Android native
+    // answer path: persist the auto-accept, request a resync, pre-populate the
+    // active call info, and navigate to the active call screen so the user sees
+    // the call UI immediately while the SDP offer arrives.
+    final callerId = extra?['callerId'] as String? ??
+        extra?['caller_id'] as String? ??
+        '';
+    final callerName = extra?['callerName'] as String? ??
+        extra?['caller_name'] as String? ??
+        'Incoming Call';
+    final roomId = extra?['roomId'] as String? ??
+        extra?['room_id'] as String? ??
+        '';
+    final avatarUrl = extra?['avatarUrl'] as String? ??
+        extra?['avatar_url'] as String? ??
+        '';
+    final isVideo = (extra?['isVideo'] as bool?) ??
+        (extra?['is_video'] == true) ??
+        false;
+
+    debugPrint(
+      '📞 CallKit accept: no cached SDP, setting pending auto-accept and requesting resync',
+    );
     await setPendingAutoAccept(callId);
+
+    // Wait for the socket so we can request the SDP offer from the server.
+    final socketReady = await _waitForSocketConnection();
+    if (socketReady) {
+      _socketService.requestCallResync(callId: callId);
+    } else {
+      debugPrint('⚠️ CallKit accept: socket not connected, resync deferred');
+    }
+
+    // Pre-populate active call info so the user sees the caller immediately.
+    currentCallId.value = callId;
+    remoteDeviceId.value = callerId;
+    isCaller.value = false;
+    remoteDisplayName.value = callerName;
+
+    final callData = {
+      'callId': callId,
+      'callerId': callerId,
+      'callerName': callerName,
+      'sdpOffer': null,
+      'roomId': roomId,
+      'avatarUrl': avatarUrl,
+      'isVideo': isVideo,
+    };
+
+    // Skip the incoming call screen and go straight to the active call UI.
+    // The resync will arrive shortly and complete the connection there.
+    Get.offNamed('/call/active', arguments: callData);
   }
 
   /// Check for pending auto-accept call from background (CallKit accept)

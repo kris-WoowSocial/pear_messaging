@@ -542,8 +542,10 @@ class MainActivity : FlutterFragmentActivity() {
                 )
             }
 
-            // WebRTC calls need MODE_IN_COMMUNICATION for speakerphone routing to work reliably
-            audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+            // Ensure MODE_IN_COMMUNICATION for instant speaker toggle (prevents 60s delay)
+            if (audioManager.mode != AudioManager.MODE_IN_COMMUNICATION) {
+                audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+            }
 
             // On Android 11+ (API 31+), use setCommunicationDevice for reliable routing
             // On older Android, use isSpeakerphoneOn

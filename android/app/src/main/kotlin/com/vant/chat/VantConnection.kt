@@ -2,6 +2,7 @@ package com.vant.chat
 
 import android.content.Context
 import android.content.Intent
+import android.media.AudioManager
 import android.os.Bundle
 import android.telecom.Connection
 import android.telecom.DisconnectCause
@@ -58,6 +59,11 @@ class VantConnection(private val context: Context) : Connection() {
 
         // Stop ringing
         VantCallManager.stopRinging(context)
+
+        // Set audio mode for VoIP calls (prevents speaker delay)
+        val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+        audioManager.isSpeakerphoneOn = false
 
         // Launch MainActivity with ANSWER_CALL action
         val callId = connectionExtras.getString("call_id") ?: ""

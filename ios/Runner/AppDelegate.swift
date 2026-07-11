@@ -4,10 +4,15 @@ import Firebase
 import UserNotifications
 import PushKit
 import CallKit
+import AVFoundation
 import flutter_callkit_incoming
+import CommonCrypto
 
 @main
 @objc class AppDelegate: FlutterAppDelegate, PKPushRegistryDelegate, CallkitIncomingAppDelegate {
+
+  // Stable namespace for UUIDv5 (URL namespace from RFC 4122)
+  private let uuidNamespace = UUID(uuidString: "6ba7b811-9dad-11d1-80b4-00c04fd430c8")!
   // PushKit registry for VoIP pushes (required for CallKit on locked iOS)
   var pushRegistry: PKPushRegistry?
 
@@ -103,7 +108,7 @@ import flutter_callkit_incoming
   }
   
   // Handle remote notification registration
-  override func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
+    override func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Foundation.Data) {
     #if DEBUG
     Messaging.messaging().setAPNSToken(deviceToken, type: .sandbox)
     #else
@@ -224,6 +229,50 @@ import flutter_callkit_incoming
     completionHandler()
   }
 
+  // Generate a deterministic RFC 4122 UUID v5 from a string using the URL namespace.
+  // This matches Dart's `Uuid().v5(UuidNamespace.url, callId)` so CallKit ids are
+  // consistent between the native PushKit path and the Dart CallKitService path.
+  private func uuidV5(from name: String) -> UUID? {
+    guard let nameData = name.data(using: .utf8) else { return nil }
+
+    var uuidBytes = uuidNamespace.uuid
+    var namespaceData = Data()
+    namespaceData.append(UnsafeBufferPointer(start: &uuidBytes.0, count: 1))
+    namespaceData.append(UnsafeBufferPointer(start: &uuidBytes.1, count: 1))
+    namespaceData.append(UnsafeBufferPointer(start: &uuidBytes.2, count: 1))
+    namespaceData.append(UnsafeBufferPointer(start: &uuidBytes.3, count: 1))
+    namespaceData.append(UnsafeBufferPointer(start: &uuidBytes.4, count: 1))
+    namespaceData.append(UnsafeBufferPointer(start: &uuidBytes.5, count: 1))
+    namespaceData.append(UnsafeBufferPointer(start: &uuidBytes.6, count: 1))
+    namespaceData.append(UnsafeBufferPointer(start: &uuidBytes.7, count: 1))
+    namespaceData.append(UnsafeBufferPointer(start: &uuidBytes.8, count: 1))
+    namespaceData.append(UnsafeBufferPointer(start: &uuidBytes.9, count: 1))
+    namespaceData.append(UnsafeBufferPointer(start: &uuidBytes.10, count: 1))
+    namespaceData.append(UnsafeBufferPointer(start: &uuidBytes.11, count: 1))
+    namespaceData.append(UnsafeBufferPointer(start: &uuidBytes.12, count: 1))
+    namespaceData.append(UnsafeBufferPointer(start: &uuidBytes.13, count: 1))
+    namespaceData.append(UnsafeBufferPointer(start: &uuidBytes.14, count: 1))
+    namespaceData.append(UnsafeBufferPointer(start: &uuidBytes.15, count: 1))
+
+    var input = namespaceData
+    input.append(nameData)
+
+    var digest = [UInt8](repeating: 0, count: Int(CC_SHA1_DIGEST_LENGTH))
+    input.withUnsafeBytes { buffer in
+      _ = CC_SHA1(buffer.baseAddress, CC_LONG(buffer.count), &digest)
+    }
+
+    digest[6] = (digest[6] & 0x0F) | 0x50 // version 5
+    digest[8] = (digest[8] & 0x3F) | 0x80 // variant 10
+
+    return UUID(uuid: (
+      digest[0], digest[1], digest[2], digest[3],
+      digest[4], digest[5], digest[6], digest[7],
+      digest[8], digest[9], digest[10], digest[11],
+      digest[12], digest[13], digest[14], digest[15]
+    ))
+  }
+
   // MARK: - PushKit / VoIP Push (required for CallKit on locked iOS)
 
   private func setupPushKit() {
@@ -242,6 +291,47 @@ import flutter_callkit_incoming
 
     // Forward token to flutter_callkit_incoming so it can emit it to Dart
     SwiftFlutterCallkitIncomingPlugin.sharedInstance?.setDevicePushTokenVoIP(token)
+
+    // Also register directly from native — this is the RELIABLE path.
+    // Flutter's CallKitService may not be initialized yet when PushKit fires
+    // (PushKit fires early in app launch, before Flutter is ready).
+    // device_id is stored by Flutter's SharedPreferences in NSUserDefaults.standard
+    // under the key "flutter.device_id" (SharedPreferences prefixes all keys with "flutter.").
+    registerVoipTokenWithBackend(token: token)
+  }
+
+  /// Register VoIP token with the backend server directly from native Swift.
+  /// Uses URLSession so it works even before Flutter is fully initialized.
+  private func registerVoipTokenWithBackend(token: String) {
+    // Flutter SharedPreferences stores keys with "flutter." prefix in NSUserDefaults.standard
+    guard let deviceId = UserDefaults.standard.string(forKey: "flutter.device_id"),
+          !deviceId.isEmpty else {
+      print("📱 PushKit: device_id not in UserDefaults yet — Flutter will register token after init")
+      return
+    }
+
+    guard let url = URL(string: "https://vant.chat/api/devices/voip-token") else { return }
+
+    var request = URLRequest(url: url)
+    request.httpMethod = "POST"
+    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+    let body: [String: String] = [
+      "deviceId": deviceId,
+      "voipToken": token,
+      "platform": "ios"
+    ]
+
+    guard let httpBody = try? JSONSerialization.data(withJSONObject: body) else { return }
+    request.httpBody = httpBody
+
+    URLSession.shared.dataTask(with: request) { _, response, error in
+      if let error = error {
+        print("📱 PushKit: VoIP token registration failed: \(error.localizedDescription)")
+      } else if let httpResponse = response as? HTTPURLResponse {
+        print("📱 PushKit: VoIP token registered — HTTP \(httpResponse.statusCode) for device \(deviceId)")
+      }
+    }.resume()
   }
 
   func pushRegistry(_ registry: PKPushRegistry, didInvalidatePushTokenFor type: PKPushType) {
@@ -256,21 +346,55 @@ import flutter_callkit_incoming
       return
     }
 
+    let pushType = payload.dictionaryPayload["type"] as? String ?? "incoming_call"
+
+    // Caller cancelled — dismiss the CallKit UI if it's showing (works even when app is killed)
+    if pushType == "call_cancelled" {
+      let callId = payload.dictionaryPayload["callId"] as? String ?? ""
+      print("📱 PushKit: call_cancelled received for callId=\(callId), ending CallKit call")
+      if !callId.isEmpty, let uuid = uuidV5(from: callId) {
+        let endData = flutter_callkit_incoming.Data(id: uuid.uuidString, nameCaller: "", handle: "", type: 0)
+        SwiftFlutterCallkitIncomingPlugin.sharedInstance?.endCall(endData)
+      }
+      completion()
+      return
+    }
+
     // Extract call data from VoIP push payload
-    let id = payload.dictionaryPayload["callId"] as? String ?? payload.dictionaryPayload["id"] as? String ?? UUID().uuidString
+    let serverCallId = payload.dictionaryPayload["callId"] as? String ?? payload.dictionaryPayload["id"] as? String ?? ""
     let nameCaller = payload.dictionaryPayload["callerName"] as? String ?? "Unknown"
     let handle = payload.dictionaryPayload["callerId"] as? String ?? ""
-    let isVideo = payload.dictionaryPayload["isVideo"] as? Bool ?? false
+    // isVideo arrives as a String "true"/"false" from the server data dict
+    let isVideoStr = payload.dictionaryPayload["isVideo"] as? String ?? "false"
+    let isVideo = (payload.dictionaryPayload["isVideo"] as? Bool) ?? (isVideoStr == "true")
 
-    // Build CallKit data and show native incoming call UI on the lock screen
-    let data = flutter_callkit_incoming.Data(id: id, nameCaller: nameCaller, handle: handle, type: isVideo ? 1 : 0)
-    data.extra = payload.dictionaryPayload
-    SwiftFlutterCallkitIncomingPlugin.sharedInstance?.showCallkitIncoming(data, fromPushKit: true) {
+    // CallKit requires a valid UUID for the call id. Convert the server callId to a
+    // deterministic UUID v5 so it matches the id generated by Dart's CallKitService.
+    let callKitId = serverCallId.isEmpty ? UUID().uuidString : (uuidV5(from: serverCallId)?.uuidString ?? UUID().uuidString)
+
+    print("📱 PushKit: Showing CallKit UI — callId=\(callKitId) caller=\(nameCaller) isVideo=\(isVideo)")
+
+    // Build CallKit data and show native incoming call UI on the lock screen.
+    // CRITICAL: iOS 13+ requires reportNewIncomingCall within this method's call stack.
+    // fromPushKit: true satisfies that requirement.
+    let callData = flutter_callkit_incoming.Data(id: callKitId, nameCaller: nameCaller, handle: handle, type: isVideo ? 1 : 0)
+    var extra = payload.dictionaryPayload
+    extra["callId"] = serverCallId
+    callData.extra = extra as NSDictionary
+    SwiftFlutterCallkitIncomingPlugin.sharedInstance?.showCallkitIncoming(callData, fromPushKit: true) {
       completion()
     }
   }
 
-  // MARK: - CallkitIncomingAppDelegate (optional callbacks)
+  // MARK: - CallkitIncomingAppDelegate
+
+  func didActivateAudioSession(_ audioSession: AVAudioSession) {
+    print("📱 CallKit: didActivateAudioSession")
+  }
+
+  func didDeactivateAudioSession(_ audioSession: AVAudioSession) {
+    print("📱 CallKit: didDeactivateAudioSession")
+  }
 
   func onAccept(_ call: Call, _ action: CXAnswerCallAction) {
     print("📱 CallKit: onAccept")
