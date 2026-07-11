@@ -69,7 +69,6 @@ android/app/fabric.properties
 /ios/Runner.xcodeproj/xcuserdata/
 /ios/Runner/GeneratedPluginRegistrant.swift
 /ios/Flutter/flutter_export_environment.sh
-/ios/Runner/GoogleService-Info.plist
 /ios/Runner/fabric.properties
 
 # Symbolication and Obfuscation
@@ -78,7 +77,6 @@ app.*.map.json
 
 # Firebase and Google Services
 google-services.json
-GoogleService-Info.plist
 fabric.properties
 
 # Environment and Configuration files
