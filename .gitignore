@@ -227,6 +227,9 @@ fastlane/test_output
 *.tiff
 *.ico
 *.svg
+
+# Allow iOS app icon PNGs (required for App Store)
+!ios/Runner/Assets.xcassets/AppIcon.appiconset/*.png
 *.mp4
 *.avi
 *.mov
