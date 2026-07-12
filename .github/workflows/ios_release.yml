@@ -21,12 +21,29 @@ jobs:
     runs-on: macos-15
 
     env:
-      VERSION_NAME: ${{ github.event.inputs.version_name || '1.4.0' }}
-      VERSION_CODE: ${{ github.event.inputs.version_code || '4' }}
+      VERSION_NAME: ${{ github.event.inputs.version_name || '' }}
+      VERSION_CODE: ${{ github.event.inputs.version_code || '' }}
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Resolve version
+        run: |
+          # Read version from pubspec.yaml (format: "version: 1.4.0+4")
+          PUBSPEC_VERSION=$(grep '^version:' pubspec.yaml | sed 's/version: //')
+          PUBSPEC_NAME=$(echo "$PUBSPEC_VERSION" | cut -d'+' -f1)
+          PUBSPEC_CODE=$(echo "$PUBSPEC_VERSION" | cut -d'+' -f2)
+
+          # Use workflow_dispatch inputs if provided, otherwise use pubspec.yaml
+          if [ -z "$VERSION_NAME" ]; then
+            echo "VERSION_NAME=$PUBSPEC_NAME" >> $GITHUB_ENV
+          fi
+          if [ -z "$VERSION_CODE" ]; then
+            echo "VERSION_CODE=$PUBSPEC_CODE" >> $GITHUB_ENV
+          fi
+
+          echo "Building version: ${{ env.VERSION_NAME || '$PUBSPEC_NAME' }} (${{ env.VERSION_CODE || '$PUBSPEC_CODE' }})"
 
       - name: Select Xcode 26
         run: |
@@ -105,7 +122,6 @@ jobs:
         run: |
           flutter build ipa \
             --release \
-            --flavor prod \
             --target=lib/main_prod.dart \
             --build-name=${{ env.VERSION_NAME }} \
             --build-number=${{ env.VERSION_CODE }} \
