@@ -28,6 +28,23 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Select Xcode 26
+        run: |
+          # List available Xcode versions and select Xcode 26
+          ls /Applications/ | grep Xcode
+          if [ -d "/Applications/Xcode_26.0.app" ]; then
+            sudo xcode-select -s /Applications/Xcode_26.0.app/Contents/Developer
+          elif [ -d "/Applications/Xcode_26.app" ]; then
+            sudo xcode-select -s /Applications/Xcode_26.app/Contents/Developer
+          else
+            echo "Available Xcode versions:"
+            ls /Applications/ | grep -i xcode
+            echo "ERROR: Xcode 26 not found. Using latest available."
+            LATEST_XCODE=$(ls -d /Applications/Xcode*.app | sort -V | tail -1)
+            sudo xcode-select -s "$LATEST_XCODE/Contents/Developer"
+          fi
+          xcodebuild -version
+
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
