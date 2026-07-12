@@ -22,7 +22,7 @@ jobs:
 
     env:
       VERSION_NAME: ${{ github.event.inputs.version_name || '1.4.0' }}
-      VERSION_CODE: ${{ github.event.inputs.version_code || '2' }}
+      VERSION_CODE: ${{ github.event.inputs.version_code || '3' }}
 
     steps:
       - name: Checkout code
@@ -121,13 +121,11 @@ jobs:
           mkdir -p "$KEY_DIR"
           echo "$APP_STORE_CONNECT_API_KEY_BASE64" | base64 --decode > "$KEY_PATH"
 
-          IPA_PATH=$(ls build/ios/ipa/*.ipa)
-
-          xcrun iTMSTransporter -m upload \
-            -assetFile "$IPA_PATH" \
-            -apiKey "$APP_STORE_CONNECT_API_KEY_ID" \
-            -apiIssuer "$APP_STORE_CONNECT_ISSUER_ID" \
-            -verbose
+          xcrun altool --upload-app \
+            --type ios \
+            --file build/ios/ipa/*.ipa \
+            --apiKey "$APP_STORE_CONNECT_API_KEY_ID" \
+            --apiIssuer "$APP_STORE_CONNECT_ISSUER_ID"
 
       - name: Clean up keychain and provisioning profile
         if: always()
