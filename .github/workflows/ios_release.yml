@@ -22,7 +22,7 @@ jobs:
 
     env:
       VERSION_NAME: ${{ github.event.inputs.version_name || '1.4.0' }}
-      VERSION_CODE: ${{ github.event.inputs.version_code || '3' }}
+      VERSION_CODE: ${{ github.event.inputs.version_code || '4' }}
 
     steps:
       - name: Checkout code
@@ -105,6 +105,7 @@ jobs:
         run: |
           flutter build ipa \
             --release \
+            --flavor prod \
             --target=lib/main_prod.dart \
             --build-name=${{ env.VERSION_NAME }} \
             --build-number=${{ env.VERSION_CODE }} \
