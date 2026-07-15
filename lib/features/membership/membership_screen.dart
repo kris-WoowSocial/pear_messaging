@@ -1,9 +1,11 @@
 import 'dart:io' show Platform;
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
+import 'package:in_app_purchase/in_app_purchase.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../../core/constants/app_colors.dart';
 import '../../core/constants/network_constants.dart';
+import '../../core/services/iap_service.dart';
 import '../../core/services/membership_service.dart';
 import '../../core/constants/pricing_config.dart';
 import 'membership_controller.dart';
@@ -14,8 +16,11 @@ class MembershipScreen extends GetView<MembershipController> {
   @override
   Widget build(BuildContext context) {
     final membershipService = Get.find<MembershipService>();
+    final iapService = Get.find<IAPService>();
 
     final pricing = PricingConfig.globalPricing;
+    final sixMonthProduct = _getProduct(iapService, '6_months');
+    final oneYearProduct = _getProduct(iapService, '1_year');
 
     return Scaffold(
       backgroundColor: const Color(0xFF0A0A0F),
@@ -78,6 +83,7 @@ class MembershipScreen extends GetView<MembershipController> {
                               6,
                               pricing.currencySymbol,
                             ),
+                            product: sixMonthProduct,
                             isPopular: false,
                             isSelected:
                                 controller.selectedPlan.value == '6_months',
@@ -99,6 +105,7 @@ class MembershipScreen extends GetView<MembershipController> {
                               12,
                               pricing.currencySymbol,
                             ),
+                            product: oneYearProduct,
                             isPopular: true,
                             isSelected:
                                 controller.selectedPlan.value == '1_year',
@@ -113,7 +120,7 @@ class MembershipScreen extends GetView<MembershipController> {
                         _buildFeaturesSection(),
                         const SizedBox(height: 16),
                         // Required Subscription Information
-                        _buildSubscriptionInfo(),
+                        _buildSubscriptionInfo(iapService),
                         const SizedBox(height: 16),
                         // Legal Links
                         _buildLegalLinks(),
@@ -234,12 +241,18 @@ class MembershipScreen extends GetView<MembershipController> {
     required String price,
     required String period,
     required String perMonth,
+    ProductDetails? product,
     required bool isPopular,
     required bool isSelected,
     required VoidCallback onTap,
     required bool isProcessing,
     required bool termsAccepted,
   }) {
+    final displayTitle = product?.title ?? title;
+    final displayPrice = product?.price ?? price;
+    final displayPerMonth = product != null
+        ? _formatPerMonth(product.rawPrice, product.currencySymbol, planId == '1_year' ? 12 : 6)
+        : perMonth;
     return GestureDetector(
       onTap: (isProcessing || !termsAccepted)
           ? () {
@@ -321,16 +334,16 @@ class MembershipScreen extends GetView<MembershipController> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          title,
+                          displayTitle,
                           style: const TextStyle(
                             color: Colors.white,
-                            fontSize: 20,
+                            fontSize: 14,
                             fontWeight: FontWeight.w700,
                           ),
                         ),
                         const SizedBox(height: 4),
                         Text(
-                          perMonth,
+                          displayPerMonth,
                           style: TextStyle(
                             color:
                                 isPopular ? AppColors.primary : Colors.white54,
@@ -339,7 +352,7 @@ class MembershipScreen extends GetView<MembershipController> {
                         ),
                         const SizedBox(height: 2),
                         Text(
-                          'One-time payment \u2022 No auto-renewal',
+                          'Auto-renews until cancelled',
                           style: TextStyle(
                             color: Colors.white.withOpacity(0.35),
                             fontSize: 10,
@@ -352,10 +365,10 @@ class MembershipScreen extends GetView<MembershipController> {
                     crossAxisAlignment: CrossAxisAlignment.end,
                     children: [
                       Text(
-                        price,
+                        displayPrice,
                         style: TextStyle(
                           color: isPopular ? AppColors.primary : Colors.white,
-                          fontSize: 26,
+                          fontSize: 20,
                           fontWeight: FontWeight.w800,
                         ),
                       ),
@@ -379,8 +392,8 @@ class MembershipScreen extends GetView<MembershipController> {
                           ),
                         )
                       : Container(
-                          width: 44,
-                          height: 44,
+                          width: 35,
+                          height: 35,
                           decoration: BoxDecoration(
                             shape: BoxShape.circle,
                             color: isPopular
@@ -458,47 +471,63 @@ class MembershipScreen extends GetView<MembershipController> {
     );
   }
 
-  Widget _buildSubscriptionInfo() {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(12),
-        color: Colors.white.withOpacity(0.03),
-        border: Border.all(color: Colors.white.withOpacity(0.1)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            'Purchase Terms',
-            style: TextStyle(
-              color: Colors.white.withOpacity(0.8),
-              fontSize: 13,
-              fontWeight: FontWeight.w600,
+  Widget _buildSubscriptionInfo(IAPService iapService) {
+    return Obx(() {
+      final sixMonthProduct = iapService.getProduct(
+        iapService.getProductIdFromPlanId('6_months'),
+      );
+      final oneYearProduct = iapService.getProduct(
+        iapService.getProductIdFromPlanId('1_year'),
+      );
+      final sixMonthPrice =
+          sixMonthProduct?.price ?? '\$70 USD';
+      final oneYearPrice =
+          oneYearProduct?.price ?? '\$100 USD';
+
+      return Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(12),
+          color: Colors.white.withOpacity(0.03),
+          border: Border.all(color: Colors.white.withOpacity(0.1)),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Subscription Terms',
+              style: TextStyle(
+                color: Colors.white.withOpacity(0.8),
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+              ),
             ),
-          ),
-          const SizedBox(height: 10),
-          _buildTermsItem(
-            'One-time purchase. No auto-renewal or recurring charges.',
-          ),
-          _buildTermsItem(
-            '6-Month Plan: \$70 USD — access expires after 183 days from purchase.',
-          ),
-          _buildTermsItem(
-            '1-Year Plan: \$100 USD — access expires after 365 days from purchase.',
-          ),
-          _buildTermsItem(
-            'After expiry, your account reverts to the free tier. No further charges will be made.',
-          ),
-          _buildTermsItem(
-            'Payment is charged at the time of purchase through your platform app store account.',
-          ),
-          _buildTermsItem(
-            'To manage purchases, go to your device\'s App Store or Google Play subscription settings.',
-          ),
-        ],
-      ),
-    );
+            const SizedBox(height: 10),
+            _buildTermsItem(
+              'Vant Chat Premium is an auto-renewable subscription.',
+            ),
+            _buildTermsItem(
+              '6-Month Plan: $sixMonthPrice — billed every 6 months until cancelled.',
+            ),
+            _buildTermsItem(
+              '1-Year Plan: $oneYearPrice — billed every 12 months until cancelled.',
+            ),
+            _buildTermsItem(
+              'Subscription automatically renews unless auto-renew is turned off at least 24 hours before the end of the current period.',
+            ),
+            _buildTermsItem(
+              'Your account will be charged for renewal within 24 hours prior to the end of the current period.',
+            ),
+            _buildTermsItem(
+              'You can manage or cancel your subscription anytime from your Apple ID or Google Play account settings.',
+            ),
+            _buildTermsItem(
+              'Payment will be charged to your platform app store account at confirmation of purchase.',
+            ),
+          ],
+        ),
+      );
+    });
   }
 
   Widget _buildTermsItem(String text) {
@@ -538,6 +567,16 @@ class MembershipScreen extends GetView<MembershipController> {
     // Calculate per-month price from total price in smallest currency unit
     final perMonth = (totalPrice / months / 100).toStringAsFixed(2);
     return '$currencySymbol$perMonth / month';
+  }
+
+  String _formatPerMonth(double rawPrice, String currencySymbol, int months) {
+    final perMonth = (rawPrice / months).toStringAsFixed(2);
+    return '$currencySymbol$perMonth / month';
+  }
+
+  ProductDetails? _getProduct(IAPService iapService, String planId) {
+    final productId = iapService.getProductIdFromPlanId(planId);
+    return iapService.getProduct(productId);
   }
 
   Widget _buildLegalLink(String title, String url) {
@@ -581,7 +620,7 @@ class MembershipScreen extends GetView<MembershipController> {
           Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              _buildLegalLink('Terms of Use', NetworkConstants.termsUrl),
+              _buildLegalLink('Terms of Use (EULA)', NetworkConstants.appleTermsUrl),
               const SizedBox(width: 20),
               _buildLegalLink(
                 'Privacy Policy',
@@ -650,7 +689,7 @@ class MembershipScreen extends GetView<MembershipController> {
                     WidgetSpan(
                       child: InkWell(
                         onTap: () async {
-                          final uri = Uri.parse(NetworkConstants.termsUrl);
+                          final uri = Uri.parse(NetworkConstants.appleTermsUrl);
                           if (await canLaunchUrl(uri)) {
                             await launchUrl(
                               uri,
@@ -659,7 +698,7 @@ class MembershipScreen extends GetView<MembershipController> {
                           }
                         },
                         child: Text(
-                          'Terms of Use',
+                          'Terms of Use (EULA)',
                           style: TextStyle(
                             color: AppColors.primary,
                             fontSize: 14,

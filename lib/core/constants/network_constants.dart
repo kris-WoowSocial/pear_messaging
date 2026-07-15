@@ -15,6 +15,8 @@ class NetworkConstants {
 
   // Web URLs (for legal pages, sharing, etc.)
   static const String termsUrl = 'https://vant.chat/terms.html';
+  static const String appleTermsUrl =
+      'https://www.apple.com/legal/internet-services/itunes/dev/stdeula/';
   static const String privacyPolicyUrl =
       'https://vant.chat/privacy-policy.html';
   static const String chatShareUrl = 'https://vant.chat/chat';

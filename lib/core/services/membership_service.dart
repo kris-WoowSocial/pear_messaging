@@ -7,8 +7,11 @@ class MembershipService extends GetxService {
   static const String _installDateKey = 'app_install_date';
   static const String _membershipStatusKey = 'membership_status';
   static const String _membershipPlanKey = 'membership_plan';
+  static const String _membershipTypeKey = 'membership_type';
   static const String _membershipExpiryKey = 'membership_expiry_date';
   static const String _membershipPurchaseDateKey = 'membership_purchase_date';
+
+  static const String _typeSubscription = 'subscription';
 
   static const int _freeMediaDays = 7;
 
@@ -16,6 +19,7 @@ class MembershipService extends GetxService {
 
   final RxString status = 'free'.obs;
   final RxString plan = ''.obs;
+  final RxString membershipType = ''.obs;
   final Rx<DateTime?> expiryDate = Rx<DateTime?>(null);
   final RxInt daysInstalled = 0.obs;
 
@@ -34,6 +38,7 @@ class MembershipService extends GetxService {
 
     status.value = _prefs.getString(_membershipStatusKey) ?? 'free';
     plan.value = _prefs.getString(_membershipPlanKey) ?? '';
+    membershipType.value = _prefs.getString(_membershipTypeKey) ?? '';
 
     final expiryMs = _prefs.getInt(_membershipExpiryKey);
     if (expiryMs != null) {
@@ -83,6 +88,9 @@ class MembershipService extends GetxService {
 
   String get statusDescription {
     if (isPremium) {
+      if (membershipType.value == _typeSubscription) {
+        return 'Active · Renews automatically';
+      }
       if (expiryDate.value != null) {
         final d = expiryDate.value!;
         return 'Expires ${d.day}/${d.month}/${d.year} · $membershipDaysRemaining days left';
@@ -100,22 +108,26 @@ class MembershipService extends GetxService {
     required String purchaseId,
   }) async {
     final now = DateTime.now();
-    final expiry = selectedPlan == '1_year'
-        ? now.add(const Duration(days: 365))
-        : now.add(const Duration(days: 183));
+    // Auto-renewable subscriptions renew indefinitely; use a far-future
+    // placeholder so the user is not downgraded when the billing period ends.
+    // The authoritative source of truth is the platform receipt, so the app
+    // should re-verify via restore purchases or server sync.
+    final expiry = now.add(const Duration(days: 365 * 10));
 
     await _prefs.setString(_membershipStatusKey, 'premium');
     await _prefs.setString(_membershipPlanKey, selectedPlan);
+    await _prefs.setString(_membershipTypeKey, _typeSubscription);
     await _prefs.setInt(_membershipExpiryKey, expiry.millisecondsSinceEpoch);
     await _prefs.setInt(_membershipPurchaseDateKey, now.millisecondsSinceEpoch);
     await _prefs.setString('purchase_id', purchaseId);
 
     status.value = 'premium';
     plan.value = selectedPlan;
+    membershipType.value = _typeSubscription;
     expiryDate.value = expiry;
 
     debugPrint(
-        '✅ Membership activated: $selectedPlan, expires: $expiry, purchaseId: $purchaseId');
+        '✅ Membership activated: $selectedPlan, type: subscription, purchaseId: $purchaseId');
   }
 
   Future<void> restoreMembership({
@@ -123,37 +135,45 @@ class MembershipService extends GetxService {
     required String selectedPlan,
     required DateTime purchaseDate,
   }) async {
-    final expiry = selectedPlan == '1_year'
-        ? purchaseDate.add(const Duration(days: 365))
-        : purchaseDate.add(const Duration(days: 183));
+    final now = DateTime.now();
+    // For restored auto-renewable subscriptions we do not know the exact next
+    // renewal date locally. Use a far-future placeholder and re-verify via the
+    // platform receipt / server sync on subsequent launches.
+    final expiry = now.add(const Duration(days: 365 * 10));
 
-    // Only restore if not expired
-    if (DateTime.now().isBefore(expiry)) {
-      await _prefs.setString(_membershipStatusKey, 'premium');
-      await _prefs.setString(_membershipPlanKey, selectedPlan);
-      await _prefs.setInt(_membershipExpiryKey, expiry.millisecondsSinceEpoch);
-      await _prefs.setInt(
-          _membershipPurchaseDateKey, purchaseDate.millisecondsSinceEpoch);
-      await _prefs.setString('purchase_id', purchaseId);
+    await _prefs.setString(_membershipStatusKey, 'premium');
+    await _prefs.setString(_membershipPlanKey, selectedPlan);
+    await _prefs.setString(_membershipTypeKey, _typeSubscription);
+    await _prefs.setInt(_membershipExpiryKey, expiry.millisecondsSinceEpoch);
+    await _prefs.setInt(
+        _membershipPurchaseDateKey, purchaseDate.millisecondsSinceEpoch);
+    await _prefs.setString('purchase_id', purchaseId);
 
-      status.value = 'premium';
-      plan.value = selectedPlan;
-      expiryDate.value = expiry;
+    status.value = 'premium';
+    plan.value = selectedPlan;
+    membershipType.value = _typeSubscription;
+    expiryDate.value = expiry;
 
-      debugPrint('✅ Membership restored: $selectedPlan, expires: $expiry');
-    } else {
-      debugPrint('⚠️ Cannot restore - membership expired on $expiry');
-    }
+    debugPrint(
+        '✅ Membership restored: $selectedPlan, type: subscription, purchaseDate: $purchaseDate');
   }
 
   Future<void> _expireMembership() async {
+    await deactivateMembership();
+  }
+
+  Future<void> deactivateMembership() async {
     await _prefs.setString(_membershipStatusKey, 'free');
     await _prefs.remove(_membershipPlanKey);
+    await _prefs.remove(_membershipTypeKey);
     await _prefs.remove(_membershipExpiryKey);
+    await _prefs.remove(_membershipPurchaseDateKey);
+    await _prefs.remove('purchase_id');
     status.value = 'free';
     plan.value = '';
+    membershipType.value = '';
     expiryDate.value = null;
-    debugPrint('⚠️ Membership expired');
+    debugPrint('⚠️ Membership deactivated');
   }
 
   String? get purchaseDateFormatted {
@@ -195,6 +215,7 @@ class MembershipService extends GetxService {
         if (DateTime.now().isBefore(expiry)) {
           await _prefs.setString(_membershipStatusKey, 'premium');
           await _prefs.setString(_membershipPlanKey, planId);
+          await _prefs.setString(_membershipTypeKey, _typeSubscription);
           await _prefs.setInt(
               _membershipExpiryKey, expiry.millisecondsSinceEpoch);
           await _prefs.setString('purchase_id', purchaseId);
@@ -207,6 +228,7 @@ class MembershipService extends GetxService {
 
           status.value = 'premium';
           plan.value = planId;
+          membershipType.value = _typeSubscription;
           expiryDate.value = expiry;
 
           debugPrint(
