@@ -2,6 +2,8 @@ import 'package:get/get.dart';
 import 'package:flutter/material.dart';
 import 'local_storage_service.dart';
 import 'socket_service.dart';
+import 'api_service.dart';
+import 'invitation_storage_service.dart';
 import '../utils/string_utils.dart';
 import '../../storage/models/connection_request_entity.dart';
 import '../../storage/models/chat_entity.dart';
@@ -569,6 +571,51 @@ class ConnectionRequestService extends GetxService {
       backgroundColor: Colors.green.shade100,
       colorText: Colors.green.shade800,
     );
+
+    // Referral attribution: if this user installed via a referral/branch invite
+    // from this sender, claim the attribution now that they've accepted.
+    _claimReferralIfApplicable(senderDeviceId);
+  }
+
+  /// Claim referral attribution for a freshly-referred user on invite accept.
+  ///
+  /// Only fires when the accepted request's sender matches the referral context
+  /// captured from the Branch install link. This guarantees attribution is never
+  /// retroactive for existing users and is only ever claimed once.
+  Future<void> _claimReferralIfApplicable(String senderDeviceId) async {
+    try {
+      if (!Get.isRegistered<InvitationStorageService>() ||
+          !Get.isRegistered<ApiService>()) {
+        return;
+      }
+      final invitationService = Get.find<InvitationStorageService>();
+      final referralInviter = invitationService.getReferralInviterDeviceId();
+      if (referralInviter == null || referralInviter != senderDeviceId) {
+        // No referral context, or it belongs to a different inviter.
+        return;
+      }
+
+      final myDeviceId = _storageService.deviceId;
+      if (myDeviceId == null) return;
+
+      final influencerCode = invitationService.getReferralInfluencerCode();
+      debugPrint(
+        '🎯 Claiming referral attribution (inviter: $senderDeviceId, code: ${influencerCode ?? "none"})',
+      );
+
+      final created = await Get.find<ApiService>().claimAcceptedInvite(
+        referredDeviceId: myDeviceId,
+        influencerCode: influencerCode,
+        inviterDeviceId: senderDeviceId,
+      );
+      debugPrint('🎯 Referral attribution claim result: created=$created');
+
+      // One-time use: clear the context whether or not the backend created a
+      // new attribution (it dedupes server-side, so no retries are needed).
+      await invitationService.clearReferralContext();
+    } catch (e) {
+      debugPrint('⚠️ Error claiming referral attribution: $e');
+    }
   }
 
   /// Block connection request

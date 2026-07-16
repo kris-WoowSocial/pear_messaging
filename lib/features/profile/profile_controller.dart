@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:get/get.dart';
 import '../../core/constants/app_strings.dart';
+import '../../core/services/api_service.dart';
 import '../../core/services/branch_service.dart';
 import '../../core/services/local_auth_service.dart';
 import '../../core/services/local_storage_service.dart';
@@ -17,6 +18,7 @@ class ProfileController extends GetxController {
   final RxString userName = ''.obs;
   final RxBool isEditingName = false.obs;
   final Rx<TextEditingController> nameController = TextEditingController().obs;
+  final Rx<Map<String, dynamic>?> linkedInfluencer = Rxn<Map<String, dynamic>>();
 
   @override
   void onInit() {
@@ -29,6 +31,18 @@ class ProfileController extends GetxController {
     userName.value =
         savedName ?? StringUtils.generateFriendlyName(deviceId.value);
     nameController.value.text = userName.value;
+
+    checkLinkedInfluencer();
+  }
+
+  Future<void> checkLinkedInfluencer() async {
+    try {
+      final data = await ApiService.to.getInfluencerByDeviceId(deviceId.value);
+      linkedInfluencer.value = data?['influencer'] as Map<String, dynamic>?;
+    } catch (e) {
+      debugPrint('⚠️ checkLinkedInfluencer failed: $e');
+      linkedInfluencer.value = null;
+    }
   }
 
   @override
@@ -193,6 +207,38 @@ class ProfileController extends GetxController {
 
     isEditingName.value = false;
     nameController.value.text = userName.value;
+  }
+
+  Future<void> linkInfluencerAccount(String token) async {
+    if (token.isEmpty) {
+      Get.snackbar(
+        'Error',
+        'Please enter a token',
+        snackPosition: SnackPosition.BOTTOM,
+      );
+      return;
+    }
+    try {
+      final result = await ApiService.to.linkVantAccount(
+        token: token,
+        deviceId: deviceId.value,
+      );
+      linkedInfluencer.value = result['influencer'] as Map<String, dynamic>?;
+      Get.back();
+      Get.snackbar(
+        'Success',
+        'Influencer account linked: ${result['influencer']['name']}',
+        snackPosition: SnackPosition.BOTTOM,
+      );
+    } catch (e) {
+      Get.snackbar(
+        'Link Failed',
+        e.toString(),
+        snackPosition: SnackPosition.BOTTOM,
+        backgroundColor: Colors.red.shade100,
+        colorText: Colors.red.shade800,
+      );
+    }
   }
 
   String get userInitial {
