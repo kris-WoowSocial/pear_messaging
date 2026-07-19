@@ -89,8 +89,6 @@ void main() async {
   // Initialize only critical services before app launch
   await initializeCriticalServices();
 
-  final launchedForPendingCall = await hasPendingAcceptedCall();
-
   // Check if this is a returning user (terms already accepted)
   final termsAccepted = await checkTermsAccepted();
 
@@ -101,7 +99,7 @@ void main() async {
   runApp(PearMessagingApp(skipSplash: termsAccepted));
 
   // Initialize all non-critical services in background after app starts
-  initializeNonCriticalServices(launchedForPendingCall: launchedForPendingCall);
+  initializeNonCriticalServices();
 }
 
 /// Initialize only critical services needed for app to function
@@ -228,11 +226,7 @@ Future<void> initializeCriticalServices() async {
 }
 
 /// Initialize non-critical services in background after app launches
-void initializeNonCriticalServices({required bool launchedForPendingCall}) async {
-  if (launchedForPendingCall) {
-    await waitForCallRecoveryPriorityWindow();
-  }
-
+void initializeNonCriticalServices() async {
   try {
     // Initialize Firebase FIRST - FCM depends on it!
     await _initializeFirebase();
@@ -525,36 +519,6 @@ void _checkAppLinkHandler() async {
     }
   } catch (e) {
     debugPrint('⚠️ Error checking app link handler: $e');
-  }
-}
-
-Future<bool> hasPendingAcceptedCall() async {
-  try {
-    final prefs = await SharedPreferences.getInstance();
-    return (prefs.getString('pendingAcceptedCallId') ?? '').isNotEmpty;
-  } catch (e) {
-    debugPrint('⚠️ Error checking pending accepted call: $e');
-    return false;
-  }
-}
-
-Future<void> waitForCallRecoveryPriorityWindow() async {
-  try {
-    final socketService = Get.find<SocketService>();
-    final stopwatch = Stopwatch()..start();
-    debugPrint('📞 Prioritizing pending CallKit recovery before non-call startup');
-    while (!socketService.isRegistered.value &&
-        stopwatch.elapsed < const Duration(seconds: 8)) {
-      await Future.delayed(const Duration(milliseconds: 100));
-    }
-    if (socketService.isRegistered.value) {
-      await Future.delayed(const Duration(seconds: 2));
-    }
-    debugPrint(
-      '📞 Call startup priority window finished after ${stopwatch.elapsedMilliseconds}ms',
-    );
-  } catch (e) {
-    debugPrint('⚠️ Error prioritizing pending call recovery: $e');
   }
 }
 

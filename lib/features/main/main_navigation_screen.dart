@@ -17,6 +17,7 @@ class MainNavigationScreen extends StatefulWidget {
 }
 
 class _MainNavigationScreenState extends State<MainNavigationScreen> {
+  final GlobalKey _bottomNavigationBarKey = GlobalKey();
   int _currentIndex = 1; // Start on Chats tab (center)
 
   // Cached pages to preserve state (only 2 actual screens)
@@ -48,6 +49,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
         final missedCalls = Get.find<CallHistoryService>().getMissedCallCount();
 
         return BottomNavigationBar(
+          key: _bottomNavigationBarKey,
           currentIndex: _currentIndex,
           onTap: (index) {
             if (index == 0) {
@@ -147,7 +149,9 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
       }
 
       // Share via Branch (generates link + opens native share sheet)
-      await branchService.shareApp();
+      await branchService.shareApp(
+        sharePositionOrigin: _sharePositionOrigin(),
+      );
     } catch (e) {
       debugPrint('❌ Error sharing app: $e');
       Get.snackbar(
@@ -156,5 +160,14 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
         snackPosition: SnackPosition.BOTTOM,
       );
     }
+  }
+
+  Rect? _sharePositionOrigin() {
+    final renderObject = _bottomNavigationBarKey.currentContext?.findRenderObject();
+    if (renderObject is! RenderBox || !renderObject.hasSize) {
+      return null;
+    }
+
+    return renderObject.localToGlobal(Offset.zero) & renderObject.size;
   }
 }

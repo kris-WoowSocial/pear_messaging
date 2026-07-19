@@ -398,19 +398,12 @@ import CommonCrypto
 
   func onAccept(_ call: Call, _ action: CXAnswerCallAction) {
     print("📱 CallKit: onAccept")
-    if let callId = call.data.extra["callId"] as? String, !callId.isEmpty {
-      UserDefaults.standard.set(callId, forKey: "flutter.pendingAcceptedCallId")
-      UserDefaults.standard.set(Date().timeIntervalSince1970 * 1000, forKey: "flutter.callAcceptedAt")
-      UserDefaults.standard.set(true, forKey: "flutter.launchedForCall")
-    }
     respondToCall(call: call, action: "accept")
     action.fulfill()
   }
 
   func onDecline(_ call: Call, _ action: CXEndCallAction) {
     print("📱 CallKit: onDecline")
-    UserDefaults.standard.removeObject(forKey: "flutter.pendingAcceptedCallId")
-    UserDefaults.standard.removeObject(forKey: "flutter.launchedForCall")
     respondToCall(call: call, action: "reject")
     action.fulfill()
   }
