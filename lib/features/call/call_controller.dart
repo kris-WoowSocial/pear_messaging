@@ -1856,6 +1856,20 @@ class CallController extends GetxController {
     }
   }
 
+  Future<void> _logCallKitResyncLatency() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.reload();
+      final acceptedAt = prefs.getDouble('callAcceptedAt');
+      if (acceptedAt != null) {
+        final elapsed = DateTime.now().millisecondsSinceEpoch - acceptedAt.round();
+        debugPrint('⏱️ CallKit accept to SDP resync: ${elapsed}ms');
+      }
+    } catch (e) {
+      debugPrint('⚠️ Failed to measure CallKit resync latency: $e');
+    }
+  }
+
   /// Accept incoming call during resync (app was killed, user accepted from CallKit)
   Future<void> _acceptIncomingCallResync(Map<String, dynamic> data) async {
     try {
@@ -1868,6 +1882,8 @@ class CallController extends GetxController {
         debugPrint('❌ Cannot resync accept: missing deviceId or sdpOffer');
         return;
       }
+
+      unawaited(_logCallKitResyncLatency());
 
       // Check microphone permission before accepting call
       final hasPermission = await _checkMicrophonePermission();
@@ -1884,7 +1900,7 @@ class CallController extends GetxController {
       _callStartTime = DateTime.now(); // Set call start time for history
       _wasConnected = false;
       _durationSeconds = 0;
-      await _resolveDisplayName(callerId);
+      unawaited(_resolveDisplayName(callerId));
 
       // Accept WebRTC call directly (no ringing state)
       final success = await _webrtcService.acceptCall(

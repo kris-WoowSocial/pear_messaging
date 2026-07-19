@@ -41,6 +41,7 @@ class WebRTCCallService {
 
   // Stats timer for diagnostics (logs bytes sent/received)
   Timer? _statsTimer;
+  Stopwatch? _connectionStopwatch;
 
   // Callbacks
   Function(MediaStream)? onLocalStream;
@@ -100,6 +101,7 @@ class WebRTCCallService {
       _currentCallId = 'call_${DateTime.now().millisecondsSinceEpoch}';
 
       debugPrint('📞 Starting call to $calleeDeviceId');
+      _connectionStopwatch = Stopwatch()..start();
 
       // Request microphone permission
       final hasPermission = await _requestMicrophonePermission();
@@ -110,11 +112,13 @@ class WebRTCCallService {
 
       // Create peer connection
       await _createPeerConnection();
+      _logConnectionStage('peer connection created');
 
       // Get local audio stream with hardware optimization
       // On iOS, audio session is configured by flutter_webrtc during getUserMedia.
       // We'll configure speaker routing AFTER the stream is captured (on connection).
       _localStream = await _getUserMedia();
+      _logConnectionStage('local audio captured');
       if (_localStream == null) {
         debugPrint('❌ Failed to get local stream');
         return false;
@@ -167,6 +171,7 @@ class WebRTCCallService {
       _isCaller = false;
 
       debugPrint('📞 Accepting call from $callerDeviceId');
+      _connectionStopwatch = Stopwatch()..start();
 
       // Request microphone permission
       final hasPermission = await _requestMicrophonePermission();
@@ -177,11 +182,13 @@ class WebRTCCallService {
 
       // Create peer connection
       await _createPeerConnection();
+      _logConnectionStage('peer connection created');
 
       // Get local audio stream with hardware optimization
       // On iOS, audio session is configured by flutter_webrtc during getUserMedia.
       // We'll configure speaker routing AFTER the stream is captured (on connection).
       _localStream = await _getUserMedia();
+      _logConnectionStage('local audio captured');
       if (_localStream == null) {
         debugPrint('❌ Failed to get local stream');
         return false;
@@ -206,12 +213,14 @@ class WebRTCCallService {
         RTCSessionDescription(sdpOffer, 'offer'),
       );
       _remoteDescriptionSet = true;
+      _logConnectionStage('remote SDP offer applied');
       // Add any candidates that arrived before the remote description was ready
       await _flushPendingRemoteIceCandidates();
 
       // Create answer
       final answer = await _peerConnection!.createAnswer();
       await _peerConnection!.setLocalDescription(answer);
+      _logConnectionStage('local SDP answer created');
 
       // Send the answer immediately (trickle ICE). Candidates are exchanged
       // separately via signaling, so we must NOT block on ICE gathering here.
@@ -226,6 +235,13 @@ class WebRTCCallService {
     } catch (e) {
       debugPrint('❌ Failed to accept call: $e');
       return false;
+    }
+  }
+
+  void _logConnectionStage(String stage) {
+    final elapsed = _connectionStopwatch?.elapsedMilliseconds;
+    if (elapsed != null) {
+      debugPrint('⏱️ WebRTC $stage: ${elapsed}ms');
     }
   }
 
@@ -278,6 +294,7 @@ class WebRTCCallService {
       switch (state) {
         case RTCPeerConnectionState.RTCPeerConnectionStateConnected:
           debugPrint('📞 WebRTC CONNECTED - starting timer and audio');
+          _logConnectionStage('media connected');
           onCallStateChange?.call('connected');
           // Re-apply audio configuration to ensure earpiece/speaker routing persists
           // after WebRTC claims audio focus during connection establishment
