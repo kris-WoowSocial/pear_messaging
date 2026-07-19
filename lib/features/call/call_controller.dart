@@ -79,6 +79,7 @@ class CallController extends GetxController {
 
   // Cold-start auto-accept tracking (set when user accepts from CallKit while app killed)
   String? _pendingAutoAcceptCallId;
+  bool _isCheckingPendingAutoAccept = false;
 
   // Latest incoming call data received via socket; used to accept/decline from CallKit/native notification
   // when the custom incoming call screen is already showing.
@@ -108,8 +109,8 @@ class CallController extends GetxController {
 
     // If the socket reconnects while we have a pending auto-accept (e.g. cold-start
     // accept where the first resync request failed), send the resync again.
-    ever(_socketService.isConnected, (connected) {
-      if (connected && _pendingAutoAcceptCallId != null) {
+    ever(_socketService.isRegistered, (registered) {
+      if (registered && _pendingAutoAcceptCallId != null) {
         final callId = _pendingAutoAcceptCallId!;
         debugPrint(
           '📞 Socket reconnected with pending auto-accept, requesting resync for $callId',
@@ -317,20 +318,20 @@ class CallController extends GetxController {
   Future<bool> _waitForSocketConnection({
     Duration timeout = const Duration(seconds: 10),
   }) async {
-    if (_socketService.isConnected.value) return true;
+    if (_socketService.isRegistered.value) return true;
 
-    debugPrint('⏳ Waiting for socket connection before resync...');
+    debugPrint('⏳ Waiting for socket registration before resync...');
     final stopwatch = Stopwatch()..start();
     while (stopwatch.elapsed < timeout) {
-      if (_socketService.isConnected.value) {
-        debugPrint('✅ Socket connected, proceeding with resync');
+      if (_socketService.isRegistered.value) {
+        debugPrint('✅ Socket registered, proceeding with resync');
         return true;
       }
       await Future.delayed(const Duration(milliseconds: 300));
     }
 
     debugPrint(
-      '⚠️ Socket not connected after ${timeout.inSeconds}s, proceeding anyway',
+      '⚠️ Socket not registered after ${timeout.inSeconds}s, proceeding anyway',
     );
     return false;
   }
@@ -381,6 +382,10 @@ class CallController extends GetxController {
 
     _socketService.onCallAccepted = (data) {
       _handleCallAccepted(data);
+    };
+
+    _socketService.onCalleeConnecting = (data) {
+      _handleCalleeConnecting(data);
     };
 
     _socketService.onCallRejected = (data) {
@@ -605,7 +610,7 @@ class CallController extends GetxController {
             debugPrint(
               '📞 Notification action: parsing from payload for $callId',
             );
-            final payload = action.payload ?? '';
+            final payload = action.payload;
             if (payload.startsWith('call:')) {
               final parts = payload.split(':');
               if (parts.length >= 4) {
@@ -700,19 +705,29 @@ class CallController extends GetxController {
         extra?['avatar_url'] as String? ??
         '';
     final isVideo = (extra?['isVideo'] as bool?) ??
-        (extra?['is_video'] == true) ??
-        false;
+        (extra?['is_video'] == true);
 
     debugPrint(
       '📞 CallKit accept: no cached SDP, setting pending auto-accept and requesting resync',
     );
     await setPendingAutoAccept(callId);
+    final deviceId = _storageService.deviceId;
+    if (deviceId != null && deviceId.isNotEmpty) {
+      unawaited(
+        CallKitService.respondToCall(
+          callId: callId,
+          action: 'accept',
+          deviceId: deviceId,
+        ),
+      );
+    }
+    if (!_socketService.isRegistered.value) {
+      await _socketService.safeReconnect();
+    }
 
     // Wait for the socket so we can request the SDP offer from the server.
     final socketReady = await _waitForSocketConnection();
-    if (socketReady) {
-      _socketService.requestCallResync(callId: callId);
-    } else {
+    if (!socketReady) {
       debugPrint('⚠️ CallKit accept: socket not connected, resync deferred');
     }
 
@@ -739,8 +754,18 @@ class CallController extends GetxController {
 
   /// Check for pending auto-accept call from background (CallKit accept)
   Future<void> _checkPendingAutoAccept() async {
+    if (_isCheckingPendingAutoAccept) {
+      debugPrint('📞 Pending auto-accept check already in progress');
+      return;
+    }
+
+    _isCheckingPendingAutoAccept = true;
     debugPrint('📞 _checkPendingAutoAccept() called');
-    await _checkPendingAutoAcceptWithRetry(maxRetries: 5);
+    try {
+      await _checkPendingAutoAcceptWithRetry(maxRetries: 5);
+    } finally {
+      _isCheckingPendingAutoAccept = false;
+    }
   }
 
   /// Check for pending auto-accept with retry mechanism
@@ -778,13 +803,9 @@ class CallController extends GetxController {
           await setPendingAutoAccept(pendingCallId);
           debugPrint('📞 Set pending auto-accept flag for $pendingCallId');
 
-          // Wait for socket to connect
-          if (!_socketService.isConnected.value) {
-            debugPrint('📞 Socket not connected, waiting 2s...');
-            await Future.delayed(const Duration(seconds: 2));
-          }
+          final socketReady = await _waitForSocketConnection();
 
-          if (_socketService.isConnected.value) {
+          if (socketReady) {
             debugPrint('📞 Requesting call resync for pending accepted call');
             _socketService.requestCallResync(callId: pendingCallId);
 
@@ -793,7 +814,7 @@ class CallController extends GetxController {
             debugPrint('📞 Cleared pendingAcceptedCallId');
             return; // Success, exit retry loop
           } else {
-            debugPrint('⚠️ Socket not connected, cannot request call resync');
+            debugPrint('⚠️ Socket not registered, cannot request call resync');
             // Clear auto-accept flag since we can't proceed
             clearPendingAutoAccept();
           }
@@ -1094,6 +1115,12 @@ class CallController extends GetxController {
   Future<void> toggleSpeaker() async {
     await _webrtcService.toggleSpeaker();
     isSpeakerOn.value = _webrtcService.isSpeakerOn;
+  }
+
+  void _handleCalleeConnecting(Map<String, dynamic> data) {
+    if (!isCaller.value || data['callId'] != currentCallId.value) return;
+    debugPrint('📞 Callee accepted and is connecting: ${data['callId']}');
+    _ringtoneService.stopRingtone();
   }
 
   /// Handle call accepted from socket
@@ -1873,7 +1900,9 @@ class CallController extends GetxController {
         // Clear pending auto-accept since we successfully accepted
         await clearPendingAutoAccept();
         // Update native CallKit UI so it shows the connected call screen
-        CallKitService().setCallConnected(callId);
+        if (!Platform.isIOS) {
+          CallKitService().setCallConnected(callId);
+        }
         // Only navigate if not already on the active call screen
         if (Get.currentRoute != '/call/active') {
           Get.offNamed('/call/active');
