@@ -139,4 +139,83 @@ class ApiService extends GetxService {
     if (res.statusCode != 200) return null;
     return jsonDecode(res.body) as Map<String, dynamic>;
   }
+
+  // ── Referrals ────────────────────────────────────────────────────────────────
+
+  /// Claim referral attribution when a referred user accepts the invite that
+  /// brought them into the app. Provide either [influencerCode] (influencer
+  /// referral link) or [inviterDeviceId] (chat invite from a referred user).
+  /// Returns true if a new attribution was created, false otherwise.
+  Future<bool> claimAcceptedInvite({
+    required String referredDeviceId,
+    String? influencerCode,
+    String? inviterDeviceId,
+  }) async {
+    if ((influencerCode == null || influencerCode.isEmpty) &&
+        (inviterDeviceId == null || inviterDeviceId.isEmpty)) {
+      return false;
+    }
+    try {
+      final body = <String, dynamic>{'referredDeviceId': referredDeviceId};
+      if (influencerCode != null && influencerCode.isNotEmpty) {
+        body['influencerCode'] = influencerCode;
+      }
+      if (inviterDeviceId != null && inviterDeviceId.isNotEmpty) {
+        body['inviterDeviceId'] = inviterDeviceId;
+      }
+      final res = await _post('/api/referrals/claim-accepted-invite', body);
+      if (res.statusCode < 200 || res.statusCode >= 300) {
+        debugPrint('⚠️ claimAcceptedInvite HTTP ${res.statusCode}: ${res.body}');
+        return false;
+      }
+      final data = jsonDecode(res.body) as Map<String, dynamic>;
+      return data['created'] == true;
+    } catch (e) {
+      debugPrint('⚠️ claimAcceptedInvite failed: $e');
+      return false;
+    }
+  }
+
+  /// Look up the influencer linked to this device, if any.
+  Future<Map<String, dynamic>?> getInfluencerByDeviceId(String deviceId) async {
+    try {
+      final res = await _get('/api/referrals/influencer-by-device/$deviceId');
+      if (res.statusCode == 404) return null;
+      if (res.statusCode < 200 || res.statusCode >= 300) return null;
+      return jsonDecode(res.body) as Map<String, dynamic>;
+    } catch (e) {
+      debugPrint('⚠️ getInfluencerByDeviceId failed: $e');
+      return null;
+    }
+  }
+
+  /// Link a Vant account (device) to an influencer using a one-time token.
+  Future<Map<String, dynamic>> linkVantAccount({
+    required String token,
+    required String deviceId,
+  }) async {
+    final res = await _post(
+        '/api/referrals/link-vant-account', {'token': token, 'deviceId': deviceId});
+    return _decode(res, 'linkVantAccount');
+  }
+
+  /// Report an unverified in-app purchase for referral event logging.
+  /// Commission is never credited for these events (verification required).
+  Future<bool> reportUnverifiedIap({
+    required String deviceId,
+    required String purchaseId,
+    required String paymentMethod,
+  }) async {
+    try {
+      final res = await _post('/api/referrals/iap-unverified', {
+        'deviceId': deviceId,
+        'purchaseId': purchaseId,
+        'paymentMethod': paymentMethod,
+      });
+      return res.statusCode >= 200 && res.statusCode < 300;
+    } catch (e) {
+      debugPrint('⚠️ reportUnverifiedIap failed: $e');
+      return false;
+    }
+  }
 }

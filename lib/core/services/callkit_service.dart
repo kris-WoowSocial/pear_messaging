@@ -75,13 +75,13 @@ class CallKitService {
     }
     final uuid = const Uuid().v5(_uuidNamespace, callId);
     _callIdToCallKitUuid[callId] = uuid;
-    _callKitUuidToCallId[uuid] = callId;
+    _callKitUuidToCallId[uuid.toLowerCase()] = callId;
     return uuid;
   }
 
   String? _getCallIdFromUuid(String? uuid) {
     if (uuid == null || uuid.isEmpty) return null;
-    return _callKitUuidToCallId[uuid];
+    return _callKitUuidToCallId[uuid.toLowerCase()];
   }
 
   /// Extract the server callId from a CallKit event body. The plugin sends
@@ -248,7 +248,7 @@ class CallKitService {
       await FlutterCallkitIncoming.showCallkitIncoming(params);
 
       // Track this call as active in CallKit
-      _activeCallKitCalls.add(callId);
+      _activeCallKitCalls.add(callKitUuid.toLowerCase());
 
       debugPrint('📞 CallKitService: Incoming call UI displayed');
     } catch (e) {
@@ -287,14 +287,15 @@ class CallKitService {
     debugPrint('📞 CallKitService: Declining call $callId');
 
     final callKitUuid = _getCallKitUuid(callId);
+    final activeCallKitUuid = callKitUuid.toLowerCase();
     // Only call endCall if CallKit is actually managing this call
-    if (_activeCallKitCalls.contains(callKitUuid)) {
+    if (_activeCallKitCalls.contains(activeCallKitUuid)) {
       try {
         await FlutterCallkitIncoming.endCall(callKitUuid);
-        _activeCallKitCalls.remove(callKitUuid);
+        _activeCallKitCalls.remove(activeCallKitUuid);
       } catch (e) {
         debugPrint('⚠️ CallKitService: endCall failed in decline: $e');
-        _activeCallKitCalls.remove(callKitUuid);
+        _activeCallKitCalls.remove(activeCallKitUuid);
       }
     } else {
       debugPrint(
@@ -313,17 +314,18 @@ class CallKitService {
 
     final callKitUuid = _getCallKitUuid(callId);
     // Only call endCall if CallKit is actually managing this call
-    if (_activeCallKitCalls.contains(callKitUuid)) {
+    final activeCallKitUuid = callKitUuid.toLowerCase();
+    if (_activeCallKitCalls.contains(activeCallKitUuid)) {
       try {
         await FlutterCallkitIncoming.endCall(callKitUuid);
-        _activeCallKitCalls.remove(callKitUuid);
+        _activeCallKitCalls.remove(activeCallKitUuid);
         debugPrint('📞 CallKitService: Call removed from active tracking');
       } catch (e) {
         debugPrint(
           '⚠️ CallKitService: endCall failed (call may not exist): $e',
         );
         // Remove from tracking anyway to prevent repeated attempts
-        _activeCallKitCalls.remove(callKitUuid);
+        _activeCallKitCalls.remove(activeCallKitUuid);
       }
     } else {
       debugPrint(
@@ -348,7 +350,7 @@ class CallKitService {
         debugPrint('📞 CallKitService: Incoming call showing');
         final incomingId = event.body['id'] as String?;
         if (incomingId != null) {
-          _activeCallKitCalls.add(incomingId);
+          _activeCallKitCalls.add(incomingId.toLowerCase());
         }
         break;
 
@@ -386,7 +388,7 @@ class CallKitService {
         debugPrint('📞 CallKitService: Call ended');
         final uuid = event.body['id'] as String?;
         if (uuid != null) {
-          _activeCallKitCalls.remove(uuid);
+          _activeCallKitCalls.remove(uuid.toLowerCase());
         }
         _eventController.add(
           CallKitEvent(type: CallKitEventType.end, callId: _extractCallId(event.body)),
@@ -398,7 +400,7 @@ class CallKitService {
         debugPrint('📞 CallKitService: Call timeout');
         final uuid = event.body['id'] as String?;
         if (uuid != null) {
-          _activeCallKitCalls.remove(uuid);
+          _activeCallKitCalls.remove(uuid.toLowerCase());
         }
         _eventController.add(
           CallKitEvent(type: CallKitEventType.timeout, callId: _extractCallId(event.body)),
@@ -577,7 +579,7 @@ class CallKitService {
       final deviceId = prefs.getString('device_id');
 
       if (deviceId != null) {
-        final success = await _respondToCall(
+        final success = await respondToCall(
           callId: callId,
           action: 'accept',
           deviceId: deviceId,
@@ -613,7 +615,7 @@ class CallKitService {
       final deviceId = prefs.getString('device_id');
 
       if (deviceId != null) {
-        await _respondToCall(
+        await respondToCall(
           callId: callId,
           action: 'reject',
           deviceId: deviceId,
@@ -636,7 +638,7 @@ class CallKitService {
   }
 
   /// HTTP REST call to notify server of accept/reject (works in headless isolate)
-  static Future<bool> _respondToCall({
+  static Future<bool> respondToCall({
     required String callId,
     required String action,
     required String deviceId,

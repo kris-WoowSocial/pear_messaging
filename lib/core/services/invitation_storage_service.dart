@@ -10,6 +10,12 @@ class InvitationStorageService extends GetxService {
   static const String _pendingUserNameKey = 'pending_user_name';
   static const String _invitationTimestampKey = 'invitation_timestamp';
 
+  // Referral attribution context (captured from a Branch install link).
+  // Used once, when the referred user accepts the invite that brought them in.
+  static const String _referralInviterDeviceIdKey = 'referral_inviter_device_id';
+  static const String _referralInfluencerCodeKey = 'referral_influencer_code';
+  static const String _referralTimestampKey = 'referral_timestamp';
+
   /// Initialize the service
   Future<InvitationStorageService> init() async {
     _prefs = await SharedPreferences.getInstance();
@@ -131,13 +137,90 @@ class InvitationStorageService extends GetxService {
         userName = branchData['user_name'] as String?;
       }
 
+      // Extract influencer referral code (present on influencer referral links)
+      String? influencerCode;
+      if (branchData.containsKey('referral_code')) {
+        influencerCode = branchData['referral_code'] as String?;
+      }
+
       if (deviceId != null && deviceId.isNotEmpty) {
         await storePendingInvitation(
             deviceId: deviceId, userName: userName ?? 'Unknown User');
+        // Persist referral context so attribution can be claimed on accept.
+        await storeReferralContext(
+          inviterDeviceId: deviceId,
+          influencerCode: influencerCode,
+        );
         debugPrint('📋 Stored Branch invitation for post-install processing');
       }
     } catch (e) {
       debugPrint('❌ Error storing Branch invitation: $e');
+    }
+  }
+
+  /// Store referral attribution context captured from a Branch install link.
+  /// [inviterDeviceId] is the device id embedded in the link (influencer's Vant
+  /// account for influencer links, or a referred user for chat invites).
+  /// [influencerCode] is only present for influencer referral links.
+  Future<void> storeReferralContext({
+    required String inviterDeviceId,
+    String? influencerCode,
+  }) async {
+    try {
+      // Do not overwrite an existing, still-valid referral context. Attribution
+      // must never be retroactive or reassigned once captured.
+      if (getReferralInviterDeviceId() != null) {
+        debugPrint('📋 Referral context already present, not overwriting');
+        return;
+      }
+      await _prefs.setString(_referralInviterDeviceIdKey, inviterDeviceId);
+      if (influencerCode != null && influencerCode.isNotEmpty) {
+        await _prefs.setString(_referralInfluencerCodeKey, influencerCode);
+      }
+      await _prefs.setInt(
+          _referralTimestampKey, DateTime.now().millisecondsSinceEpoch);
+      debugPrint(
+        '📋 Stored referral context (inviter: $inviterDeviceId, code: ${influencerCode ?? "none"})',
+      );
+    } catch (e) {
+      debugPrint('❌ Error storing referral context: $e');
+    }
+  }
+
+  /// Get the stored referral inviter device id, or null if none / expired.
+  String? getReferralInviterDeviceId() {
+    try {
+      final inviter = _prefs.getString(_referralInviterDeviceIdKey);
+      if (inviter == null) return null;
+      final timestamp = _prefs.getInt(_referralTimestampKey) ??
+          DateTime.now().millisecondsSinceEpoch;
+      final captured = DateTime.fromMillisecondsSinceEpoch(timestamp);
+      // Referral context is valid for 30 days after install.
+      if (DateTime.now().difference(captured).inDays >= 30) {
+        clearReferralContext();
+        return null;
+      }
+      return inviter;
+    } catch (e) {
+      debugPrint('❌ Error reading referral inviter: $e');
+      return null;
+    }
+  }
+
+  /// Get the stored influencer referral code, or null if none.
+  String? getReferralInfluencerCode() {
+    return _prefs.getString(_referralInfluencerCodeKey);
+  }
+
+  /// Clear referral context after it has been claimed (one-time use).
+  Future<void> clearReferralContext() async {
+    try {
+      await _prefs.remove(_referralInviterDeviceIdKey);
+      await _prefs.remove(_referralInfluencerCodeKey);
+      await _prefs.remove(_referralTimestampKey);
+      debugPrint('📋 Cleared referral context');
+    } catch (e) {
+      debugPrint('❌ Error clearing referral context: $e');
     }
   }
 

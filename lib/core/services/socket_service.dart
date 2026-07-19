@@ -50,6 +50,7 @@ class SocketService extends GetxService {
   Function(Map<String, dynamic>)? onPeerRinging;
   Function(Map<String, dynamic>)? onIceRestart;
   Function(Map<String, dynamic>)? onCallResync;
+  Function(Map<String, dynamic>)? onCalleeConnecting;
 
   // Getters
   String? get deviceId => _deviceId;
@@ -146,7 +147,7 @@ class SocketService extends GetxService {
     try {
       if (Get.isRegistered<ConnectionRequestService>()) {
         final connectionService = Get.find<ConnectionRequestService>();
-        await connectionService.cleanupDuplicateConnections();
+        unawaited(connectionService.cleanupDuplicateConnections());
       }
     } catch (e) {
       debugPrint('⚠️ Could not cleanup connections before reconnect: $e');
@@ -160,6 +161,7 @@ class SocketService extends GetxService {
     _socket?.on('connect', (_) {
       debugPrint('✅ Socket connected');
       isConnected.value = true;
+      isRegistered.value = false;
       connectionStatus.value = 'connected';
       _isConnecting = false; // Reset connecting flag
       _reconnectAttempts =
@@ -176,6 +178,14 @@ class SocketService extends GetxService {
 
       // Send pending delivery acknowledgments for FCM messages received while offline
       FCMService.sendPendingAcknowledgments();
+    });
+
+    _socket?.on('device_registered', (data) {
+      final deviceId = data is Map ? data['deviceId'] : null;
+      if (deviceId == _deviceId) {
+        isRegistered.value = true;
+        debugPrint('✅ Socket registration confirmed for $_deviceId');
+      }
     });
 
     _socket?.on('disconnect', (reason) {
@@ -326,6 +336,13 @@ class SocketService extends GetxService {
       }
     });
 
+    _socket?.on('callee_connecting', (data) {
+      debugPrint('📞 Callee connecting: $data');
+      if (onCalleeConnecting != null && data != null) {
+        onCalleeConnecting!(Map<String, dynamic>.from(data));
+      }
+    });
+
     // WebRTC Call: Call accepted
     _socket?.on('call_accepted', (data) {
       debugPrint('📞 Call accepted: $data');
@@ -394,8 +411,7 @@ class SocketService extends GetxService {
     final platform = Platform.isAndroid ? 'android' : 'ios';
 
     _socket?.emit('register', {'deviceId': _deviceId, 'platform': platform});
-    isRegistered.value = true;
-    debugPrint('📝 Device registered: $_deviceId (platform: $platform)');
+    debugPrint('📝 Device registration requested: $_deviceId (platform: $platform)');
 
     // Also register FCM token if available
     _registerFCMTokenIfAvailable();
@@ -933,8 +949,8 @@ class SocketService extends GetxService {
   /// Request call resync - used when app cold-starts after accepting from CallKit
   /// Server will resend the SDP offer so the callee can answer
   void requestCallResync({required String callId}) {
-    if (!isConnected.value) {
-      debugPrint('❌ Cannot request call resync: not connected');
+    if (!isRegistered.value) {
+      debugPrint('❌ Cannot request call resync: socket is not registered');
       return;
     }
 

@@ -20,6 +20,28 @@ class ProfileScreen extends GetView<ProfileController> {
     return '${NetworkConstants.chatShareUrl}?device_id=$deviceId';
   }
 
+  /// Show dialog to enter influencer link token
+  void _showLinkInfluencerDialog(BuildContext context) {
+    final tokenController = TextEditingController();
+    Get.defaultDialog(
+      title: 'Link Influencer Account',
+      content: TextField(
+        controller: tokenController,
+        decoration: const InputDecoration(
+          hintText: 'Paste your token',
+          border: OutlineInputBorder(),
+          contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+        ),
+      ),
+      textConfirm: 'Link',
+      textCancel: 'Cancel',
+      onConfirm: () {
+        final token = tokenController.text.trim();
+        controller.linkInfluencerAccount(token);
+      },
+    );
+  }
+
   /// Open Terms of Service in external browser
   void _openTermsOfService() async {
     final Uri url = Uri.parse(NetworkConstants.privacyPolicyUrl);
@@ -335,6 +357,50 @@ class ProfileScreen extends GetView<ProfileController> {
                       secondary: const Icon(Icons.fingerprint),
                     ),
                   ),
+                ],
+              ),
+            ),
+
+            const SizedBox(height: AppSizes.paddingM),
+
+            // Influencer section
+            Container(
+              padding: const EdgeInsets.all(AppSizes.paddingM),
+              decoration: BoxDecoration(
+                color: AppColors.surface,
+                borderRadius: BorderRadius.circular(AppSizes.radiusM),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Influencer',
+                    style: TextStyle(
+                      fontSize: AppSizes.fontM,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  const SizedBox(height: AppSizes.paddingM),
+                  Obx(() {
+                    final influencer = controller.linkedInfluencer.value;
+                    if (influencer != null && influencer['status'] == 'active') {
+                      return ListTile(
+                        leading: const Icon(Icons.check_circle, color: Colors.green),
+                        title: Text('Linked: ${influencer['name']}'),
+                        subtitle: Text('Code: ${influencer['referralCode']}'),
+                        trailing: const Icon(Icons.check, color: Colors.green),
+                        contentPadding: EdgeInsets.zero,
+                      );
+                    }
+                    return ListTile(
+                      leading: const Icon(Icons.link, color: AppColors.textPrimary),
+                      title: const Text('Link Influencer Account'),
+                      subtitle: const Text('Enter token from influencer dashboard'),
+                      trailing: const Icon(Icons.arrow_forward_ios, size: 16, color: AppColors.textSecondary),
+                      onTap: () => _showLinkInfluencerDialog(context),
+                      contentPadding: EdgeInsets.zero,
+                    );
+                  }),
                 ],
               ),
             ),

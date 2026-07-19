@@ -10,6 +10,7 @@ import '../constants/network_constants.dart';
 import '../../storage/models/connection_request_entity.dart';
 import '../../storage/models/message_entity.dart';
 import '../../features/chat_list/chat_list_controller.dart';
+import 'api_service.dart';
 import 'local_storage_service.dart';
 import 'invitation_storage_service.dart';
 
@@ -222,6 +223,23 @@ class BranchService extends GetxService {
       final friendlyName = _storageService.getDisplayName(deviceId);
       debugPrint('📎 Generating Branch.io link for device: $deviceId');
 
+      // If this device is linked to an influencer, use the influencer's referral
+      // code so shares from the app and from the dashboard are attributed the same way.
+      String? influencerCode;
+      try {
+        final api = ApiService.to;
+        final influencerData = await api.getInfluencerByDeviceId(deviceId);
+        if (influencerData != null) {
+          final influencer = influencerData['influencer'] as Map<String, dynamic>;
+          if (influencer['status'] == 'active') {
+            influencerCode = influencer['referralCode'] as String?;
+            debugPrint('🔗 Device linked to influencer $influencerCode');
+          }
+        }
+      } catch (e) {
+        debugPrint('⚠️ Could not fetch linked influencer, falling back to plain share: $e');
+      }
+
       // Create Branch Content Metadata with rich data
       final contentMetadata = BranchContentMetaData()
         ..addCustomMetadata('page', 'chat')
@@ -229,6 +247,9 @@ class BranchService extends GetxService {
         ..addCustomMetadata('user_name', friendlyName)
         ..addCustomMetadata('sender_device_id', deviceId)
         ..addCustomMetadata('chat_id', deviceId);
+      if (influencerCode != null && influencerCode.isNotEmpty) {
+        contentMetadata.addCustomMetadata('referral_code', influencerCode);
+      }
 
       // Create Branch Universal Object with proper structure
       final buo = BranchUniversalObject(
@@ -301,6 +322,9 @@ class BranchService extends GetxService {
       // Add device_id as control parameter for backup extraction
       lp.addControlParam('device_id', deviceId);
       lp.addControlParam('chat_device_id', deviceId);
+      if (influencerCode != null && influencerCode.isNotEmpty) {
+        lp.addControlParam('referral_code', influencerCode);
+      }
 
       // Generate short link with timeout
       debugPrint('⏳ Requesting Branch.io short URL...');
@@ -325,7 +349,7 @@ class BranchService extends GetxService {
         );
 
         // Try REST API fallback
-        final fallbackUrl = await _generateLinkViaAPI(deviceId, friendlyName);
+        final fallbackUrl = await _generateLinkViaAPI(deviceId, friendlyName, influencerCode: influencerCode);
         if (fallbackUrl != null) {
           return fallbackUrl;
         }
@@ -354,38 +378,41 @@ class BranchService extends GetxService {
   /// Generate link using Branch.io REST API as fallback
   Future<String?> _generateLinkViaAPI(
     String deviceId,
-    String friendlyName,
-  ) async {
+    String friendlyName, {
+    String? influencerCode,
+  }) async {
     try {
       debugPrint('🌐 Attempting to generate link via Branch.io REST API...');
+
+      final data = {
+        'page': 'chat',
+        'device_id': deviceId,
+        'user_name': friendlyName,
+        '\$og_title': 'Chat with $friendlyName',
+        '\$og_description': 'Start chatting on Vant Chat',
+        '\$uri_redirect_mode': 2,
+        '\$always_deeplink': true,
+        '\$ios_app_store_id': '6758916131',
+        '\$ios_url': '${NetworkConstants.appStoreReviewUrl}6758916131',
+        '\$ios_redirect_timeout': '0',
+        '\$ios_passive_deepview': 'false',
+        '\$ios_scheme': 'vantchat',
+        '\$ios_package': 'com.vant.chatting',
+        '\$android_url':
+            '${NetworkConstants.playStoreUrl}?id=com.vant.chat',
+        '\$android_package': 'com.vant.chat',
+        '\$desktop_url': NetworkConstants.branchWebsiteUrl,
+        '\$fallback_url': NetworkConstants.branchWebsiteUrl,
+      };
+      if (influencerCode != null && influencerCode.isNotEmpty) {
+        data['referral_code'] = influencerCode;
+      }
 
       final response = await http
           .post(
             Uri.parse(NetworkConstants.branchApiUrl),
             headers: {'Content-Type': 'application/json'},
-            body: jsonEncode({
-              'branch_key': 'key_live_duxqKkJhod2Xdn2FEQ0Aujgjvxhu3F0E',
-              'data': {
-                'page': 'chat',
-                'device_id': deviceId,
-                'user_name': friendlyName,
-                '\$og_title': 'Chat with $friendlyName',
-                '\$og_description': 'Start chatting on Vant Chat',
-                '\$uri_redirect_mode': 2,
-                '\$always_deeplink': true,
-                '\$ios_app_store_id': '6758916131',
-                '\$ios_url': '${NetworkConstants.appStoreReviewUrl}6758916131',
-                '\$ios_redirect_timeout': '0',
-                '\$ios_passive_deepview': 'false',
-                '\$ios_scheme': 'vantchat',
-                '\$ios_package': 'com.vant.chatting',
-                '\$android_url':
-                    '${NetworkConstants.playStoreUrl}?id=com.vant.chat',
-                '\$android_package': 'com.vant.chat',
-                '\$desktop_url': NetworkConstants.branchWebsiteUrl,
-                '\$fallback_url': NetworkConstants.branchWebsiteUrl,
-              },
-            }),
+            body: jsonEncode({'branch_key': 'key_live_duxqKkJhod2Xdn2FEQ0Aujgjvxhu3F0E', 'data': data}),
           )
           .timeout(const Duration(seconds: 10));
 

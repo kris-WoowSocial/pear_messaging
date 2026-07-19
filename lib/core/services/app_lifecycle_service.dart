@@ -62,8 +62,10 @@ class AppLifecycleService extends GetxService with WidgetsBindingObserver {
         }
         if (Get.isRegistered<SocketService>()) {
           final socketService = Get.find<SocketService>();
-          debugPrint('📱 iOS: Reconnecting socket after app resumed');
-          socketService.forceReconnect();
+          if (!socketService.isConnected.value) {
+            debugPrint('📱 iOS: Connecting socket after app resumed');
+            socketService.connect();
+          }
         }
       } catch (e) {
         debugPrint('⚠️ iOS: Error reconnecting socket on resume: $e');
@@ -81,11 +83,7 @@ class AppLifecycleService extends GetxService with WidgetsBindingObserver {
           return;
         }
         if (Get.isRegistered<SocketService>()) {
-          final socketService = Get.find<SocketService>();
-          debugPrint(
-            '📱 iOS: Disconnecting socket when app goes to background (mark device offline)',
-          );
-          socketService.disconnect();
+          debugPrint('📱 iOS: Preserving socket for VoIP CallKit signaling');
         }
       } catch (e) {
         debugPrint('⚠️ iOS: Error disconnecting socket on pause: $e');

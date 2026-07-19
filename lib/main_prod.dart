@@ -4,7 +4,6 @@ import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter_callkit_incoming/flutter_callkit_incoming.dart';
 import 'package:get/get.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:pear_messaging/app.dart';
@@ -44,7 +43,6 @@ import 'core/services/call_history_service.dart';
 import 'core/services/webrtc_call_service.dart';
 import 'core/services/call_foreground_service.dart';
 import 'core/services/callkit_service.dart';
-import 'core/utils/string_utils.dart';
 import 'features/call/call_controller.dart';
 
 void main() async {

@@ -398,11 +398,13 @@ import CommonCrypto
 
   func onAccept(_ call: Call, _ action: CXAnswerCallAction) {
     print("📱 CallKit: onAccept")
+    respondToCall(call: call, action: "accept")
     action.fulfill()
   }
 
   func onDecline(_ call: Call, _ action: CXEndCallAction) {
     print("📱 CallKit: onDecline")
+    respondToCall(call: call, action: "reject")
     action.fulfill()
   }
 
@@ -413,5 +415,29 @@ import CommonCrypto
 
   func onTimeOut(_ call: Call) {
     print("📱 CallKit: onTimeOut")
+  }
+
+  private func respondToCall(call: Call, action: String) {
+    guard let callId = call.data.extra["callId"] as? String,
+          !callId.isEmpty,
+          let deviceId = UserDefaults.standard.string(forKey: "flutter.device_id"),
+          !deviceId.isEmpty,
+          let url = URL(string: "https://vant.chat/api/calls/\(callId)/respond") else {
+      return
+    }
+
+    var request = URLRequest(url: url)
+    request.httpMethod = "POST"
+    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    request.setValue(deviceId, forHTTPHeaderField: "x-device-id")
+    request.httpBody = try? JSONSerialization.data(withJSONObject: ["action": action])
+
+    URLSession.shared.dataTask(with: request) { _, response, error in
+      if let error = error {
+        print("📱 CallKit: server \(action) failed: \(error.localizedDescription)")
+      } else if let httpResponse = response as? HTTPURLResponse {
+        print("📱 CallKit: server \(action) HTTP \(httpResponse.statusCode)")
+      }
+    }.resume()
   }
 }
