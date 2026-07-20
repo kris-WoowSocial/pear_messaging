@@ -35,6 +35,9 @@ class AppLifecycleService extends GetxService with WidgetsBindingObserver {
       case AppLifecycleState.resumed:
         _isInForeground.value = true;
         FCMService.isAppInForeground = true;
+        if (Get.isRegistered<SocketService>()) {
+          Get.find<SocketService>().setAppForeground(true);
+        }
         debugPrint('📱 App moved to foreground');
         _handleAppResumed();
         break;
@@ -44,6 +47,9 @@ class AppLifecycleService extends GetxService with WidgetsBindingObserver {
       case AppLifecycleState.hidden:
         _isInForeground.value = false;
         FCMService.isAppInForeground = false;
+        if (Get.isRegistered<SocketService>()) {
+          Get.find<SocketService>().setAppForeground(false);
+        }
         debugPrint('📱 App moved to background');
         _handleAppPaused();
         break;

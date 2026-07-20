@@ -767,21 +767,9 @@ class FCMService extends GetxService {
 
       // On Android: incoming call UI is handled by the native
       // VantFirebaseMessagingService (full-screen activity or Flutter broadcast).
-      // On iOS: Show CallKit native UI when app is in foreground.
+      // On iOS: the socket delivers the custom in-app incoming call screen.
       if (Platform.isIOS) {
-        debugPrint(
-          '📞 Foreground: Incoming call received, showing CallKit UI (iOS)',
-        );
-        try {
-          final callKitService = CallKitService();
-          await callKitService.showIncomingCall(
-            callId: callId,
-            callerId: message.data['callerId'] ?? '',
-            callerName: message.data['callerName'] ?? 'Unknown',
-          );
-        } catch (e) {
-          debugPrint('❌ Foreground: Error showing CallKit UI: $e');
-        }
+        debugPrint('📞 Foreground: iOS call handled by socket custom UI');
       } else {
         // Android: native service handles it. Socket will also trigger its own UI.
         debugPrint(
