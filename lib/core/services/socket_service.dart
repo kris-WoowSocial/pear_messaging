@@ -19,6 +19,7 @@ class SocketService extends GetxService {
   Timer? _reconnectTimer;
   StreamSubscription<List<ConnectivityResult>>? _connectivitySubscription;
   bool _isConnecting = false; // Prevent duplicate connection attempts
+  bool _isInForeground = true;
   int _reconnectAttempts = 0;
 
   final RxBool isConnected = false.obs;
@@ -401,6 +402,13 @@ class SocketService extends GetxService {
   }
 
   /// Register device with the server
+  void setAppForeground(bool isForeground) {
+    _isInForeground = isForeground;
+    if (isRegistered.value) {
+      _socket?.emit('app_state', {'isForeground': isForeground});
+    }
+  }
+
   void _registerDevice() {
     if (_deviceId == null) {
       debugPrint('⚠️ Cannot register: Device ID is null');
@@ -410,7 +418,11 @@ class SocketService extends GetxService {
     // Detect platform
     final platform = Platform.isAndroid ? 'android' : 'ios';
 
-    _socket?.emit('register', {'deviceId': _deviceId, 'platform': platform});
+    _socket?.emit('register', {
+      'deviceId': _deviceId,
+      'platform': platform,
+      'isForeground': _isInForeground,
+    });
     debugPrint('📝 Device registration requested: $_deviceId (platform: $platform)');
 
     // Also register FCM token if available

@@ -410,6 +410,7 @@ import CommonCrypto
 
   func onEnd(_ call: Call, _ action: CXEndCallAction) {
     print("📱 CallKit: onEnd")
+    respondToCall(call: call, action: "end")
     action.fulfill()
   }
 
