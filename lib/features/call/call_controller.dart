@@ -881,7 +881,13 @@ class CallController extends GetxController {
 
   /// Handle end from CallKit UI
   void _handleCallKitEnd(String? callId) {
-    if (callId == null || callId.isEmpty) return;
+    if (callId == null ||
+        callId.isEmpty ||
+        currentCallId.value != callId ||
+        callState.value == CallState.idle) {
+      debugPrint('📞 Ignoring stale CallKit end event for $callId');
+      return;
+    }
     debugPrint('📞 CallKit end received for $callId');
 
     // End the call

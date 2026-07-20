@@ -15,6 +15,7 @@ import CommonCrypto
   private let uuidNamespace = UUID(uuidString: "6ba7b811-9dad-11d1-80b4-00c04fd430c8")!
   // PushKit registry for VoIP pushes (required for CallKit on locked iOS)
   var pushRegistry: PKPushRegistry?
+  private var isAppForeground = true
 
   override func application(
     _ application: UIApplication,
@@ -273,6 +274,16 @@ import CommonCrypto
     ))
   }
 
+  override func applicationDidBecomeActive(_ application: UIApplication) {
+    super.applicationDidBecomeActive(application)
+    isAppForeground = true
+  }
+
+  override func applicationWillResignActive(_ application: UIApplication) {
+    super.applicationWillResignActive(application)
+    isAppForeground = false
+  }
+
   // MARK: - PushKit / VoIP Push (required for CallKit on locked iOS)
 
   private func setupPushKit() {
@@ -356,6 +367,12 @@ import CommonCrypto
         let endData = flutter_callkit_incoming.Data(id: uuid.uuidString, nameCaller: "", handle: "", type: 0)
         SwiftFlutterCallkitIncomingPlugin.sharedInstance?.endCall(endData)
       }
+      completion()
+      return
+    }
+
+    if isAppForeground {
+      print("📱 PushKit: app is active, custom Flutter call screen will handle incoming call")
       completion()
       return
     }
