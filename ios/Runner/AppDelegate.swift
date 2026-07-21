@@ -15,7 +15,7 @@ import CommonCrypto
   private let uuidNamespace = UUID(uuidString: "6ba7b811-9dad-11d1-80b4-00c04fd430c8")!
   // PushKit registry for VoIP pushes (required for CallKit on locked iOS)
   var pushRegistry: PKPushRegistry?
-  private var isAppForeground = true
+  private var isAppForeground = false
 
   override func application(
     _ application: UIApplication,
