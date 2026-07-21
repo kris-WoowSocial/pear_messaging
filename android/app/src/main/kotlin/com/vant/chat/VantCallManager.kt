@@ -5,7 +5,6 @@ import android.app.PendingIntent
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
-import android.media.RingtoneManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -113,9 +112,7 @@ object VantCallManager {
             Handler(Looper.getMainLooper()).postDelayed({
                 if (!callUiShown.get()) {
                     Log.w(TAG, "⚠️ Telecom didn't trigger onShowIncomingCallUi within 800ms, using fallback")
-                    startRinging(context, callerName, callerId, callId, roomId, avatarUrl, isVideo)
-                    showCallNotification(context, callerName, callerId, callId, roomId, avatarUrl, isVideo)
-                    launchIncomingCallActivity(context, callerName, callerId, callId, roomId, avatarUrl, isVideo)
+                    presentIncomingCall(context, callerName, callerId, callId, roomId, avatarUrl, isVideo)
                 }
             }, 800)
 
@@ -208,6 +205,8 @@ object VantCallManager {
         context: Context, callerName: String, callerId: String, callId: String,
         roomId: String, avatarUrl: String, isVideo: Boolean
     ) {
+        // Fallback notification shown only when IncomingCallActivity cannot be launched.
+        // It is silent: the CallForegroundService already plays the ringtone.
         val fullScreenIntent = Intent(context, IncomingCallActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
             putExtra("caller_name", callerName)
@@ -248,8 +247,6 @@ object VantCallManager {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val ringtoneUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
-
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
             .setContentTitle(if (isVideo) "Incoming video call" else "Incoming call")
             .setContentText(callerName)
@@ -261,7 +258,7 @@ object VantCallManager {
             .setContentIntent(fullScreenPendingIntent)
             .setOngoing(true)
             .setAutoCancel(false)
-            .setSound(ringtoneUri)
+            .setSilent(true)
             .addAction(R.drawable.ic_call_answer, "Answer", answerPendingIntent)
             .addAction(R.drawable.ic_call_end, "Decline", declinePendingIntent)
             .build()
@@ -273,8 +270,8 @@ object VantCallManager {
     fun launchIncomingCallActivity(
         context: Context, callerName: String, callerId: String, callId: String,
         roomId: String, avatarUrl: String, isVideo: Boolean
-    ) {
-        try {
+    ): Boolean {
+        return try {
             val intent = Intent(context, IncomingCallActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or
                         Intent.FLAG_ACTIVITY_CLEAR_TOP or
@@ -289,8 +286,29 @@ object VantCallManager {
             }
             context.startActivity(intent)
             Log.d(TAG, "Launched IncomingCallActivity")
+            true
         } catch (e: Exception) {
             Log.e(TAG, "Failed to launch IncomingCallActivity: ${e.message}", e)
+            false
+        }
+    }
+
+    /**
+     * Shows the incoming call UI.
+     * First tries to launch the full-screen IncomingCallActivity.
+     * If the activity cannot be launched, falls back to a heads-up notification
+     * with answer/decline actions and a full-screen intent.
+     * Ringtone and vibration are handled by CallForegroundService.
+     */
+    fun presentIncomingCall(
+        context: Context, callerName: String, callerId: String, callId: String,
+        roomId: String, avatarUrl: String, isVideo: Boolean
+    ) {
+        startRinging(context, callerName, callerId, callId, roomId, avatarUrl, isVideo)
+        val launched = launchIncomingCallActivity(context, callerName, callerId, callId, roomId, avatarUrl, isVideo)
+        if (!launched) {
+            Log.w(TAG, "IncomingCallActivity could not be launched, showing fallback notification")
+            showCallNotification(context, callerName, callerId, callId, roomId, avatarUrl, isVideo)
         }
     }
 

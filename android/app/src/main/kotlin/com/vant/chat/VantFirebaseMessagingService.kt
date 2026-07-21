@@ -7,8 +7,6 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
-import android.media.AudioAttributes
-import android.media.RingtoneManager
 import android.os.Build
 import android.os.PowerManager
 import android.util.Log
@@ -179,7 +177,7 @@ class VantFirebaseMessagingService : FirebaseMessagingService() {
         // If app is in foreground and unlocked, send broadcast to Flutter
         if (isAppForeground() && !isScreenLockedOrOff()) {
             Log.d(TAG, "📞 App foreground and unlocked, sending broadcast to Flutter")
-            startRingingService(callerName, callerId, callId, roomId, avatarUrl, isVideo)
+            VantCallManager.startRinging(this, callerName, callerId, callId, roomId, avatarUrl, isVideo)
             sendFlutterCallBroadcast(data)
             return
         }
@@ -192,11 +190,10 @@ class VantFirebaseMessagingService : FirebaseMessagingService() {
         )
 
         if (!telecomSuccess) {
-            // Fallback: direct notification + activity if Telecom fails
+            // Fallback: activity first; if it can't be launched, a notification with
+            // answer/decline actions + full-screen intent is shown.
             Log.w(TAG, "📞 Telecom failed, using fallback approach")
-            startRingingService(callerName, callerId, callId, roomId, avatarUrl, isVideo)
-            showCallNotification(callerName, callerId, callId, roomId, avatarUrl, isVideo)
-            launchIncomingCallActivity(callerName, callerId, callId, roomId, avatarUrl, isVideo)
+            VantCallManager.presentIncomingCall(this, callerName, callerId, callId, roomId, avatarUrl, isVideo)
         }
     }
 
@@ -281,26 +278,6 @@ class VantFirebaseMessagingService : FirebaseMessagingService() {
         }
     }
 
-    private fun startRingingService(
-        callerName: String, callerId: String, callId: String,
-        roomId: String, avatarUrl: String, isVideo: Boolean
-    ) {
-        val intent = Intent(this, CallForegroundService::class.java).apply {
-            action = CallForegroundService.ACTION_START_RINGING
-            putExtra("caller_name", callerName)
-            putExtra("caller_id", callerId)
-            putExtra("call_id", callId)
-            putExtra("room_id", roomId)
-            putExtra("avatar_url", avatarUrl)
-            putExtra("is_video", isVideo)
-        }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(intent)
-        } else {
-            startService(intent)
-        }
-    }
-
     private fun isAppForeground(): Boolean {
         val activityManager = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
         val runningProcesses = activityManager.runningAppProcesses ?: return false
@@ -333,120 +310,6 @@ class VantFirebaseMessagingService : FirebaseMessagingService() {
             putExtra("avatar_url", data["avatarUrl"] ?: data["avatar_url"] ?: "")
             putExtra("is_video", data["isVideo"] ?: data["is_video"] ?: "false")
         })
-    }
-
-    // ==================== NOTIFICATION & ACTIVITY ====================
-
-    private fun showCallNotification(
-        callerName: String, callerId: String, callId: String,
-        roomId: String, avatarUrl: String, isVideo: Boolean
-    ) {
-        createCallNotificationChannel()
-
-        val fullScreenIntent = Intent(this, IncomingCallActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-            putExtra("caller_name", callerName)
-            putExtra("caller_id", callerId)
-            putExtra("call_id", callId)
-            putExtra("room_id", roomId)
-            putExtra("avatar_url", avatarUrl)
-            putExtra("is_video", isVideo)
-        }
-
-        val fullScreenPendingIntent = PendingIntent.getActivity(
-            this, 0, fullScreenIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-
-        val answerIntent = Intent(this, MainActivity::class.java).apply {
-            action = "com.vant.chat.ANSWER_CALL"
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-            putExtra("call_id", callId)
-            putExtra("room_id", roomId)
-            putExtra("caller_name", callerName)
-            putExtra("caller_id", callerId)
-            putExtra("is_video", isVideo)
-        }
-        val answerPendingIntent = PendingIntent.getActivity(
-            this, 1, answerIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-
-        val declineIntent = Intent(this, MainActivity::class.java).apply {
-            action = "com.vant.chat.DECLINE_CALL"
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-            putExtra("call_id", callId)
-            putExtra("caller_id", callerId)
-        }
-        val declinePendingIntent = PendingIntent.getActivity(
-            this, 2, declineIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-
-        val ringtoneUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
-
-        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle(if (isVideo) "Incoming video call" else "Incoming call")
-            .setContentText(callerName)
-            .setSmallIcon(R.drawable.ic_call_notification)
-            .setPriority(NotificationCompat.PRIORITY_MAX)
-            .setCategory(NotificationCompat.CATEGORY_CALL)
-            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-            .setFullScreenIntent(fullScreenPendingIntent, true)
-            .setContentIntent(fullScreenPendingIntent)
-            .setOngoing(true)
-            .setAutoCancel(false)
-            .setSound(ringtoneUri)
-            .addAction(R.drawable.ic_call_answer, "Answer", answerPendingIntent)
-            .addAction(R.drawable.ic_call_end, "Decline", declinePendingIntent)
-            .build()
-
-        val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        notificationManager.notify(NOTIFICATION_ID, notification)
-    }
-
-    private fun launchIncomingCallActivity(
-        callerName: String, callerId: String, callId: String,
-        roomId: String, avatarUrl: String, isVideo: Boolean
-    ) {
-        try {
-            val intent = Intent(this, IncomingCallActivity::class.java).apply {
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK or
-                        Intent.FLAG_ACTIVITY_CLEAR_TOP or
-                        Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS or
-                        Intent.FLAG_ACTIVITY_CLEAR_TASK
-                putExtra("caller_name", callerName)
-                putExtra("caller_id", callerId)
-                putExtra("call_id", callId)
-                putExtra("room_id", roomId)
-                putExtra("avatar_url", avatarUrl)
-                putExtra("is_video", isVideo)
-            }
-            startActivity(intent)
-            Log.d(TAG, "✅ Launched IncomingCallActivity")
-        } catch (e: Exception) {
-            Log.e(TAG, "❌ Failed to launch IncomingCallActivity: $e")
-        }
-    }
-
-    private fun createCallNotificationChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val ringtoneUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
-            val channel = NotificationChannel(
-                CHANNEL_ID, "Incoming Calls", NotificationManager.IMPORTANCE_HIGH
-            ).apply {
-                description = "Incoming voice and video calls"
-                lockscreenVisibility = NotificationCompat.VISIBILITY_PUBLIC
-                setSound(ringtoneUri, AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                    .build())
-                enableVibration(true)
-                vibrationPattern = longArrayOf(0, 1000, 1000)
-            }
-            val notificationManager = getSystemService(NotificationManager::class.java)
-            notificationManager.createNotificationChannel(channel)
-        }
     }
 
     private fun createMissedCallChannel() {

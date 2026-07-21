@@ -43,14 +43,10 @@ class VantConnection(private val context: Context) : Connection() {
         val avatarUrl = connectionExtras.getString("avatar_url") ?: ""
         val isVideo = connectionExtras.getBoolean("is_video", false)
 
-        // Start ringing service
-        VantCallManager.startRinging(context, callerName, callerId, callId, roomId, avatarUrl, isVideo)
-
-        // Show the notification with full-screen intent (now guaranteed by Telecom)
-        VantCallManager.showCallNotification(context, callerName, callerId, callId, roomId, avatarUrl, isVideo)
-
-        // Launch the activity directly as well
-        VantCallManager.launchIncomingCallActivity(context, callerName, callerId, callId, roomId, avatarUrl, isVideo)
+        // Start ringing and try to show the full-screen IncomingCallActivity.
+        // If the activity cannot be launched, presentIncomingCall falls back to a
+        // notification with answer/decline actions and a full-screen intent.
+        VantCallManager.presentIncomingCall(context, callerName, callerId, callId, roomId, avatarUrl, isVideo)
     }
 
     override fun onAnswer() {
