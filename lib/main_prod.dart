@@ -458,7 +458,7 @@ void initializeNonCriticalServices() async {
 
   // Check if user accepted a call while app was killed (cold-start resync)
   try {
-    await _handlePendingAcceptedCall();
+    await Get.find<CallController>().setPendingAutoAcceptFromStorage();
   } catch (e) {
     debugPrint('❌ Error handling pending accepted call: $e');
   }

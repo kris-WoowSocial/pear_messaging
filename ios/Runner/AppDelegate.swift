@@ -415,6 +415,7 @@ import CommonCrypto
 
   func onAccept(_ call: Call, _ action: CXAnswerCallAction) {
     print("📱 CallKit: onAccept")
+    persistPendingAcceptedCall(call: call)
     respondToCall(call: call, action: "accept")
     action.fulfill()
   }
@@ -433,6 +434,16 @@ import CommonCrypto
 
   func onTimeOut(_ call: Call) {
     print("📱 CallKit: onTimeOut")
+  }
+
+  private func persistPendingAcceptedCall(call: Call) {
+    guard let callId = call.data.extra["callId"] as? String, !callId.isEmpty else {
+      return
+    }
+
+    UserDefaults.standard.set(callId, forKey: "flutter.pendingAcceptedCallId")
+    UserDefaults.standard.set(true, forKey: "flutter.launchedForCall")
+    UserDefaults.standard.synchronize()
   }
 
   private func respondToCall(call: Call, action: String) {
