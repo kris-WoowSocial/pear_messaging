@@ -53,7 +53,7 @@ void main() async {
     flavor: Flavor.prod,
     appName: 'Vant Chat',
     apiBaseUrl: 'https://vant.chat',
-    showDebugBanner: false,
+    showDebugBanner: false
   );
 
   WidgetsFlutterBinding.ensureInitialized();
