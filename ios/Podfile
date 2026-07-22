@@ -88,4 +88,29 @@ post_install do |installer|
       end
     end
   end
+
+  plugin_source = File.join(__dir__, '.symlinks', 'plugins', 'flutter_webrtc', 'ios', 'Classes', 'FlutterWebRTCPlugin.m')
+  if File.exist?(plugin_source)
+    source = File.read(plugin_source)
+    original = <<~OBJC
+      void postEvent(FlutterEventSink _Nonnull sink, id _Nullable event) {
+          dispatch_async(dispatch_get_main_queue(), ^{
+            sink(event);
+          });
+      }
+    OBJC
+    replacement = <<~OBJC
+      void postEvent(FlutterEventSink _Nullable sink, id _Nullable event) {
+          if (sink == nil) {
+            return;
+          }
+          dispatch_async(dispatch_get_main_queue(), ^{
+            if (sink != nil) {
+              sink(event);
+            }
+          });
+      }
+    OBJC
+    File.write(plugin_source, source.sub(original, replacement)) if source.include?(original)
+  end
 end
