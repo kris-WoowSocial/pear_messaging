@@ -126,7 +126,7 @@ class CallController extends GetxController {
     debugPrint(
       '📞 CallController setup complete, checking pending auto-accept',
     );
-    _checkPendingAutoAccept();
+    _checkPendingAutoAccept(maxRetries: 100);
   }
 
   /// Check for any pending call action stored by MainActivity when the app was killed
@@ -753,7 +753,7 @@ class CallController extends GetxController {
   }
 
   /// Check for pending auto-accept call from background (CallKit accept)
-  Future<void> _checkPendingAutoAccept() async {
+  Future<void> _checkPendingAutoAccept({int maxRetries = 5}) async {
     if (_isCheckingPendingAutoAccept) {
       debugPrint('📞 Pending auto-accept check already in progress');
       return;
@@ -762,7 +762,7 @@ class CallController extends GetxController {
     _isCheckingPendingAutoAccept = true;
     debugPrint('📞 _checkPendingAutoAccept() called');
     try {
-      await _checkPendingAutoAcceptWithRetry(maxRetries: 5);
+      await _checkPendingAutoAcceptWithRetry(maxRetries: maxRetries);
     } finally {
       _isCheckingPendingAutoAccept = false;
     }
@@ -1890,7 +1890,7 @@ class CallController extends GetxController {
       _callStartTime = DateTime.now(); // Set call start time for history
       _wasConnected = false;
       _durationSeconds = 0;
-      await _resolveDisplayName(callerId);
+      unawaited(_resolveDisplayName(callerId));
 
       // Accept WebRTC call directly (no ringing state)
       final success = await _webrtcService.acceptCall(

@@ -104,6 +104,18 @@ void main() async {
 
 /// Initialize only critical services needed for app to function
 Future<void> initializeCriticalServices() async {
+  final storageService = await Get.putAsync(() => LocalStorageService().init());
+  var deviceId = storageService.deviceId ?? '';
+  if (deviceId.isEmpty) {
+    deviceId = DateTime.now().millisecondsSinceEpoch.toString();
+    await storageService.setDeviceId(deviceId);
+  }
+
+  final earlySocketService = Get.put(SocketService());
+  earlySocketService.init(deviceId);
+  await Get.putAsync(() => CallHistoryService().init());
+  Get.put(CallController());
+
   // Initialize secure key service FIRST - Required for encryption
   // Wrapped in try-catch to prevent crash if secure storage fails
   try {
@@ -152,17 +164,7 @@ Future<void> initializeCriticalServices() async {
   // Initialize storage service - CRITICAL for app data
   // This MUST succeed for the app to function
   try {
-    final storageService = await Get.putAsync(
-      () => LocalStorageService().init(),
-    );
     debugPrint('✅ LocalStorageService initialized');
-
-    // Get or create device ID - CRITICAL for messaging
-    String deviceId = storageService.deviceId ?? '';
-    if (deviceId.isEmpty) {
-      deviceId = DateTime.now().millisecondsSinceEpoch.toString();
-      await storageService.setDeviceId(deviceId);
-    }
   } catch (e) {
     debugPrint('❌ CRITICAL: LocalStorageService initialization failed: $e');
     debugPrint('❌ App cannot function without local storage');
@@ -181,12 +183,8 @@ Future<void> initializeCriticalServices() async {
   }
 
   // Initialize socket service FIRST - BlockService depends on it
-  final socketService = Get.put(SocketService());
   // Don't wait for socket initialization - let it connect in background
   try {
-    final storageService = Get.find<LocalStorageService>();
-    final deviceId = storageService.deviceId ?? '';
-    socketService.init(deviceId); // Fire and forget - don't await
     debugPrint('✅ SocketService initialized');
   } catch (e) {
     debugPrint('❌ SocketService initialization failed: $e');
@@ -212,7 +210,7 @@ Future<void> initializeCriticalServices() async {
 
   // Initialize call history service - must be ready before UI renders
   try {
-    await Get.putAsync(() => CallHistoryService().init());
+    await Get.find<CallHistoryService>().init();
     debugPrint('✅ CallHistoryService initialized');
   } catch (e) {
     debugPrint('❌ CallHistoryService initialization failed: $e');
@@ -221,7 +219,6 @@ Future<void> initializeCriticalServices() async {
   }
 
   // Initialize CallController for handling incoming calls when app launches from background
-  Get.put(CallController());
   debugPrint('✅ CallController initialized');
 }
 
