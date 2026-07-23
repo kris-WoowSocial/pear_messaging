@@ -226,7 +226,7 @@ class CallController extends GetxController {
       return;
     }
     _lastHandledNativeCallId = callId;
-    await clearPendingAutoAccept();
+    await setPendingAutoAccept(callId);
 
     _setCallScreenVisible(true);
     await _stopNativeIncomingCall();
@@ -240,6 +240,9 @@ class CallController extends GetxController {
 
     // Cold-start accept happens before the socket is connected. Wait for it so
     // we can actually send the resync request and accept the call.
+    if (!_socketService.isRegistered.value) {
+      await _socketService.safeReconnect();
+    }
     final socketReady = await _waitForSocketConnection();
     if (!socketReady) {
       debugPrint('❌ Cannot accept from native UI: socket not connected');
@@ -266,7 +269,6 @@ class CallController extends GetxController {
         '📞 Native answer: no cached SDP, setting pending auto-accept and requesting resync',
       );
       _latestIncomingCallData = null;
-      await setPendingAutoAccept(callId);
       _socketService.requestCallResync(callId: callId);
 
       // Pre-populate active call info so the user sees the caller immediately.
