@@ -112,6 +112,7 @@ class ChatController extends GetxController with WidgetsBindingObserver {
 
     // Setup socket listeners
     _setupSocketListeners();
+    unawaited(_socketService.processPendingMessages());
 
     // Listen to connection status
     ever(_socketService.isConnected, (bool connected) {
@@ -569,7 +570,8 @@ class ChatController extends GetxController with WidgetsBindingObserver {
 
       // Always call the previous handler first (ChatListController)
       // This ensures chat list is updated
-      _previousMessageHandler?.call(data);
+      final previousResult = _previousMessageHandler?.call(data);
+      if (previousResult is Future) await previousResult;
 
       // Match backend field names: messageId, senderDeviceId, encryptedPayload, timestamp
       final senderId = data['senderDeviceId'] as String;
@@ -671,6 +673,8 @@ class ChatController extends GetxController with WidgetsBindingObserver {
           type: messageType,
           replyTo: replyTo,
         );
+
+        await _storageService.saveMessage(message);
 
         // Add message to chat
         messages.add(ChatMessageModel.fromEntity(message));

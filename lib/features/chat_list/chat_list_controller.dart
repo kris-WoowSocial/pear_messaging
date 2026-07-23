@@ -262,9 +262,10 @@ class ChatListController extends GetxController {
     // Listen for incoming messages to create/update conversations
     _socketService.onMessageReceived = _handleIncomingMessage;
     _socketService.onPendingMessages = _handlePendingMessages;
+    _socketService.processPendingMessages();
   }
 
-  void _handleIncomingMessage(Map<String, dynamic> data) async {
+  Future<void> _handleIncomingMessage(Map<String, dynamic> data) async {
     debugPrint('📬 CHAT LIST LOG: _handleIncomingMessage called');
     debugPrint('🔍 CHAT LIST LOG: Incoming message data: $data');
     debugPrint(
@@ -592,7 +593,7 @@ class ChatListController extends GetxController {
     filteredChats.value = List.from(chats);
   }
 
-  void _handlePendingMessages(List<Map<String, dynamic>> messages) {
+  Future<void> _handlePendingMessages(List<Map<String, dynamic>> messages) async {
     foundation.debugPrint('📬 Handling ${messages.length} pending messages');
 
     // Sort messages by timestamp to maintain order
@@ -621,9 +622,10 @@ class ChatListController extends GetxController {
       if (!_messageExists(messageId)) {
         final handler = _socketService.onMessageReceived;
         if (handler != null) {
-          handler(message);
+          final result = handler(message);
+          if (result is Future) await result;
         } else {
-          _handleIncomingMessage(message);
+          await _handleIncomingMessage(message);
         }
       } else {
         foundation.debugPrint(
