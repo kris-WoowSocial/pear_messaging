@@ -21,6 +21,7 @@ class SocketService extends GetxService {
   bool _isConnecting = false; // Prevent duplicate connection attempts
   bool _isInForeground = true;
   int _reconnectAttempts = 0;
+  final List<Map<String, dynamic>> _pendingMessagesAwaitingHandler = [];
 
   final RxBool isConnected = false.obs;
   final RxBool isRegistered = false.obs;
@@ -63,6 +64,38 @@ class SocketService extends GetxService {
     _setupConnectivityListener();
     await connect();
     return this;
+  }
+
+  Future<void> processPendingMessages() async {
+    if (_pendingMessagesAwaitingHandler.isEmpty) return;
+
+    final pendingMessages = List<Map<String, dynamic>>.from(
+      _pendingMessagesAwaitingHandler,
+    );
+    final pendingHandler = onPendingMessages;
+    final messageHandler = onMessageReceived;
+
+    if (pendingHandler != null) {
+      _pendingMessagesAwaitingHandler.clear();
+      final result = pendingHandler(pendingMessages);
+      if (result is Future) await result;
+      return;
+    } else if (messageHandler != null) {
+      _pendingMessagesAwaitingHandler.clear();
+      for (final message in pendingMessages) {
+        final result = messageHandler(message);
+        if (result is Future) await result;
+      }
+    } else {
+      return;
+    }
+
+    for (final message in pendingMessages) {
+      final messageId = message['messageId']?.toString();
+      if (messageId != null && messageId.isNotEmpty) {
+        sendMessageAck(messageId);
+      }
+    }
   }
 
   /// Setup connectivity listener for automatic reconnection
@@ -243,17 +276,18 @@ class SocketService extends GetxService {
 
     // Pending messages when reconnecting
     _socket?.on('pending_messages', (data) {
-      debugPrint('📬 Pending messages received: ${(data as List).length}');
-      if (onPendingMessages != null) {
-        final messages = (data)
-            .map((msg) => Map<String, dynamic>.from(msg))
-            .toList();
-        onPendingMessages!(messages);
-        // Send message acks for all pending messages
-        for (final message in messages) {
-          sendMessageAck(message['messageId']);
-        }
+      if (data is! List) {
+        debugPrint('⚠️ Ignoring invalid pending messages payload');
+        return;
       }
+
+      final messages = data
+          .whereType<Map>()
+          .map((message) => Map<String, dynamic>.from(message))
+          .toList();
+      debugPrint('📬 Pending messages received: ${messages.length}');
+      _pendingMessagesAwaitingHandler.addAll(messages);
+      unawaited(processPendingMessages());
     });
 
     // Message status updates

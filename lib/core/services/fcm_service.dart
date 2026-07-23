@@ -344,6 +344,13 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
         DateTime.now().millisecondsSinceEpoch;
     final encryptedContent = message.data['originalMessage'] ?? '';
 
+    if (encryptedContent.isEmpty) {
+      debugPrint(
+        '📱 Background: contentless FCM payload will be resolved from the socket offline queue',
+      );
+      return;
+    }
+
     if (messageId.isNotEmpty && senderId.isNotEmpty) {
       // Check if message already exists to prevent duplicate processing
       if (storageService.messageExists(messageId)) {
@@ -821,7 +828,9 @@ class FCMService extends GetxService {
         DateTime.now().millisecondsSinceEpoch;
     final encryptedContent = message.data['originalMessage'] ?? '';
 
-    if (messageId.isNotEmpty && senderId.isNotEmpty) {
+    if (messageId.isNotEmpty &&
+        senderId.isNotEmpty &&
+        encryptedContent.isNotEmpty) {
       // Check if message already exists to prevent duplicate processing
       if (_storageService.messageExists(messageId)) {
         debugPrint(
