@@ -416,6 +416,7 @@ import CommonCrypto
   func onAccept(_ call: Call, _ action: CXAnswerCallAction) {
     print("📱 CallKit: onAccept")
     persistPendingAcceptedCall(call: call)
+    notifyFlutterOfCallAccept(call: call)
     respondToCall(call: call, action: "accept")
     action.fulfill()
   }
@@ -434,6 +435,32 @@ import CommonCrypto
 
   func onTimeOut(_ call: Call) {
     print("📱 CallKit: onTimeOut")
+  }
+
+  private func notifyFlutterOfCallAccept(call: Call) {
+    guard let callId = call.data.extra["callId"] as? String, !callId.isEmpty,
+          let controller = window?.rootViewController as? FlutterViewController else {
+      return
+    }
+
+    let extra = call.data.extra as? [String: Any] ?? [:]
+    let isVideo = (extra["isVideo"] as? Bool) ?? ((extra["isVideo"] as? String) == "true")
+    let arguments: [String: Any] = [
+      "action": "answer",
+      "callId": callId,
+      "callerId": extra["callerId"] as? String ?? "",
+      "callerName": extra["callerName"] as? String ?? "Incoming Call",
+      "roomId": extra["roomId"] as? String ?? "",
+      "avatarUrl": extra["avatarUrl"] as? String ?? "",
+      "isVideo": isVideo,
+    ]
+
+    DispatchQueue.main.async {
+      FlutterMethodChannel(
+        name: "com.pear.messaging/call",
+        binaryMessenger: controller.binaryMessenger
+      ).invokeMethod("onCallAction", arguments: arguments)
+    }
   }
 
   private func persistPendingAcceptedCall(call: Call) {

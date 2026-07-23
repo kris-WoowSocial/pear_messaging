@@ -68,6 +68,7 @@ class CallController extends GetxController {
 
   // Call data
   Timer? _durationUpdateTimer;
+  Timer? _pendingAcceptedCallWatchTimer;
 
   // Buffer for ICE candidates generated before server callId is known (caller only)
   final List<Map<String, dynamic>> _pendingIceCandidates = [];
@@ -127,6 +128,10 @@ class CallController extends GetxController {
       '📞 CallController setup complete, checking pending auto-accept',
     );
     _checkPendingAutoAccept(maxRetries: 100);
+    _pendingAcceptedCallWatchTimer = Timer.periodic(
+      const Duration(seconds: 1),
+      (_) => _watchForPendingAcceptedCall(),
+    );
   }
 
   /// Check for any pending call action stored by MainActivity when the app was killed
@@ -221,6 +226,7 @@ class CallController extends GetxController {
       return;
     }
     _lastHandledNativeCallId = callId;
+    await clearPendingAutoAccept();
 
     _setCallScreenVisible(true);
     await _stopNativeIncomingCall();
@@ -338,6 +344,8 @@ class CallController extends GetxController {
 
   @override
   void onClose() {
+    _pendingAcceptedCallWatchTimer?.cancel();
+    _pendingAcceptedCallWatchTimer = null;
     _callEventSubscription?.cancel();
     _callEventSubscription = null;
     // Only cleanup if not in an active call
@@ -666,6 +674,12 @@ class CallController extends GetxController {
     Map<String, dynamic>? extra,
   ) async {
     if (callId == null || callId.isEmpty) return;
+    if (_lastHandledNativeCallId == callId) {
+      debugPrint('📞 CallKit accept for $callId already handled, skipping duplicate');
+      return;
+    }
+    _lastHandledNativeCallId = callId;
+    await clearPendingAutoAccept();
     debugPrint('📞 CallKit accept received for $callId');
 
     // If device is locked, mark so we relock when the call ends
@@ -750,6 +764,17 @@ class CallController extends GetxController {
     // Skip the incoming call screen and go straight to the active call UI.
     // The resync will arrive shortly and complete the connection there.
     Get.offNamed('/call/active', arguments: callData);
+  }
+
+  Future<void> _watchForPendingAcceptedCall() async {
+    if (_isCheckingPendingAutoAccept || _pendingAutoAcceptCallId != null) return;
+
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.reload();
+    final callId = prefs.getString('pendingAcceptedCallId');
+    if (callId != null && callId.isNotEmpty) {
+      await _checkPendingAutoAccept(maxRetries: 1);
+    }
   }
 
   /// Check for pending auto-accept call from background (CallKit accept)
