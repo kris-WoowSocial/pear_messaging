@@ -83,10 +83,10 @@ class VantConnection(private val context: Context) : Connection() {
     override fun onReject() {
         Log.d(TAG, "onReject called")
         setDisconnected(DisconnectCause(DisconnectCause.REJECTED))
-        VantCallManager.stopRinging(context)
-        VantCallManager.cancelNotification(context)
-
         val callId = connectionExtras.getString("call_id") ?: ""
+        VantCallManager.clearActiveConnection(this)
+        VantCallManager.releaseCallResources(context, callId)
+
         val callerId = connectionExtras.getString("caller_id") ?: ""
         val intent = Intent(context, MainActivity::class.java).apply {
             action = "com.vant.chat.DECLINE_CALL"
@@ -101,16 +101,25 @@ class VantConnection(private val context: Context) : Connection() {
     override fun onDisconnect() {
         Log.d(TAG, "onDisconnect called")
         setDisconnected(DisconnectCause(DisconnectCause.LOCAL))
-        VantCallManager.stopRinging(context)
-        VantCallManager.cancelNotification(context)
+        val callId = connectionExtras.getString("call_id") ?: ""
+        VantCallManager.clearActiveConnection(this)
+        VantCallManager.releaseCallResources(context, callId)
+
+        val intent = Intent(context, MainActivity::class.java).apply {
+            action = "com.vant.chat.END_CALL"
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra("call_id", callId)
+        }
+        context.startActivity(intent)
         destroy()
     }
 
     override fun onAbort() {
         Log.d(TAG, "onAbort called")
         setDisconnected(DisconnectCause(DisconnectCause.CANCELED))
-        VantCallManager.stopRinging(context)
-        VantCallManager.cancelNotification(context)
+        val callId = connectionExtras.getString("call_id") ?: ""
+        VantCallManager.clearActiveConnection(this)
+        VantCallManager.releaseCallResources(context, callId)
         destroy()
     }
 }

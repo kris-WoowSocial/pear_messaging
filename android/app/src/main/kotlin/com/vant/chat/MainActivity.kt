@@ -40,6 +40,7 @@ class MainActivity : FlutterFragmentActivity() {
     private var toneGenerator: ToneGenerator? = null
     private var ringbackHandler: Handler? = null
     private var ringbackRunnable: Runnable? = null
+    private var callAudioFocusRequest: AudioFocusRequest? = null
     
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -166,6 +167,19 @@ class MainActivity : FlutterFragmentActivity() {
                 "finishAndRemoveTask" -> {
                     closeApp()
                     result.success(null)
+                }
+                "reportOutgoingTelecomCall" -> {
+                    val calleeId = call.argument<String>("calleeId") ?: ""
+                    val calleeName = call.argument<String>("calleeName") ?: "Unknown"
+                    result.success(VantCallManager.reportOutgoingCall(this, calleeName, calleeId))
+                }
+                "markTelecomCallActive" -> {
+                    VantCallManager.markActiveCall(call.argument<String>("callId") ?: "")
+                    result.success(null)
+                }
+                "teardownAndroidCall" -> {
+                    val callId = call.argument<String>("callId") ?: ""
+                    result.success(teardownAndroidCall(callId))
                 }
                 else -> {
                     result.notImplemented()
@@ -329,7 +343,8 @@ class MainActivity : FlutterFragmentActivity() {
             val showIncomingCall = intent.getBooleanExtra("show_incoming_call", false)
             val intentAction = intent.action
             val isAnswerDecline = intentAction == "com.vant.chat.ANSWER_CALL" ||
-                                  intentAction == "com.vant.chat.DECLINE_CALL"
+                                  intentAction == "com.vant.chat.DECLINE_CALL" ||
+                                  intentAction == "com.vant.chat.END_CALL"
             val callId = intent.getStringExtra("call_id") ?: ""
             val callerId = intent.getStringExtra("caller_id") ?: ""
             val callerName = intent.getStringExtra("caller_name") ?: ""
@@ -338,7 +353,11 @@ class MainActivity : FlutterFragmentActivity() {
             val isVideo = intent.getBooleanExtra("is_video", false)
             
             val action = when {
-                isAnswerDecline -> if (intentAction == "com.vant.chat.ANSWER_CALL") "answer" else "decline"
+                isAnswerDecline -> when (intentAction) {
+                    "com.vant.chat.ANSWER_CALL" -> "answer"
+                    "com.vant.chat.DECLINE_CALL" -> "decline"
+                    else -> "end"
+                }
                 callAction != null -> callAction
                 showIncomingCall -> "show_incoming_call"
                 else -> null
@@ -346,6 +365,9 @@ class MainActivity : FlutterFragmentActivity() {
             
             if (action != null) {
                 println("Call intent received: action=$action, callId=$callId")
+                if (action == "end" || action == "decline") {
+                    teardownAndroidCall(callId)
+                }
                 
                 // Check if Flutter engine is available
                 val engine = flutterEngine
@@ -530,15 +552,23 @@ class MainActivity : FlutterFragmentActivity() {
 
             // Request audio focus for call
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                callAudioFocusRequest = AudioFocusRequest.Builder(
+                    AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE
+                )
+                    .setAudioAttributes(
+                        AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                            .build()
+                    )
+                    .build()
+                audioManager.requestAudioFocus(callAudioFocusRequest!!)
+            } else {
+                @Suppress("DEPRECATION")
                 audioManager.requestAudioFocus(
-                    AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE)
-                        .setAudioAttributes(
-                            AudioAttributes.Builder()
-                                .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
-                                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                                .build()
-                        )
-                        .build()
+                    null,
+                    AudioManager.STREAM_VOICE_CALL,
+                    AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE
                 )
             }
 
@@ -572,6 +602,28 @@ class MainActivity : FlutterFragmentActivity() {
         } catch (e: Exception) {
             println("Error setting speakerphone: $e")
         }
+    }
+
+    private fun teardownAndroidCall(callId: String): Boolean {
+        val tornDown = VantCallManager.teardownCall(this, callId)
+        if (!tornDown) return false
+
+        stopRingback()
+        releaseProximityWakeLock()
+        try {
+            val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                callAudioFocusRequest?.let { audioManager.abandonAudioFocusRequest(it) }
+            } else {
+                @Suppress("DEPRECATION")
+                audioManager.abandonAudioFocus(null)
+            }
+        } catch (e: Exception) {
+            println("Error releasing call audio focus: $e")
+        } finally {
+            callAudioFocusRequest = null
+        }
+        return true
     }
 
     private fun playRingback() {

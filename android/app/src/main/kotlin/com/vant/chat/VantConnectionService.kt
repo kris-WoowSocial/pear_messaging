@@ -73,11 +73,18 @@ class VantConnectionService : ConnectionService() {
         request: ConnectionRequest?
     ): Connection {
         Log.d(TAG, "onCreateOutgoingConnection called")
+        val extras = request?.extras
+        val calleeName = extras?.getString("caller_name") ?: "Unknown"
+        val calleeId = extras?.getString("caller_id") ?: ""
         val connection = VantConnection(applicationContext).apply {
+            setCallerDisplayName(calleeName, TelecomManager.PRESENTATION_ALLOWED)
             connectionProperties = Connection.PROPERTY_SELF_MANAGED
             setInitializing()
             setDialing()
+            setConnectionExtra("caller_name", calleeName)
+            setConnectionExtra("caller_id", calleeId)
         }
+        VantCallManager.activeConnection = connection
         return connection
     }
 
