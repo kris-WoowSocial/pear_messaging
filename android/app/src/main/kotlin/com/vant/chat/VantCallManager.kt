@@ -5,6 +5,7 @@ import android.app.PendingIntent
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.media.AudioManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -161,11 +162,95 @@ object VantCallManager {
         }
     }
 
+    fun teardownCall(context: Context, callId: String = ""): Boolean {
+        val connection = activeConnection
+        val activeCallId = connection?.getConnectionExtra("call_id") ?: ""
+        if (callId.isNotEmpty() && activeCallId.isNotEmpty() && callId != activeCallId) {
+            Log.w(TAG, "Skipping teardown for stale call $callId; active call is $activeCallId")
+            return false
+        }
+
+        try {
+            activeConnection = null
+            connection?.setDisconnected(DisconnectCause(DisconnectCause.CANCELED))
+            connection?.destroy()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error ending Telecom connection: ${e.message}", e)
+        }
+
+        releaseCallResources(context, callId)
+        return true
+    }
+
+    fun releaseCallResources(context: Context, callId: String = "") {
+        try {
+            context.stopService(Intent(context, CallForegroundService::class.java))
+        } catch (e: Exception) {
+            Log.e(TAG, "Error stopping foreground service: ${e.message}", e)
+        }
+        cancelNotification(context)
+        pendingCallData = null
+        callUiShown.set(false)
+
+        try {
+            val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                audioManager.clearCommunicationDevice()
+            }
+            audioManager.isSpeakerphoneOn = false
+            audioManager.mode = AudioManager.MODE_NORMAL
+        } catch (e: Exception) {
+            Log.e(TAG, "Error restoring call audio state: ${e.message}", e)
+        }
+
+        context.sendBroadcast(Intent("com.vant.chat.CANCEL_CALL").apply {
+            putExtra("call_id", callId)
+        })
+    }
+
+    fun clearActiveConnection(connection: VantConnection) {
+        if (activeConnection === connection) {
+            activeConnection = null
+        }
+    }
+
     fun getPhoneAccountHandle(context: Context): PhoneAccountHandle {
         return PhoneAccountHandle(
             ComponentName(context, VantConnectionService::class.java),
             PHONE_ACCOUNT_ID
         )
+    }
+
+    fun reportOutgoingCall(context: Context, calleeName: String, calleeId: String): Boolean {
+        return try {
+            ensurePhoneAccountRegistered(context)
+            disconnectActiveCall()
+
+            val handle = getPhoneAccountHandle(context)
+            val extras = Bundle().apply {
+                putParcelable(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE, handle)
+                putString("caller_name", calleeName)
+                putString("caller_id", calleeId)
+            }
+            val telecomManager = context.getSystemService(Context.TELECOM_SERVICE) as TelecomManager
+            telecomManager.placeCall(Uri.fromParts(PhoneAccount.SCHEME_SIP, calleeId, null), extras)
+            Log.d(TAG, "Reported outgoing call to Telecom: $calleeId")
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to report outgoing call: ${e.message}", e)
+            false
+        }
+    }
+
+    fun markActiveCall(callId: String) {
+        try {
+            if (callId.isNotEmpty()) {
+                activeConnection?.setConnectionExtra("call_id", callId)
+            }
+            activeConnection?.setActive()
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to mark active connection: ${e.message}", e)
+        }
     }
 
     // ==================== UI ACTIONS (called from VantConnection) ====================

@@ -546,6 +546,11 @@ class CallController extends GetxController {
               'caller_id': callerId ?? '',
               'caller_name': callerName ?? 'Incoming Call',
             });
+          } else if (action == 'end' &&
+              callId != null &&
+              callId.isNotEmpty &&
+              currentCallId.value == callId) {
+            endCall();
           }
         }
       });
@@ -960,6 +965,17 @@ class CallController extends GetxController {
         calleeDeviceId: calleeDeviceId,
         callerDeviceId: callerDeviceId,
       );
+
+      if (success && Platform.isAndroid) {
+        unawaited(
+          _callChannel.invokeMethod<bool>('reportOutgoingTelecomCall', {
+            'calleeId': calleeDeviceId,
+            'calleeName': remoteDisplayName.value.isNotEmpty
+                ? remoteDisplayName.value
+                : StringUtils.generateFriendlyName(calleeDeviceId),
+          }),
+        );
+      }
 
       if (!success) {
         // Show error if call failed (likely permission issue)
@@ -1428,8 +1444,13 @@ class CallController extends GetxController {
             '⚠️ Call connected: failed to start foreground service: $e',
           );
         }
-        // Show sticky ongoing call notification so user can return or end from notification
-        if (currentCallId.value.isNotEmpty) {
+        if (Platform.isAndroid) {
+          unawaited(
+            _callChannel.invokeMethod('markTelecomCallActive', {
+              'callId': currentCallId.value,
+            }),
+          );
+        } else if (currentCallId.value.isNotEmpty) {
           NotificationService().showOngoingCallNotification(
             callId: currentCallId.value,
             callerName: remoteDisplayName.value.isNotEmpty
@@ -1576,8 +1597,21 @@ class CallController extends GetxController {
     } catch (_) {}
   }
 
+  Future<void> _teardownAndroidCall(String callId) async {
+    if (!Platform.isAndroid) return;
+    try {
+      await _callChannel.invokeMethod<bool>('teardownAndroidCall', {
+        'callId': callId,
+      });
+    } catch (e) {
+      debugPrint('⚠️ Failed to tear down native Android call: $e');
+    }
+  }
+
   /// Reset call state
   void _resetCallState() {
+    final callId = currentCallId.value;
+    unawaited(_teardownAndroidCall(callId));
     callState.value = CallState.idle;
     isMuted.value = false;
     isSpeakerOn.value = false;

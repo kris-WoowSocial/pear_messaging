@@ -201,20 +201,7 @@ class VantFirebaseMessagingService : FirebaseMessagingService() {
         val callId = data["callId"] ?: data["call_id"] ?: ""
         Log.d(TAG, "📞 Cancelling call: $callId")
 
-        // Disconnect from Telecom framework
-        VantCallManager.disconnectActiveCall()
-        VantCallManager.stopRinging(this)
-        VantCallManager.cancelNotification(this)
-
-        try {
-            stopService(Intent(this, CallForegroundService::class.java))
-        } catch (e: Exception) {
-            Log.e(TAG, "⚠️ Failed to stop CallForegroundService: $e")
-        }
-
-        sendBroadcast(Intent("com.vant.chat.CANCEL_CALL").apply {
-            putExtra("call_id", callId)
-        })
+        VantCallManager.teardownCall(this, callId)
     }
 
     private fun handleMissedCall(data: Map<String, String>) {
