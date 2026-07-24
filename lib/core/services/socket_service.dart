@@ -736,6 +736,18 @@ class SocketService extends GetxService {
     return diagnostics;
   }
 
+  Future<void> reconnectForCallResync() async {
+    _reconnectAttempts = 0;
+    _cancelReconnectTimer();
+    _socket?.disconnect();
+    _socket?.dispose();
+    _socket = null;
+    isConnected.value = false;
+    isRegistered.value = false;
+    _isConnecting = false;
+    await connect();
+  }
+
   /// Force reconnect - resets reconnect counter and connects immediately
   /// Called when app resumes from background to ensure socket is live
   Future<void> forceReconnect() async {
