@@ -240,9 +240,7 @@ class CallController extends GetxController {
 
     // Cold-start accept happens before the socket is connected. Wait for it so
     // we can actually send the resync request and accept the call.
-    if (!_socketService.isRegistered.value) {
-      await _socketService.safeReconnect();
-    }
+    await _socketService.reconnectForCallResync();
     final socketReady = await _waitForSocketConnection();
     if (!socketReady) {
       debugPrint('❌ Cannot accept from native UI: socket not connected');
@@ -694,6 +692,14 @@ class CallController extends GetxController {
     // Dismiss keyguard on Android to allow call to connect without unlock
     _dismissKeyguard();
 
+    await setPendingAutoAccept(callId);
+    await _socketService.reconnectForCallResync();
+    final socketReady = await _waitForSocketConnection();
+    if (!socketReady) {
+      debugPrint('⚠️ CallKit accept: socket not connected, resync deferred');
+      return;
+    }
+
     // If the socket already delivered the incoming call, accept it immediately
     final cachedData = _latestIncomingCallData;
     if (cachedData != null && cachedData['callId'] == callId) {
@@ -726,7 +732,6 @@ class CallController extends GetxController {
     debugPrint(
       '📞 CallKit accept: no cached SDP, setting pending auto-accept and requesting resync',
     );
-    await setPendingAutoAccept(callId);
     final deviceId = _storageService.deviceId;
     if (deviceId != null && deviceId.isNotEmpty) {
       unawaited(
@@ -737,15 +742,7 @@ class CallController extends GetxController {
         ),
       );
     }
-    if (!_socketService.isRegistered.value) {
-      await _socketService.safeReconnect();
-    }
-
-    // Wait for the socket so we can request the SDP offer from the server.
-    final socketReady = await _waitForSocketConnection();
-    if (!socketReady) {
-      debugPrint('⚠️ CallKit accept: socket not connected, resync deferred');
-    }
+    _socketService.requestCallResync(callId: callId);
 
     // Pre-populate active call info so the user sees the caller immediately.
     currentCallId.value = callId;
