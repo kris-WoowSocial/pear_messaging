@@ -181,6 +181,13 @@ class MainActivity : FlutterFragmentActivity() {
                     val callId = call.argument<String>("callId") ?: ""
                     result.success(teardownAndroidCall(callId))
                 }
+                "startOngoingCall" -> {
+                    val callId = call.argument<String>("callId") ?: ""
+                    val callerName = call.argument<String>("callerName") ?: "Unknown"
+                    val isVideo = call.argument<Boolean>("isVideo") ?: false
+                    startOngoingCallService(callId, callerName, isVideo)
+                    result.success(null)
+                }
                 else -> {
                     result.notImplemented()
                 }
@@ -335,6 +342,18 @@ class MainActivity : FlutterFragmentActivity() {
         // Handle deep link when app is already running
         handleIntent(intent)
     }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) {
+            val keyguardManager = getSystemService(Context.KEYGUARD_SERVICE) as android.app.KeyguardManager
+            if (!keyguardManager.isKeyguardLocked) {
+                // Device is unlocked, we do not want to stay on top of the lock screen.
+                clearShowWhenLocked()
+                println("onWindowFocusChanged: unlocked, showWhenLocked cleared")
+            }
+        }
+    }
     
     private fun handleIntent(intent: Intent) {
         try {
@@ -345,6 +364,7 @@ class MainActivity : FlutterFragmentActivity() {
             val isAnswerDecline = intentAction == "com.vant.chat.ANSWER_CALL" ||
                                   intentAction == "com.vant.chat.DECLINE_CALL" ||
                                   intentAction == "com.vant.chat.END_CALL"
+            val isOpenOngoing = intentAction == "com.vant.chat.OPEN_ONGOING_CALL"
             val callId = intent.getStringExtra("call_id") ?: ""
             val callerId = intent.getStringExtra("caller_id") ?: ""
             val callerName = intent.getStringExtra("caller_name") ?: ""
@@ -358,6 +378,7 @@ class MainActivity : FlutterFragmentActivity() {
                     "com.vant.chat.DECLINE_CALL" -> "decline"
                     else -> "end"
                 }
+                isOpenOngoing -> "open_ongoing_call"
                 callAction != null -> callAction
                 showIncomingCall -> "show_incoming_call"
                 else -> null
@@ -601,6 +622,20 @@ class MainActivity : FlutterFragmentActivity() {
             }
         } catch (e: Exception) {
             println("Error setting speakerphone: $e")
+        }
+    }
+
+    private fun startOngoingCallService(callId: String, callerName: String, isVideo: Boolean) {
+        val intent = Intent(this, CallForegroundService::class.java).apply {
+            action = CallForegroundService.ACTION_START_ONGOING_CALL
+            putExtra("call_id", callId)
+            putExtra("caller_name", callerName)
+            putExtra("is_video", isVideo)
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(intent)
+        } else {
+            startService(intent)
         }
     }
 

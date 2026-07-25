@@ -38,14 +38,24 @@ class CallForegroundService : Service() {
     companion object {
         const val TAG = "VantCallFG"
         const val CHANNEL_ID = "vant_chat_calls"
+        const val ONGOING_CHANNEL_ID = "vant_ongoing_calls"
         const val NOTIFICATION_ID = 9999
+        const val ONGOING_NOTIFICATION_ID = 8888
         const val ACTION_START_RINGING = "com.vant.chat.START_RINGING"
         const val ACTION_STOP_RINGING = "com.vant.chat.STOP_RINGING"
+        const val ACTION_START_ONGOING_CALL = "com.vant.chat.START_ONGOING_CALL"
+        const val ACTION_STOP_ONGOING_CALL = "com.vant.chat.STOP_ONGOING_CALL"
     }
 
     private var wakeLock: PowerManager.WakeLock? = null
     private var vibrator: Vibrator? = null
     private var ringtone: Ringtone? = null
+
+    private var ongoingCallId: String? = null
+    private var ongoingCallerName: String = "Unknown"
+    private var ongoingIsVideo: Boolean = false
+    private var ongoingStartTime: Long = 0
+    private var isOngoingCall: Boolean = false
 
     override fun onCreate() {
         super.onCreate()
@@ -55,53 +65,63 @@ class CallForegroundService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.d(TAG, "onStartCommand: action=${intent?.action}")
 
-        // CRITICAL: Start foreground IMMEDIATELY before anything else.
-        // Android 14+ requires this within 5 seconds of startForegroundService().
-        val callerName = intent?.getStringExtra("caller_name") ?: "Unknown"
-        val callerId = intent?.getStringExtra("caller_id") ?: ""
-        val callId = intent?.getStringExtra("call_id") ?: ""
-        val roomId = intent?.getStringExtra("room_id") ?: ""
-        val avatarUrl = intent?.getStringExtra("avatar_url") ?: ""
-        val isVideo = intent?.getBooleanExtra("is_video", false) ?: false
-
-        val notification = buildCallNotification(callerName, callerId, callId, roomId, avatarUrl, isVideo)
-
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                // Android 14+ (API 34): use shortService type — no special permissions needed
-                ServiceCompat.startForeground(
-                    this,
-                    NOTIFICATION_ID,
-                    notification,
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_SHORT_SERVICE
-                )
-                Log.d(TAG, "Started foreground with SHORT_SERVICE type")
-            } else {
-                startForeground(NOTIFICATION_ID, notification)
-                Log.d(TAG, "Started foreground (pre-API 34)")
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to start foreground: ${e.message}", e)
-            // Last resort: try without specifying type
-            try {
-                startForeground(NOTIFICATION_ID, notification)
-            } catch (e2: Exception) {
-                Log.e(TAG, "Fallback startForeground also failed: ${e2.message}", e2)
+        val action = intent?.action ?: ACTION_START_RINGING
+        when (action) {
+            ACTION_STOP_RINGING -> {
+                stopRinging()
+                stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
                 return START_NOT_STICKY
             }
-        }
+            ACTION_STOP_ONGOING_CALL -> {
+                stopOngoingCall()
+                return START_NOT_STICKY
+            }
+            ACTION_START_ONGOING_CALL -> {
+                startOngoingCall(intent)
+                return START_STICKY
+            }
+            else -> {
+                // Default: incoming call ringing
+                // CRITICAL: Start foreground IMMEDIATELY before anything else.
+                // Android 14+ requires this within 5 seconds of startForegroundService().
+                val callerName = intent?.getStringExtra("caller_name") ?: "Unknown"
+                val callerId = intent?.getStringExtra("caller_id") ?: ""
+                val callId = intent?.getStringExtra("call_id") ?: ""
+                val roomId = intent?.getStringExtra("room_id") ?: ""
+                val avatarUrl = intent?.getStringExtra("avatar_url") ?: ""
+                val isVideo = intent?.getBooleanExtra("is_video", false) ?: false
 
-        val action = intent?.action
-        if (action == ACTION_STOP_RINGING) {
-            stopRinging()
-            stopForeground(STOP_FOREGROUND_REMOVE)
-            stopSelf()
-            return START_NOT_STICKY
-        }
+                val notification = buildCallNotification(callerName, callerId, callId, roomId, avatarUrl, isVideo)
 
-        startRinging()
-        return START_NOT_STICKY
+                try {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                        ServiceCompat.startForeground(
+                            this,
+                            NOTIFICATION_ID,
+                            notification,
+                            ServiceInfo.FOREGROUND_SERVICE_TYPE_SHORT_SERVICE
+                        )
+                        Log.d(TAG, "Started foreground with SHORT_SERVICE type")
+                    } else {
+                        startForeground(NOTIFICATION_ID, notification)
+                        Log.d(TAG, "Started foreground (pre-API 34)")
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to start foreground: ${e.message}", e)
+                    try {
+                        startForeground(NOTIFICATION_ID, notification)
+                    } catch (e2: Exception) {
+                        Log.e(TAG, "Fallback startForeground also failed: ${e2.message}", e2)
+                        stopSelf()
+                        return START_NOT_STICKY
+                    }
+                }
+
+                startRinging()
+                return START_NOT_STICKY
+            }
+        }
     }
 
     override fun onTimeout(startId: Int) {
@@ -155,6 +175,80 @@ class CallForegroundService : Service() {
         try { ringtone?.stop() } catch (_: Exception) {}
     }
 
+    private fun startOngoingCall(intent: Intent?) {
+        isOngoingCall = true
+        ongoingCallId = intent?.getStringExtra("call_id") ?: ""
+        ongoingCallerName = intent?.getStringExtra("caller_name") ?: "Unknown"
+        ongoingIsVideo = intent?.getBooleanExtra("is_video", false) ?: false
+        ongoingStartTime = System.currentTimeMillis()
+
+        stopRinging()
+
+        val notification = buildOngoingNotification()
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                ServiceCompat.startForeground(
+                    this,
+                    ONGOING_NOTIFICATION_ID,
+                    notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                )
+                Log.d(TAG, "Started ongoing foreground with MICROPHONE type")
+            } else {
+                startForeground(ONGOING_NOTIFICATION_ID, notification)
+                Log.d(TAG, "Started ongoing foreground (pre-API 34)")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to start ongoing foreground: ${e.message}", e)
+            try {
+                startForeground(ONGOING_NOTIFICATION_ID, notification)
+            } catch (e2: Exception) {
+                Log.e(TAG, "Fallback ongoing foreground failed: ${e2.message}", e2)
+                stopSelf()
+            }
+        }
+    }
+
+    private fun stopOngoingCall() {
+        isOngoingCall = false
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
+    }
+
+    private fun buildOngoingNotification(): Notification {
+        val openIntent = Intent(this, MainActivity::class.java).apply {
+            action = "com.vant.chat.OPEN_ONGOING_CALL"
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra("call_id", ongoingCallId)
+            putExtra("caller_name", ongoingCallerName)
+            putExtra("is_video", ongoingIsVideo)
+        }
+
+        val openPendingIntent = PendingIntent.getActivity(
+            this, 0, openIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val callType = if (ongoingIsVideo) "Video call" else "Voice call"
+
+        return NotificationCompat.Builder(this, ONGOING_CHANNEL_ID)
+            .setContentTitle(ongoingCallerName)
+            .setContentText(callType)
+            .setSmallIcon(R.drawable.ic_call_notification)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setCategory(NotificationCompat.CATEGORY_CALL)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setContentIntent(openPendingIntent)
+            .setOngoing(true)
+            .setAutoCancel(false)
+            .setSilent(true)
+            .setShowWhen(true)
+            .setWhen(ongoingStartTime)
+            .setUsesChronometer(true)
+            .setChronometerCountDown(false)
+            .build()
+    }
+
     private fun buildCallNotification(
         callerName: String,
         callerId: String,
@@ -199,8 +293,10 @@ class CallForegroundService : Service() {
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val notificationManager = getSystemService(NotificationManager::class.java)
+
             val ringtoneUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
-            val channel = NotificationChannel(
+            val callChannel = NotificationChannel(
                 CHANNEL_ID, "Incoming Calls", NotificationManager.IMPORTANCE_HIGH
             ).apply {
                 description = "Incoming voice and video calls"
@@ -212,8 +308,18 @@ class CallForegroundService : Service() {
                 enableVibration(true)
                 vibrationPattern = longArrayOf(0, 1000, 1000)
             }
-            val notificationManager = getSystemService(NotificationManager::class.java)
-            notificationManager.createNotificationChannel(channel)
+
+            val ongoingChannel = NotificationChannel(
+                ONGOING_CHANNEL_ID, "Ongoing Calls", NotificationManager.IMPORTANCE_LOW
+            ).apply {
+                description = "Shown while a call is in progress"
+                setSound(null, null)
+                enableVibration(false)
+                setShowBadge(false)
+            }
+
+            notificationManager.createNotificationChannel(callChannel)
+            notificationManager.createNotificationChannel(ongoingChannel)
         }
     }
 
@@ -221,6 +327,9 @@ class CallForegroundService : Service() {
 
     override fun onDestroy() {
         stopRinging()
+        try {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+        } catch (_: Exception) {}
         super.onDestroy()
     }
 }

@@ -362,10 +362,29 @@ class CallKitService {
       case Event.actionCallAccept:
         // User accepted the call via native UI
         debugPrint('📞 CallKitService: Call accepted via native UI');
+        final acceptedCallId = _extractCallId(event.body);
+
+        // iOS cold-start safety: when the app is launched from a killed state by
+        // PushKit/CallKit, the onEvent stream may fire before CallController is
+        // registered. Persist the accepted call so _checkPendingAutoAccept can
+        // request the SDP resync and complete the call setup.
+        if (acceptedCallId != null && acceptedCallId.isNotEmpty) {
+          try {
+            final prefs = await SharedPreferences.getInstance();
+            await prefs.setString('pendingAcceptedCallId', acceptedCallId);
+            await prefs.setBool('launchedForCall', true);
+            debugPrint(
+              '📞 CallKitService: persisted iOS accept for cold-start: $acceptedCallId',
+            );
+          } catch (e) {
+            debugPrint('⚠️ CallKitService: failed to persist iOS accept: $e');
+          }
+        }
+
         _eventController.add(
           CallKitEvent(
             type: CallKitEventType.accept,
-            callId: _extractCallId(event.body),
+            callId: acceptedCallId,
             extra: event.body,
           ),
         );
