@@ -531,6 +531,17 @@ class CallController extends GetxController {
             return;
           }
 
+          if (action == 'open_ongoing_call') {
+            debugPrint('📞 Notification tap: open ongoing call screen');
+            if (isConnected && callId != null && callId.isNotEmpty &&
+                currentCallId.value == callId) {
+              if (Get.currentRoute != '/call/active') {
+                Get.offAllNamed('/call/active');
+              }
+            }
+            return;
+          }
+
           if (action == 'answer') {
             await _handleNativeAnswer({
               'call_id': callId ?? '',
@@ -829,6 +840,7 @@ class CallController extends GetxController {
 
           // Set auto-accept flag BEFORE requesting resync
           // This ensures when SDP offer arrives, it's auto-accepted
+          _lastHandledNativeCallId = pendingCallId;
           await setPendingAutoAccept(pendingCallId);
           debugPrint('📞 Set pending auto-accept flag for $pendingCallId');
 
@@ -1435,16 +1447,26 @@ class CallController extends GetxController {
         _startDurationUpdateTimer();
         // Start proximity sensor for screen off during call
         _setupProximitySensor();
-        // Start foreground service to keep call alive when backgrounded
-        try {
-          CallForegroundService().start();
-          debugPrint('📞 Call connected: started foreground service');
-        } catch (e) {
-          debugPrint(
-            '⚠️ Call connected: failed to start foreground service: $e',
-          );
-        }
+        // Start native ongoing-call foreground notification with live duration
         if (Platform.isAndroid) {
+          try {
+            unawaited(
+              _callChannel.invokeMethod('startOngoingCall', {
+                'callId': currentCallId.value,
+                'callerName': remoteDisplayName.value.isNotEmpty
+                    ? remoteDisplayName.value
+                    : 'Unknown',
+                'isVideo': false,
+              }),
+            );
+            debugPrint(
+              '📞 Call connected: started native ongoing call notification',
+            );
+          } catch (e) {
+            debugPrint(
+              '⚠️ Call connected: failed to start ongoing call notification: $e',
+            );
+          }
           unawaited(
             _callChannel.invokeMethod('markTelecomCallActive', {
               'callId': currentCallId.value,
