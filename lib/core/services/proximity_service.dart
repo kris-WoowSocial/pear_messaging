@@ -16,6 +16,7 @@ class ProximityService {
   StreamSubscription? _proximitySubscription;
   bool _isNear = false;
   bool _isActive = false;
+  bool _isSpeakerOn = false;
 
   /// Start listening to proximity sensor
   Future<void> startListening() async {
@@ -46,6 +47,10 @@ class ProximityService {
 
   void _handleProximityChange(bool isNear) {
     if (isNear) {
+      // When speaker is ON, ignore "near" events — we don't want screen-off
+      // and on some OEMs, handling near while speaker is on forces earpiece.
+      if (_isSpeakerOn) return;
+
       // Phone is near ear - native wake lock handles screen OFF automatically
       if (!_isNear) {
         _isNear = true;
@@ -154,6 +159,29 @@ class ProximityService {
       }
     } catch (e) {
       debugPrint('⚠️ Failed to check proximity sensor: $e');
+    }
+  }
+
+  /// Called when speaker state changes. When speaker is ON, release the
+  /// proximity wake lock so OEM devices don't force-route audio to earpiece.
+  /// When speaker is OFF, re-acquire the wake lock for normal behavior.
+  Future<void> setSpeakerActive(bool speakerOn) async {
+    _isSpeakerOn = speakerOn;
+    if (!_isActive) return;
+
+    if (speakerOn) {
+      // Release proximity wake lock — on Samsung/Xiaomi/Oppo, holding the
+      // wake lock while the sensor reads "near" forces audio to earpiece.
+      await _releaseProximityWakeLock();
+      debugPrint(
+        '📱 ProximityService: Wake lock released (speaker ON)',
+      );
+    } else {
+      // Re-acquire wake lock for earpiece mode
+      await _acquireProximityWakeLock();
+      debugPrint(
+        '📱 ProximityService: Wake lock re-acquired (speaker OFF)',
+      );
     }
   }
 

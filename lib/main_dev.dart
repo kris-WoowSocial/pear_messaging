@@ -31,6 +31,7 @@ import 'core/services/region_service.dart';
 import 'core/services/membership_service.dart';
 import 'core/services/notification_service.dart';
 import 'core/services/iap_service.dart';
+import 'core/services/stripe_subscription_service.dart';
 import 'core/services/report_service.dart';
 import 'core/services/api_service.dart';
 import 'core/services/app_lifecycle_service.dart';
@@ -48,12 +49,12 @@ import 'features/call/call_controller.dart';
 void main() async {
   debugPrint('🚀 main() called - app starting fresh');
 
-  // Initialize flavor config for prod
+  // Initialize flavor config for dev
   FlavorConfig(
-    flavor: Flavor.prod,
-    appName: 'Vant Chat',
+    flavor: Flavor.dev,
+    appName: 'Vant Chat Dev',
     apiBaseUrl: 'https://vant.chat',
-    showDebugBanner: false,
+    showDebugBanner: true,
   );
 
   WidgetsFlutterBinding.ensureInitialized();
@@ -353,6 +354,16 @@ void initializeNonCriticalServices() async {
       debugPrint('❌ IAPService initialization failed: $e');
       debugPrint('⚠️ App will continue without in-app purchases');
       return Get.put(IAPService());
+    }),
+  );
+
+  // New Stripe subscription service (7-day trial, additive - does not
+  // replace IAPService above)
+  futures.add(
+    Get.putAsync(() => StripeSubscriptionService().init()).catchError((e) {
+      debugPrint('❌ StripeSubscriptionService initialization failed: $e');
+      debugPrint('⚠️ App will continue without the Stripe subscription flow');
+      return Get.put(StripeSubscriptionService());
     }),
   );
 

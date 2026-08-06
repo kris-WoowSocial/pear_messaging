@@ -412,7 +412,7 @@ class ProfileScreen extends GetView<ProfileController> {
               final membershipService = Get.find<MembershipService>();
               final isPremium = membershipService.isPremium;
               return GestureDetector(
-                onTap: () => Get.toNamed(AppRoutes.membership),
+                onTap: () => Get.toNamed(AppRoutes.stripeSubscription),
                 child: Container(
                   padding: const EdgeInsets.all(AppSizes.paddingM),
                   decoration: BoxDecoration(

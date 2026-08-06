@@ -1,16 +1,16 @@
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
-import 'membership_screen.dart';
+import 'package:pear_messaging/routes/app_routes.dart';
 
-// Group plans have been removed. This redirects to the main membership screen.
+// Group plans have been removed. This redirects to the new Stripe subscription screen.
 class GroupPlanSelectionScreen extends StatelessWidget {
   const GroupPlanSelectionScreen({super.key});
 
   @override
   Widget build(BuildContext context) {
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      Get.offNamed('/membership');
+      Get.offNamed(AppRoutes.stripeSubscription);
     });
-    return const MembershipScreen();
+    return const Scaffold(body: SizedBox.shrink());
   }
 }

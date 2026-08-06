@@ -134,9 +134,13 @@ class CallForegroundService : Service() {
 
     private fun startRinging() {
         try {
-            // Set audio mode for VoIP calls (prevents speaker delay)
+            // Use MODE_RINGTONE for the ringing phase — this is the appropriate mode
+            // while alerting the user. MODE_IN_COMMUNICATION must NOT be set here because
+            // Android's Ringtone/MediaPlayer will internally override it, leaving the audio
+            // subsystem in MODE_RINGTONE. When the call is actually answered, the accept
+            // flow sets MODE_IN_COMMUNICATION before WebRTC captures audio.
             val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-            audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+            audioManager.mode = AudioManager.MODE_RINGTONE
 
             val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
             wakeLock = powerManager.newWakeLock(
@@ -170,9 +174,16 @@ class CallForegroundService : Service() {
     }
 
     private fun stopRinging() {
-        try { wakeLock?.let { if (it.isHeld) it.release() } } catch (_: Exception) {}
-        try { vibrator?.cancel() } catch (_: Exception) {}
         try { ringtone?.stop() } catch (_: Exception) {}
+        try { vibrator?.cancel() } catch (_: Exception) {}
+        try { wakeLock?.let { if (it.isHeld) it.release() } } catch (_: Exception) {}
+        // Reset audio mode from MODE_RINGTONE to MODE_IN_COMMUNICATION
+        // so the audio subsystem is ready for WebRTC voice communication.
+        try {
+            val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+            Log.d(TAG, "stopRinging: audio mode set to MODE_IN_COMMUNICATION")
+        } catch (_: Exception) {}
     }
 
     private fun startOngoingCall(intent: Intent?) {
@@ -183,6 +194,15 @@ class CallForegroundService : Service() {
         ongoingStartTime = System.currentTimeMillis()
 
         stopRinging()
+
+        // CRITICAL: Set audio mode for ongoing calls to maintain speaker state in background
+        try {
+            val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+            Log.d(TAG, "Audio mode set to MODE_IN_COMMUNICATION for ongoing call")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to set audio mode for ongoing call: ${e.message}", e)
+        }
 
         val notification = buildOngoingNotification()
         try {

@@ -8,6 +8,7 @@ import 'core/services/webrtc_call_service.dart';
 import 'features/chat_list/chat_list_controller.dart';
 import 'features/chat/chat_controller.dart';
 import 'features/call/call_controller.dart';
+import 'features/call/call_banner.dart';
 import 'routes/app_routes.dart';
 
 class PearMessagingApp extends StatefulWidget {
@@ -210,6 +211,14 @@ class _PearMessagingAppState extends State<PearMessagingApp>
             child: child!,
           );
 
+          // Wrap app content with call banner overlay
+          final withCallBanner = Column(
+            children: [
+              const CallBanner(),
+              Expanded(child: appChild),
+            ],
+          );
+
           // Add DEV banner for dev flavor
           if (FlavorConfig.isDev()) {
             return Banner(
@@ -222,7 +231,7 @@ class _PearMessagingAppState extends State<PearMessagingApp>
                   statusBarIconBrightness: Brightness.dark,
                   statusBarBrightness: Brightness.light,
                 ),
-                child: appChild,
+                child: withCallBanner,
               ),
             );
           }
@@ -233,7 +242,7 @@ class _PearMessagingAppState extends State<PearMessagingApp>
               statusBarIconBrightness: Brightness.dark,
               statusBarBrightness: Brightness.light,
             ),
-            child: appChild,
+            child: withCallBanner,
           );
         },
         unknownRoute: GetPage(

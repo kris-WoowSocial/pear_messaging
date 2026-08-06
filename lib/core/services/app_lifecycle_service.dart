@@ -56,8 +56,8 @@ class AppLifecycleService extends GetxService with WidgetsBindingObserver {
     }
   }
 
-  /// Handle app resumed (foreground) - reconnect socket on iOS
-  void _handleAppResumed() {
+  /// Handle app resumed (foreground) - reconnect socket on iOS and restore audio state
+  void _handleAppResumed() async {
     if (Platform.isIOS) {
       try {
         if (_isCallActive()) {
@@ -77,6 +77,19 @@ class AppLifecycleService extends GetxService with WidgetsBindingObserver {
         debugPrint('⚠️ iOS: Error reconnecting socket on resume: $e');
       }
     }
+    
+    // Restore audio speaker state when app resumes (Android & iOS)
+    if (_isCallActive()){
+      try {
+        final callService = WebRTCCallService();
+        final originalSpeakerState = callService.isSpeakerOn;
+        debugPrint('📱 Restoring speaker state after app resume: $originalSpeakerState');
+        // Force audio configuration to restore speaker state
+        await callService.setSpeaker(originalSpeakerState);
+      } catch (e) {
+        debugPrint('⚠️ Error restoring speaker state on resume: $e');
+      }
+    }
   }
 
   /// Handle app paused (background) - disconnect socket on iOS to mark device offline
@@ -93,6 +106,18 @@ class AppLifecycleService extends GetxService with WidgetsBindingObserver {
         }
       } catch (e) {
         debugPrint('⚠️ iOS: Error disconnecting socket on pause: $e');
+      }
+    }
+    
+    // On Android, ensure audio mode is maintained when app goes to background during call
+    if (Platform.isAndroid && _isCallActive()) {
+      try {
+        final callService = WebRTCCallService();
+        debugPrint('📱 Android: Maintaining audio speaker state in background: ${callService.isSpeakerOn}');
+        // Re-apply the current speaker state to ensure it persists in background
+        callService.setSpeaker(callService.isSpeakerOn);
+      } catch (e) {
+        debugPrint('⚠️ Error maintaining speaker state on pause: $e');
       }
     }
   }

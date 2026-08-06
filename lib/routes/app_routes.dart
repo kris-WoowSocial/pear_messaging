@@ -14,6 +14,7 @@ import '../features/qr_scanner/qr_scanner_controller.dart';
 import '../features/notification_permission/notification_permission_screen.dart';
 import '../features/membership/membership_screen.dart';
 import '../features/membership/membership_controller.dart';
+import '../features/membership/stripe_subscription_screen.dart';
 import '../features/call/incoming_call_screen.dart';
 import '../features/call/outgoing_call_screen.dart';
 import '../features/call/active_call_screen.dart';
@@ -31,6 +32,7 @@ class AppRoutes {
   static const String profile = '/profile';
   static const String qrScanner = '/qr-scanner';
   static const String membership = '/membership';
+  static const String stripeSubscription = '/stripe-subscription';
   static const String callIncoming = '/call/incoming';
   static const String callOutgoing = '/call/outgoing';
   static const String callActive = '/call/active';
@@ -112,6 +114,10 @@ class AppRoutes {
       binding: BindingsBuilder(() {
         Get.put(MembershipController());
       }),
+    ),
+    GetPage(
+      name: stripeSubscription,
+      page: () => const StripeSubscriptionScreen(),
     ),
     GetPage(
       name: callIncoming,

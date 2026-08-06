@@ -65,6 +65,88 @@ class ApiService extends GetxService {
     }
   }
 
+  /// Reports a successful in-app purchase (Apple IAP / Google Play Billing)
+  /// to the backend so it's recorded and referral commission is credited to
+  /// the influencer/inviter chain, if any. Without this call, real purchases
+  /// never reach the backend and influencers never get paid.
+  Future<Map<String, dynamic>> recordIAPPurchase({
+    required String deviceId,
+    required String planId,
+    required int amountCents,
+    required String currency,
+    required String purchaseId,
+    required String countryCode,
+    required String platform, // 'android' or 'ios'
+  }) async {
+    final res = await _post('/api/membership/record-google-play-purchase', {
+      'deviceId': deviceId,
+      'planId': planId,
+      'amount': amountCents,
+      'currency': currency,
+      'purchaseId': purchaseId,
+      'countryCode': countryCode,
+      'platform': platform,
+    });
+    return _decode(res, 'recordIAPPurchase');
+  }
+
+  // ── Stripe subscription (7-day trial + auto-renew on the app's real ────────
+  // 6_months / 1_year plans) ──────────────────────────────────────────────────
+  // New, additive endpoints - do not affect the existing in_app_purchase flow.
+
+  Future<Map<String, dynamic>> createStripeSubscription(
+      String deviceId, String planId, {String? email}) async {
+    final res = await _post('/api/membership/stripe/create-subscription', {
+      'deviceId': deviceId,
+      'planId': planId,
+      if (email != null) 'email': email,
+    });
+    return _decode(res, 'createStripeSubscription');
+  }
+
+  Future<Map<String, dynamic>> confirmStripeSubscription(
+      String deviceId, String subscriptionId) async {
+    final res = await _post('/api/membership/stripe/confirm-subscription', {
+      'deviceId': deviceId,
+      'subscriptionId': subscriptionId,
+    });
+    return _decode(res, 'confirmStripeSubscription');
+  }
+
+  Future<Map<String, dynamic>> cancelStripeSubscription(
+      String deviceId) async {
+    final res = await _post(
+        '/api/membership/stripe/cancel-subscription', {'deviceId': deviceId});
+    return _decode(res, 'cancelStripeSubscription');
+  }
+
+  Future<Map<String, dynamic>> getStripeSubscriptionStatus(
+      String deviceId) async {
+    final res = await _get('/api/membership/stripe/subscription-status/$deviceId');
+    return _decode(res, 'getStripeSubscriptionStatus');
+  }
+
+  // ── Crypto payment (one-time, via Stripe's own "Stablecoins and Crypto" ────
+  // payment method - customer connects a wallet at crypto.stripe.com and
+  // pays in USDC; Stripe settles USD to your balance) ────────────────────────
+
+  Future<Map<String, dynamic>> createCryptoCheckout({
+    required String deviceId,
+    required String planId,
+  }) async {
+    final res = await _post('/api/membership/stripe/create-crypto-checkout', {
+      'deviceId': deviceId,
+      'planId': planId,
+    });
+    return _decode(res, 'createCryptoCheckout');
+  }
+
+  Future<Map<String, dynamic>> getCryptoCheckoutStatus(String deviceId) async {
+    final res = await _get(
+        '/api/membership/stripe/crypto-checkout-status/$deviceId');
+    return _decode(res, 'getCryptoCheckoutStatus');
+  }
+
   // ── Username ─────────────────────────────────────────────────────────────────
 
   Future<Map<String, dynamic>> setUsername(

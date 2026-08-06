@@ -1,5 +1,6 @@
 package com.vant.chat
 
+import android.os.Build
 import android.telecom.Connection
 import android.telecom.ConnectionRequest
 import android.telecom.ConnectionService
@@ -44,6 +45,9 @@ class VantConnectionService : ConnectionService() {
             setInitializing()
             setRinging()
             connectionProperties = Connection.PROPERTY_SELF_MANAGED
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                setAudioModeIsVoip(true)
+            }
             setConnectionExtra("caller_name", callerName)
             setConnectionExtra("caller_id", callerId)
             setConnectionExtra("call_id", callId)
@@ -79,6 +83,9 @@ class VantConnectionService : ConnectionService() {
         val connection = VantConnection(applicationContext).apply {
             setCallerDisplayName(calleeName, TelecomManager.PRESENTATION_ALLOWED)
             connectionProperties = Connection.PROPERTY_SELF_MANAGED
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                setAudioModeIsVoip(true)
+            }
             setInitializing()
             setDialing()
             setConnectionExtra("caller_name", calleeName)

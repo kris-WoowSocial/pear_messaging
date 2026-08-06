@@ -1,6 +1,10 @@
+import 'dart:io' show Platform;
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:in_app_purchase/in_app_purchase.dart';
+import '../../core/constants/pricing_config.dart';
+import '../../core/services/api_service.dart';
+import '../../core/services/local_storage_service.dart';
 import '../../core/services/membership_service.dart';
 import '../../core/services/iap_service.dart';
 
@@ -98,14 +102,20 @@ class MembershipController extends GetxController {
       purchaseDetails.productID,
     );
     final planLabel = planId == '1_year' ? '1-Year Plan' : '6-Month Plan';
+    final purchaseId = purchaseDetails.purchaseID ??
+        purchaseDetails.transactionDate ??
+        'unknown';
 
-    // Record Google Play purchase to backend
     await _membershipService.activateMembership(
       selectedPlan: planId,
-      purchaseId: purchaseDetails.purchaseID ??
-          purchaseDetails.transactionDate ??
-          'unknown',
+      purchaseId: purchaseId,
     );
+
+    // Report the verified purchase to the backend so referral commission is
+    // credited to the influencer/inviter chain, if any. This must happen for
+    // every real purchase - do it in the background so a network hiccup
+    // doesn't block the premium unlock the user already got locally.
+    _reportPurchaseForCommission(planId: planId, purchaseId: purchaseId);
 
     isProcessing.value = false;
     selectedPlan.value = '';
@@ -120,6 +130,33 @@ class MembershipController extends GetxController {
       colorText: Colors.green.shade800,
       duration: const Duration(seconds: 4),
     );
+  }
+
+  Future<void> _reportPurchaseForCommission({
+    required String planId,
+    required String purchaseId,
+  }) async {
+    try {
+      final deviceId = Get.find<LocalStorageService>().deviceId;
+      if (deviceId == null || deviceId.isEmpty) return;
+
+      final pricing = PricingConfig.globalPricing;
+      final countryCode = await _iapService.getUserCountryCode();
+
+      await ApiService.to.recordIAPPurchase(
+        deviceId: deviceId,
+        planId: planId,
+        amountCents: pricing.getPriceForPlan(planId),
+        currency: pricing.currency,
+        purchaseId: purchaseId,
+        countryCode: countryCode,
+        platform: Platform.isIOS ? 'ios' : 'android',
+      );
+      debugPrint('✅ Purchase reported to backend for referral commission');
+    } catch (e) {
+      // Non-fatal: the user already has premium locally. Log for follow-up.
+      debugPrint('⚠️ Failed to report purchase to backend: $e');
+    }
   }
 
   void _handlePurchaseError(String error) {

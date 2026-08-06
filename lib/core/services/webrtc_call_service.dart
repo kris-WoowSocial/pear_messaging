@@ -111,6 +111,12 @@ class WebRTCCallService {
       // Create peer connection
       await _createPeerConnection();
 
+      // Force the Android audio subsystem into MODE_IN_COMMUNICATION BEFORE WebRTC
+      // captures audio. Without this, cold-start answers can initialize in MODE_NORMAL
+      // and speaker routing will not switch until ~60 seconds later.
+      await _forceAudioDevice();
+      await Future.delayed(const Duration(milliseconds: 100));
+
       // Get local audio stream with hardware optimization
       // On iOS, audio session is configured by flutter_webrtc during getUserMedia.
       // We'll configure speaker routing AFTER the stream is captured (on connection).
@@ -119,6 +125,9 @@ class WebRTCCallService {
         debugPrint('❌ Failed to get local stream');
         return false;
       }
+
+      // Force audio mode again AFTER getUserMedia
+      await _forceAudioDevice();
 
       onLocalStream?.call(_localStream!);
 
@@ -178,6 +187,21 @@ class WebRTCCallService {
       // Create peer connection
       await _createPeerConnection();
 
+      // CRITICAL: Stop any active ringtone/vibration, tell Telecom the call is
+      // ACTIVE (not ringing), and force MODE_IN_COMMUNICATION.
+      // The native side also calls VantCallManager.activeConnection.setActive()
+      // which tells the Android Telecom framework to stop routing audio as a
+      // ringing call (MODE_RINGTONE). Without this, the system audio router keeps
+      // overriding our mode to MODE_RINGTONE and WebRTC's AudioTrack gets created
+      // under STREAM_RING which permanently locks audio to the earpiece.
+      await _stopRingingAndSetAudioMode();
+      // Allow the Android audio subsystem + Telecom framework to settle after
+      // stopping the ringtone and transitioning the connection to ACTIVE state.
+      // Telecom's audio routing change is asynchronous and needs time to propagate.
+      await Future.delayed(const Duration(milliseconds: 500));
+      // Force the mode one more time right before getUserMedia
+      await _forceAudioDevice();
+
       // Get local audio stream with hardware optimization
       // On iOS, audio session is configured by flutter_webrtc during getUserMedia.
       // We'll configure speaker routing AFTER the stream is captured (on connection).
@@ -186,6 +210,10 @@ class WebRTCCallService {
         debugPrint('❌ Failed to get local stream');
         return false;
       }
+
+      // Force audio mode again AFTER getUserMedia, because WebRTC's internal
+      // JavaAudioDeviceModule may have reset it during AudioTrack creation.
+      await _forceAudioDevice();
 
       onLocalStream?.call(_localStream!);
 
@@ -200,6 +228,11 @@ class WebRTCCallService {
       debugPrint(
         '📞 Active senders before createAnswer: ${sendersBeforeAnswer.length}',
       );
+
+      // Force mode AGAIN right before setRemoteDescription, because this is the
+      // call that triggers onAddTrack → playout AudioTrack creation on a worker
+      // thread. The AudioTrack reads the current audio mode at creation time.
+      await _forceAudioDevice();
 
       // Set remote description (offer)
       await _peerConnection!.setRemoteDescription(
@@ -279,8 +312,10 @@ class WebRTCCallService {
         case RTCPeerConnectionState.RTCPeerConnectionStateConnected:
           debugPrint('📞 WebRTC CONNECTED - starting timer and audio');
           onCallStateChange?.call('connected');
-          // Re-apply audio configuration to ensure earpiece/speaker routing persists
-          // after WebRTC claims audio focus during connection establishment
+          // Apply audio configuration once. Since we now use only
+          // Helper.setSpeakerphoneOn (AudioSwitchManager), there is no
+          // conflicting audio focus request so the setting sticks and we
+          // don't need staggered re-applications.
           _configureAudioSession(speakerOn: _isSpeakerOn);
           _startDurationTimer();
           _startStatsLogger();
@@ -424,9 +459,16 @@ class WebRTCCallService {
   /// Toggle speaker
   Future<void> toggleSpeaker() async {
     final newState = !_isSpeakerOn;
-    await _configureAudioSession(speakerOn: newState);
     _isSpeakerOn = newState;
+    await _configureAudioSession(speakerOn: newState);
     debugPrint('📞 Speaker toggled: $_isSpeakerOn');
+  }
+
+  /// Set speaker to specific state (useful for restoring state after app resume)
+  Future<void> setSpeaker(bool speakerOn) async {
+    _isSpeakerOn = speakerOn;
+    await _configureAudioSession(speakerOn: speakerOn);
+    debugPrint('📞 Speaker set to: $_isSpeakerOn');
   }
 
   /// Start call duration timer
@@ -494,22 +536,56 @@ class WebRTCCallService {
     debugPrint('📞 Call ended and cleaned up');
   }
 
-  /// Configure audio session after call connects
+  /// Configure audio session after call connects.
   /// On iOS, audio session is already configured by flutter_webrtc during getUserMedia.
-  /// This method only controls speaker routing (earpiece vs speaker) after connection.
+  /// This method controls speaker routing (earpiece vs speaker) after connection.
+  ///
+  /// IMPORTANT (Android): When a self-managed Telecom Connection is active,
+  /// the framework owns the audio route and AudioManager/AudioSwitch requests
+  /// may be ignored. We therefore notify Telecom via
+  /// `Connection.setAudioRoute(ROUTE_SPEAKER/ROUTE_EARPIECE)` first, then keep
+  /// flutter_webrtc's AudioSwitch state in sync with `Helper.setSpeakerphoneOn`.
   Future _configureAudioSession({bool speakerOn = false}) async {
     try {
       if (Platform.isAndroid) {
-        await _audioChannel.invokeMethod('setSpeakerphoneOn', {
-          'on': speakerOn,
+        await _audioChannel.invokeMethod('setTelecomAudioRoute', {
+          'speakerOn': speakerOn,
         });
-        debugPrint('📞 Audio session configured: speaker=$speakerOn (Android)');
-      } else {
-        await Helper.setSpeakerphoneOn(speakerOn);
-        debugPrint('📞 Audio session configured: speaker=$speakerOn (iOS)');
       }
+      await Helper.setSpeakerphoneOn(speakerOn);
+      debugPrint('📞 Audio session configured: speaker=$speakerOn');
     } catch (e) {
       debugPrint('⚠️ Audio session config failed: $e');
+    }
+  }
+
+  /// Force audio device selection to prevent flutter_webrtc from interfering
+  Future<void> _forceAudioDevice() async {
+    if (Platform.isAndroid) {
+      try {
+        // Force audio mode to communication mode before WebRTC takes over
+        await _audioChannel.invokeMethod('setAudioMode', {
+          'mode': 'MODE_IN_COMMUNICATION',
+        });
+        debugPrint('📞 Audio mode forced to MODE_IN_COMMUNICATION');
+      } catch (e) {
+        debugPrint('⚠️ Failed to force audio mode: $e');
+      }
+    }
+  }
+
+  /// Stop any active ringing and force MODE_IN_COMMUNICATION atomically.
+  /// Must be called BEFORE getUserMedia so WebRTC's AudioTrack is created under
+  /// the correct audio mode instead of MODE_RINGTONE.
+  Future<void> _stopRingingAndSetAudioMode() async {
+    if (!Platform.isAndroid) return;
+    try {
+      await _audioChannel.invokeMethod('stopRingingAndSetAudioMode');
+      debugPrint('📞 Ringing stopped and audio mode set atomically');
+    } catch (e) {
+      // Fallback: the method may not exist on older builds, just force audio mode
+      debugPrint('⚠️ stopRingingAndSetAudioMode not available, using fallback');
+      await _forceAudioDevice();
     }
   }
 

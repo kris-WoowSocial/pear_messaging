@@ -11,8 +11,6 @@ import android.os.PowerManager
 import android.content.Context
 import android.hardware.Sensor
 import android.hardware.SensorManager
-import android.media.AudioAttributes
-import android.media.AudioDeviceInfo
 import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.media.ToneGenerator
@@ -125,6 +123,20 @@ class MainActivity : FlutterFragmentActivity() {
                     setSpeakerphoneOn(on)
                     result.success(null)
                 }
+                "setAudioMode" -> {
+                    val mode = call.argument<String>("mode") ?: "MODE_IN_COMMUNICATION"
+                    setAudioMode(mode)
+                    result.success(null)
+                }
+                "setTelecomAudioRoute" -> {
+                    val speakerOn = call.argument<Boolean>("speakerOn") ?: false
+                    VantCallManager.setAudioRoute(this, speakerOn)
+                    result.success(null)
+                }
+                "stopRingingAndSetAudioMode" -> {
+                    stopRingingAndSetAudioMode()
+                    result.success(null)
+                }
                 "playRingback" -> {
                     playRingback()
                     result.success(null)
@@ -187,6 +199,17 @@ class MainActivity : FlutterFragmentActivity() {
                     val isVideo = call.argument<Boolean>("isVideo") ?: false
                     startOngoingCallService(callId, callerName, isVideo)
                     result.success(null)
+                }
+                "ensureAudioMode" -> {
+                    val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+                    val currentMode = audioManager.mode
+                    
+                    if (currentMode != AudioManager.MODE_IN_COMMUNICATION) {
+                        audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+                        println("🔊 ensureAudioMode: Fixed from $currentMode to MODE_IN_COMMUNICATION")
+                    }
+                    
+                    result.success(true)
                 }
                 else -> {
                     result.notImplemented()
@@ -416,10 +439,11 @@ class MainActivity : FlutterFragmentActivity() {
                         "callerName" to callerName,
                         "roomId" to roomId,
                         "avatarUrl" to avatarUrl,
-                        "isVideo" to isVideo
+                        "isVideo" to isVideo,
+                        "answeredFromBackground" to intent.getBooleanExtra("answered_from_background", false)
                     )
                     channel.invokeMethod("onCallAction", arguments)
-                    println("Call action sent to Flutter successfully: $action")
+                    println("Call action sent to Flutter successfully: $action, answeredFromBackground=${intent.getBooleanExtra("answered_from_background", false)}")
                 } catch (e: Exception) {
                     println("Error sending call action to Flutter: $e")
                 }
@@ -567,62 +591,80 @@ class MainActivity : FlutterFragmentActivity() {
         }
     }
 
-    private fun setSpeakerphoneOn(on: Boolean) {
+    /**
+     * Stop the ringing foreground service, tell Telecom the call is ACTIVE,
+     * and set MODE_IN_COMMUNICATION.
+     *
+     * IMPORTANT: This method must NOT request audio focus or set communication device.
+     * AudioSwitch (inside flutter_webrtc) is the sole owner of audio focus and device
+     * routing. If we request AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE or call
+     * setCommunicationDevice(earpiece) here, AudioSwitch initializes into a corrupted
+     * state where it thinks it selected Speakerphone but the OS route is locked to earpiece.
+     */
+    private fun stopRingingAndSetAudioMode() {
         try {
-            val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-
-            // Request audio focus for call
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                callAudioFocusRequest = AudioFocusRequest.Builder(
-                    AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE
-                )
-                    .setAudioAttributes(
-                        AudioAttributes.Builder()
-                            .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
-                            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                            .build()
-                    )
-                    .build()
-                audioManager.requestAudioFocus(callAudioFocusRequest!!)
-            } else {
-                @Suppress("DEPRECATION")
-                audioManager.requestAudioFocus(
-                    null,
-                    AudioManager.STREAM_VOICE_CALL,
-                    AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE
-                )
+            // 1. CRITICAL: Tell Telecom the call is now ACTIVE. Without this, the
+            // self-managed VantConnection stays in RINGING state and the system
+            // audio router keeps forcing MODE_RINGTONE on the audio subsystem.
+            VantCallManager.activeConnection?.let { connection ->
+                connection.setActive()
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    connection.setAudioModeIsVoip(true)
+                }
+                println("🔊 stopRingingAndSetAudioMode: Telecom connection set to ACTIVE + VoIP")
             }
+        } catch (e: Exception) {
+            println("⚠️ Error setting Telecom connection active: $e")
+        }
 
-            // Ensure MODE_IN_COMMUNICATION for instant speaker toggle (prevents 60s delay)
+        try {
+            // 2. Stop the ringtone, vibration, and foreground service
+            val stopIntent = Intent(this, CallForegroundService::class.java).apply {
+                action = CallForegroundService.ACTION_STOP_RINGING
+            }
+            startService(stopIntent)
+            cancelCallNotification()
+            println("🔊 stopRingingAndSetAudioMode: ringing stopped")
+        } catch (e: Exception) {
+            println("⚠️ Error stopping ringing: $e")
+        }
+
+        try {
+            // 3. Set MODE_IN_COMMUNICATION so WebRTC's AudioTrack is created under
+            // the correct mode. AudioSwitch also sets this, but doing it early is fine.
+            val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
             if (audioManager.mode != AudioManager.MODE_IN_COMMUNICATION) {
                 audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
             }
-
-            // On Android 11+ (API 31+), use setCommunicationDevice for reliable routing
-            // On older Android, use isSpeakerphoneOn
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                val audioDevices = audioManager.availableCommunicationDevices
-                val targetType = if (on) {
-                    AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
-                } else {
-                    AudioDeviceInfo.TYPE_BUILTIN_EARPIECE
-                }
-                val device = audioDevices.find { it.type == targetType }
-                if (device != null) {
-                    val success = audioManager.setCommunicationDevice(device)
-                    println("Communication device set to ${device.type}, success=$success, requested=$on")
-                } else {
-                    // Fallback to speakerphone flag
-                    audioManager.isSpeakerphoneOn = on
-                    println("AudioDeviceInfo type $targetType not available, fallback to speakerphone=$on")
-                }
-            } else {
-                audioManager.isSpeakerphoneOn = on
-                println("Speakerphone set to $on (legacy audio mode)")
-            }
+            println("🔊 stopRingingAndSetAudioMode: MODE_IN_COMMUNICATION set")
         } catch (e: Exception) {
-            println("Error setting speakerphone: $e")
+            println("⚠️ Error setting audio mode after stopping ringing: $e")
         }
+    }
+
+    private fun setAudioMode(mode: String) {
+        try {
+            val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            val audioMode = when (mode) {
+                "MODE_IN_COMMUNICATION" -> AudioManager.MODE_IN_COMMUNICATION
+                "MODE_NORMAL" -> AudioManager.MODE_NORMAL
+                "MODE_RINGTONE" -> AudioManager.MODE_RINGTONE
+                "MODE_CALL_SCREENING" -> AudioManager.MODE_CALL_SCREENING
+                else -> AudioManager.MODE_IN_COMMUNICATION
+            }
+            audioManager.mode = audioMode
+            println("Audio mode set to $mode")
+        } catch (e: Exception) {
+            println("Error setting audio mode: $e")
+        }
+    }
+
+    private fun setSpeakerphoneOn(on: Boolean) {
+        // NO-OP: AudioSwitch (via flutter_webrtc's Helper.setSpeakerphoneOn) is the
+        // sole owner of audio routing. Using setCommunicationDevice or requestAudioFocus
+        // here conflicts with AudioSwitch and causes it to revert speaker selection.
+        // This method is kept to avoid crashes if old Dart code paths reference it.
+        println("🔊 setSpeakerphoneOn($on) - ignored, AudioSwitch manages routing")
     }
 
     private fun startOngoingCallService(callId: String, callerName: String, isVideo: Boolean) {
@@ -665,16 +707,12 @@ class MainActivity : FlutterFragmentActivity() {
         stopRingback()
         try {
             val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-            audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
-            // Route to earpiece
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                val earpiece = audioManager.availableCommunicationDevices
-                    .find { it.type == AudioDeviceInfo.TYPE_BUILTIN_EARPIECE }
-                if (earpiece != null) audioManager.setCommunicationDevice(earpiece)
-            } else {
-                audioManager.isSpeakerphoneOn = false
+            if (audioManager.mode != AudioManager.MODE_IN_COMMUNICATION) {
+                audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
             }
-            // ToneGenerator on STREAM_VOICE_CALL always follows earpiece/speaker routing
+            // DO NOT force earpiece here — AudioSwitch manages device routing.
+            // The ToneGenerator will play on whatever device AudioSwitch has selected.
+            // ToneGenerator on STREAM_VOICE_CALL follows the current communication routing
             toneGenerator = ToneGenerator(AudioManager.STREAM_VOICE_CALL, 80)
             val handler = Handler(Looper.getMainLooper())
             ringbackHandler = handler
@@ -956,10 +994,34 @@ class MainActivity : FlutterFragmentActivity() {
                 "room_id" to (intent.getStringExtra("room_id") ?: ""),
                 "caller_name" to (intent.getStringExtra("caller_name") ?: ""),
                 "caller_id" to (intent.getStringExtra("caller_id") ?: ""),
-                "is_video" to (intent.getBooleanExtra("is_video", false)).toString()
+                "is_video" to (intent.getBooleanExtra("is_video", false)).toString(),
+                "from_native" to (intent.getBooleanExtra("from_native", false)).toString(),
+                "answered_from_background" to (intent.getBooleanExtra("answered_from_background", false)).toString()
             )
+            
+            // If answered from native screen (or system UI while in background),
+            // stop ringing and force MODE_IN_COMMUNICATION immediately so WebRTC's
+            // AudioTrack is not created under MODE_RINGTONE.
+            val fromNative = intent.getBooleanExtra("from_native", false)
+            val answeredFromBackground = intent.getBooleanExtra("answered_from_background", false)
+            if ((fromNative || answeredFromBackground) && action == "com.vant.chat.ANSWER_CALL") {
+                // CRITICAL: Tell Telecom the call is now ACTIVE. Without this, the
+                // self-managed VantConnection stays in RINGING state and the system
+                // audio router keeps forcing MODE_RINGTONE, which causes WebRTC's
+                // AudioTrack to use STREAM_RING (locks audio to earpiece).
+                VantCallManager.activeConnection?.let { connection ->
+                    connection.setActive()
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        connection.setAudioModeIsVoip(true)
+                    }
+                    println("🔊 handleCallIntent: Telecom connection set to ACTIVE + VoIP mode")
+                }
+                stopRingingAndSetAudioMode()
+                println("🔊 handleCallIntent: Stopped ringing and forced MODE_IN_COMMUNICATION (native/bg)")
+            }
+            
             cancelCallNotification()
-            println("Pending call action captured: $pendingCallAction")
+            println("Pending call action captured: $pendingCallAction, from_native: $fromNative, answeredFromBackground: $answeredFromBackground")
         }
     }
 

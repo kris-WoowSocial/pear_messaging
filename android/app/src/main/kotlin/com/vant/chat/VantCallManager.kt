@@ -5,12 +5,14 @@ import android.app.PendingIntent
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.telecom.CallAudioState
 import android.telecom.DisconnectCause
 import android.telecom.PhoneAccount
 import android.telecom.PhoneAccountHandle
@@ -211,6 +213,62 @@ object VantCallManager {
     fun clearActiveConnection(connection: VantConnection) {
         if (activeConnection === connection) {
             activeConnection = null
+        }
+    }
+
+    /**
+     * Set the call audio route (speakerphone vs earpiece).
+     *
+     * When a self-managed Telecom Connection is active, the framework owns the
+     * audio routing and may ignore AudioManager/AudioSwitch requests. We must
+     * therefore route through Telecom's Connection.setAudioRoute(). A fallback
+     * to AudioManager is provided when no connection exists or the API is
+     * unavailable.
+     */
+    fun setAudioRoute(context: Context, speakerOn: Boolean) {
+        activeConnection?.let { connection ->
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                val route = if (speakerOn) {
+                    CallAudioState.ROUTE_SPEAKER
+                } else {
+                    CallAudioState.ROUTE_EARPIECE
+                }
+                try {
+                    connection.setAudioRoute(route)
+                    Log.d(
+                        TAG,
+                        "setAudioRoute: ${if (speakerOn) "SPEAKER" else "EARPIECE"} via Telecom"
+                    )
+                    return
+                } catch (e: Exception) {
+                    Log.e(TAG, "Telecom setAudioRoute failed, falling back: ${e.message}", e)
+                }
+            }
+        }
+        setAudioRouteViaAudioManager(context, speakerOn)
+    }
+
+    private fun setAudioRouteViaAudioManager(context: Context, speakerOn: Boolean) {
+        try {
+            val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val devices = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+                val speakerDevice = devices.find { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
+                val earpieceDevice = devices.find { it.type == AudioDeviceInfo.TYPE_TELEPHONY }
+                when {
+                    speakerOn && speakerDevice != null -> audioManager.setCommunicationDevice(speakerDevice)
+                    !speakerOn && earpieceDevice != null -> audioManager.setCommunicationDevice(earpieceDevice)
+                    else -> audioManager.isSpeakerphoneOn = speakerOn
+                }
+            } else {
+                audioManager.isSpeakerphoneOn = speakerOn
+            }
+            Log.d(
+                TAG,
+                "setAudioRoute: ${if (speakerOn) "SPEAKER" else "EARPIECE"} via AudioManager"
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "Error setting audio route via AudioManager: ${e.message}", e)
         }
     }
 

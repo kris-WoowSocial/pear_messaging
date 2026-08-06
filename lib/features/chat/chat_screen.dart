@@ -492,7 +492,7 @@ class ChatScreen extends GetView<ChatController> {
     if (Get.isRegistered<MembershipService>()) {
       final membershipService = Get.find<MembershipService>();
       if (!membershipService.canShareMedia) {
-        Get.toNamed(AppRoutes.membership);
+        Get.toNamed(AppRoutes.stripeSubscription);
         return;
       }
     }
@@ -1079,7 +1079,7 @@ class ChatScreen extends GetView<ChatController> {
       if (Get.isRegistered<MembershipService>()) {
         final membershipService = Get.find<MembershipService>();
         if (!membershipService.canMakeCalls) {
-          Get.toNamed(AppRoutes.membership);
+          Get.toNamed(AppRoutes.stripeSubscription);
           return;
         }
       }

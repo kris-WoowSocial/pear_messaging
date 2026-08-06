@@ -3,6 +3,7 @@ package com.vant.chat
 import android.content.Context
 import android.content.Intent
 import android.media.AudioManager
+import android.os.Build
 import android.os.Bundle
 import android.telecom.Connection
 import android.telecom.DisconnectCause
@@ -53,13 +54,26 @@ class VantConnection(private val context: Context) : Connection() {
         Log.d(TAG, "onAnswer called (from system UI / Bluetooth / etc.)")
         setActive()
 
+        // Tell Telecom this is a VoIP call so the system doesn't fight our audio routing
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            setAudioModeIsVoip(true)
+        }
+
         // Stop ringing
         VantCallManager.stopRinging(context)
 
-        // Set audio mode for VoIP calls (prevents speaker delay)
+        // Set MODE_IN_COMMUNICATION so WebRTC AudioTrack is created correctly.
+        // DO NOT request audio focus or set communication device — AudioSwitch
+        // (flutter_webrtc) is the sole owner of audio focus and device routing.
         val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-        audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
-        audioManager.isSpeakerphoneOn = false
+        if (audioManager.mode != AudioManager.MODE_IN_COMMUNICATION) {
+            audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+        }
+        Log.d(TAG, "Audio mode set to MODE_IN_COMMUNICATION (AudioSwitch handles routing)")
+
+        // Check if app is in background
+        val isAppInBackground = isAppInBackground(context)
+        Log.d(TAG, "App in background when answering: $isAppInBackground")
 
         // Launch MainActivity with ANSWER_CALL action
         val callId = connectionExtras.getString("call_id") ?: ""
@@ -76,8 +90,27 @@ class VantConnection(private val context: Context) : Connection() {
             putExtra("caller_name", callerName)
             putExtra("caller_id", callerId)
             putExtra("is_video", isVideo)
+            putExtra("answered_from_background", isAppInBackground) // Dynamic check
+            putExtra("from_native", true) // Mark as answered from native UI
         }
         context.startActivity(intent)
+    }
+
+    private fun isAppInBackground(context: Context): Boolean {
+        val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager
+        val appProcesses = activityManager.runningAppProcesses ?: return false
+        val packageName = context.packageName
+        val currentProcessId = android.os.Process.myPid()
+        
+        for (processInfo in appProcesses) {
+            if (processInfo.processName == packageName && processInfo.pid == currentProcessId) {
+                val importance = processInfo.importance
+                return importance == android.app.ActivityManager.RunningAppProcessInfo.IMPORTANCE_BACKGROUND ||
+                       importance == android.app.ActivityManager.RunningAppProcessInfo.IMPORTANCE_SERVICE ||
+                       importance == android.app.ActivityManager.RunningAppProcessInfo.IMPORTANCE_CANT_SAVE_STATE
+            }
+        }
+        return false
     }
 
     override fun onReject() {

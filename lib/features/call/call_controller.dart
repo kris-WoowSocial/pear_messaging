@@ -92,6 +92,9 @@ class CallController extends GetxController {
   // Tracks if the call was accepted from the lock screen (so we relock on call end)
   bool _acceptedFromLockScreen = false;
 
+  // Tracks if the call was answered from background (for speaker state restoration)
+  bool _answeredFromBackground = false;
+
   // Tracks if the app was launched from killed state for this call (so we close the app on call end)
   bool _launchedForCall = false;
 
@@ -215,6 +218,9 @@ class CallController extends GetxController {
 
   Future<void> _handleNativeAnswer(Map<String, dynamic> data) async {
     final callId = data['call_id'] as String?;
+    final answeredFromBackground = data['answered_from_background'] == 'true';
+    final fromNative = data['from_native'] == 'true';
+    
     if (callId == null || callId.isEmpty) return;
 
     // Prevent duplicate handling from both the pending-intent path and the
@@ -228,6 +234,11 @@ class CallController extends GetxController {
     _lastHandledNativeCallId = callId;
     await setPendingAutoAccept(callId);
 
+    // CRITICAL: Initialize audio mode before connecting to call
+    // This prevents the 60-second speaker delay when accepting from native screen
+    debugPrint('📞 Answer from native screen: $fromNative, initializing audio mode');
+    await _initializeAudioMode();
+
     _setCallScreenVisible(true);
     await _stopNativeIncomingCall();
     _dismissKeyguard();
@@ -236,6 +247,12 @@ class CallController extends GetxController {
     if (locked) {
       _acceptedFromLockScreen = true;
       _showWhenLocked();
+    }
+
+    // Store flag that this call was answered from background
+    if (answeredFromBackground) {
+      debugPrint('📞 Call answered from background - will restore speaker state after connection');
+      _answeredFromBackground = true;
     }
 
     // Cold-start accept happens before the socket is connected. Wait for it so
@@ -504,8 +521,9 @@ class CallController extends GetxController {
           final roomId = call.arguments['roomId'] as String?;
           final avatarUrl = call.arguments['avatarUrl'] as String?;
           final isVideo = call.arguments['isVideo'] as bool? ?? false;
+          final answeredFromBackground = call.arguments['answeredFromBackground'] as bool? ?? false;
 
-          debugPrint('📞 Native call action: $action for call $callId');
+          debugPrint('📞 Native call action: $action for call $callId, answeredFromBackground: $answeredFromBackground');
 
           if (action == 'show_incoming_call') {
             // App was launched/killed and service woke it up to show full-screen call UI
@@ -550,6 +568,8 @@ class CallController extends GetxController {
               'room_id': roomId ?? '',
               'avatar_url': avatarUrl ?? '',
               'is_video': isVideo ? 'true' : 'false',
+              'answered_from_background': answeredFromBackground ? 'true' : 'false',
+              'from_native': 'true',
             });
           } else if (action == 'decline') {
             await _handleNativeDecline({
@@ -1069,6 +1089,10 @@ class CallController extends GetxController {
       isCaller.value = false;
       _resolveDisplayName(callerId);
 
+      // CRITICAL: Initialize audio mode before accepting call
+      // This ensures MODE_IN_COMMUNICATION is set before WebRTC takes over
+      await _initializeAudioMode();
+
       // Accept WebRTC call - this will trigger onLocalDescription callback with answer
       final success = await _webrtcService.acceptCall(
         callId: callId,
@@ -1171,8 +1195,30 @@ class CallController extends GetxController {
 
   /// Toggle speaker
   Future<void> toggleSpeaker() async {
+    // AudioSwitchManager (flutter_webrtc) handles MODE_IN_COMMUNICATION
+    // internally, so we don't need to call ensureAudioMode here.
+    // Calling our own native audio mode / focus requests would conflict
+    // with AudioSwitch and cause it to revert the speaker selection.
     await _webrtcService.toggleSpeaker();
     isSpeakerOn.value = _webrtcService.isSpeakerOn;
+
+    // Release/re-acquire proximity wake lock based on speaker state.
+    // On Samsung/Xiaomi/Oppo, holding the proximity wake lock while the
+    // sensor reads "near" forces audio to earpiece regardless of speaker setting.
+    if (Platform.isAndroid) {
+      ProximityService().setSpeakerActive(isSpeakerOn.value);
+    }
+  }
+
+  /// Initialize audio mode to prevent 60-second speaker delay
+  Future<void> _initializeAudioMode() async {
+    try {
+      await _callChannel.invokeMethod('ensureAudioMode');
+      // Small delay to let Android audio subsystem settle
+      await Future.delayed(const Duration(milliseconds: 200));
+    } catch (e) {
+      debugPrint('⚠️ Failed to initialize audio mode: $e');
+    }
   }
 
   void _handleCalleeConnecting(Map<String, dynamic> data) {
@@ -1426,7 +1472,7 @@ class CallController extends GetxController {
   }
 
   /// Handle call state change from WebRTC
-  void _handleCallStateChange(String state) {
+  void _handleCallStateChange(String state)async {
     debugPrint('📞 Call state changed: $state');
 
     switch (state) {
@@ -1443,6 +1489,16 @@ class CallController extends GetxController {
         _ringtoneService.stopRingtone();
         callState.value = CallState.connected;
         _wasConnected = true;
+        
+        // Restore speaker state if call was answered from background
+        if (_answeredFromBackground) {
+          debugPrint('📞 Call connected after background answer - restoring speaker state');
+          // Ensure speaker state is properly configured after connection
+          final currentSpeakerState = _webrtcService.isSpeakerOn;
+          await _webrtcService.setSpeaker(currentSpeakerState);
+          _answeredFromBackground = false; // Reset flag
+        }
+        
         // Start duration update timer to sync with WebRTC service
         _startDurationUpdateTimer();
         // Start proximity sensor for screen off during call
@@ -1536,6 +1592,15 @@ class CallController extends GetxController {
 
     // Cancel incoming call notification if it exists
     NotificationService().cancelNotification(callId.hashCode);
+
+    // Stop the native ringing service before WebRTC starts.
+    // This is critical: if the ringtone is still playing when getUserMedia
+    // is called, WebRTC creates its AudioTrack under MODE_RINGTONE and
+    // speaker routing becomes non-functional.
+    _stopNativeIncomingCall();
+
+    // CRITICAL: Initialize audio mode before accepting call
+    unawaited(_initializeAudioMode());
 
     // Accept the call with the resent SDP offer
     _webrtcService
@@ -1971,6 +2036,12 @@ class CallController extends GetxController {
       _wasConnected = false;
       _durationSeconds = 0;
       unawaited(_resolveDisplayName(callerId));
+
+      // Stop the native ringing service before WebRTC starts
+      await _stopNativeIncomingCall();
+
+      // CRITICAL: Initialize audio mode before accepting call
+      await _initializeAudioMode();
 
       // Accept WebRTC call directly (no ringing state)
       final success = await _webrtcService.acceptCall(

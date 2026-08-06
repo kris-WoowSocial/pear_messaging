@@ -9,6 +9,7 @@ import '../../core/services/iap_service.dart';
 import '../../core/services/membership_service.dart';
 import '../../core/constants/pricing_config.dart';
 import 'membership_controller.dart';
+import 'stripe_subscription_screen.dart';
 
 class MembershipScreen extends GetView<MembershipController> {
   const MembershipScreen({super.key});
@@ -166,6 +167,23 @@ class MembershipScreen extends GetView<MembershipController> {
                                       decoration: TextDecoration.underline,
                                     ),
                                   ),
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        // New: alternative checkout with Card, Apple Pay,
+                        // Google Pay (unified Stripe sheet) or Crypto, with a
+                        // 7-day free trial. Additive - does not replace the
+                        // plans above.
+                        TextButton(
+                          onPressed: () =>
+                              Get.to(() => const StripeSubscriptionScreen()),
+                          child: Text(
+                            'Prefer card, Apple Pay, Google Pay, or crypto?',
+                            style: TextStyle(
+                              fontSize: 13,
+                              color: Colors.white.withOpacity(0.6),
+                              decoration: TextDecoration.underline,
+                            ),
                           ),
                         ),
                         const SizedBox(height: 16),

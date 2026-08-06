@@ -2,7 +2,7 @@ name: pear_messaging
 description: "Secure local chat application"
 publish_to: "none"
 
-version: 1.5.3+153
+version: 1.5.4+154
 
 environment:
   sdk: ^3.5.4
@@ -21,6 +21,7 @@ dependencies:
   hive: ^2.2.3
   hive_flutter: ^1.1.0
   shared_preferences: ^2.2.3
+
 
   # Authentication
   local_auth: ^2.2.0
@@ -58,7 +59,7 @@ dependencies:
   # UI Components
   smooth_page_indicator: ^1.1.0
   qr_flutter: ^4.1.0
-  mobile_scanner: ^7.0.0
+  mobile_scanner: ^6.0.11
 
   # Deep Linking & Sharing
   flutter_branch_sdk: ^7.0.1
@@ -72,6 +73,10 @@ dependencies:
 
   # Payments
   in_app_purchase: ^3.2.0
+  # New Stripe subscription flow (7-day trial + monthly auto-renew via a
+  # unified Payment Sheet: Card + Apple Pay + Google Pay). Additive only -
+  # does not replace in_app_purchase above.
+  flutter_stripe: ^11.5.0
 
   # Image Handling & Compression
   image_picker: ^1.0.7
@@ -121,8 +126,8 @@ flutter:
   # the material Icons class.
   uses-material-design: true
   assets:
-    - assets/icons/
     - assets/audio/
+    - assets/icons/
 
   # To add assets to your application, add an assets section, like this:
   # assets:
