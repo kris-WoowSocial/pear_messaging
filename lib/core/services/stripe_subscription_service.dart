@@ -8,9 +8,9 @@ import '../services/local_storage_service.dart';
 
 /// New, additive Stripe subscription flow: a single Payment Sheet that
 /// collects Card, Apple Pay, and Google Pay for the app's real 6-month or
-/// 1-year plan (same plans/prices as PricingConfig), with a 7-day free trial
-/// before the first charge. Does not touch/replace the existing IAPService
-/// flow.
+/// 1-year plan (same plans/prices as PricingConfig) and charges immediately
+/// on confirmation (no free trial, unless one is configured server-side via
+/// STRIPE_TRIAL_DAYS). Does not touch/replace the existing IAPService flow.
 class StripeSubscriptionService extends GetxService {
   static StripeSubscriptionService get to => Get.find();
 
@@ -74,12 +74,19 @@ class StripeSubscriptionService extends GetxService {
       final setup =
           await ApiService.to.createStripeSubscription(deviceId, planId);
 
+      // The backend charges immediately by default (clientSecretType ==
+      // 'payment_intent'), only falling back to a SetupIntent (no charge,
+      // just saving the card) if a free trial is configured server-side.
+      final clientSecret = setup['clientSecret'] as String?;
+      final isPaymentIntent = setup['clientSecretType'] == 'payment_intent';
+
       await Stripe.instance.initPaymentSheet(
         paymentSheetParameters: SetupPaymentSheetParameters(
           merchantDisplayName: 'Vant Chat',
           customerId: setup['customerId'] as String?,
           customerEphemeralKeySecret: setup['ephemeralKey'] as String?,
-          setupIntentClientSecret: setup['clientSecret'] as String?,
+          paymentIntentClientSecret: isPaymentIntent ? clientSecret : null,
+          setupIntentClientSecret: isPaymentIntent ? null : clientSecret,
           allowsDelayedPaymentMethods: true,
           applePay: Platform.isIOS
               ? const PaymentSheetApplePay(merchantCountryCode: 'US')
@@ -100,7 +107,7 @@ class StripeSubscriptionService extends GetxService {
       final confirm = await ApiService.to
           .confirmStripeSubscription(deviceId, setup['subscriptionId'] as String);
 
-      final status = confirm['status'] as String? ?? 'trialing';
+      final status = confirm['status'] as String? ?? 'active';
       return StripeSubscriptionResult.success(
         status: status,
         isTrial: status == 'trialing',

@@ -175,6 +175,8 @@ class QuotedMessageBubble extends StatelessWidget {
         return replyTo.content;
       case MessageType.text:
         return replyTo.content;
+      case MessageType.file:
+        return '📄 File';
     }
   }
 

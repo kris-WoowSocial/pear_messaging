@@ -42,6 +42,17 @@ class MessageEntity {
   // @HiveField(11)
   final ReplyToEntity? replyTo;
 
+  // Group chat fields
+  final String? senderName;
+  final int? totalMembers;
+  final int? deliveredCount;
+  final int? readCount;
+
+  // File message fields
+  final String? fileName;
+  final int? fileSize;
+  final bool? isCompressed;
+
   MessageEntity({
     required this.id,
     required this.chatId,
@@ -55,6 +66,13 @@ class MessageEntity {
     this.mediaToken,
     this.mediaExpiryTimestamp,
     this.replyTo,
+    this.senderName,
+    this.totalMembers,
+    this.deliveredCount,
+    this.readCount,
+    this.fileName,
+    this.fileSize,
+    this.isCompressed,
   });
 
   Map<String, dynamic> toJson() {
@@ -71,6 +89,13 @@ class MessageEntity {
       'mediaToken': mediaToken,
       'mediaExpiryTimestamp': mediaExpiryTimestamp?.toIso8601String(),
       'replyTo': replyTo?.toJson(),
+      'senderName': senderName,
+      'totalMembers': totalMembers,
+      'deliveredCount': deliveredCount,
+      'readCount': readCount,
+      'fileName': fileName,
+      'fileSize': fileSize,
+      'isCompressed': isCompressed,
     };
   }
 
@@ -96,8 +121,16 @@ class MessageEntity {
           ? DateTime.parse(json['mediaExpiryTimestamp'] as String)
           : null,
       replyTo: json['replyTo'] != null
-          ? ReplyToEntity.fromJson(json['replyTo'] as Map<String, dynamic>)
+          ? ReplyToEntity.fromJson(
+              Map<String, dynamic>.from(json['replyTo'] as Map))
           : null,
+      senderName: json['senderName'] as String?,
+      totalMembers: json['totalMembers'] as int?,
+      deliveredCount: json['deliveredCount'] as int?,
+      readCount: json['readCount'] as int?,
+      fileName: json['fileName'] as String?,
+      fileSize: json['fileSize'] as int?,
+      isCompressed: json['isCompressed'] as bool?,
     );
   }
 
@@ -114,6 +147,13 @@ class MessageEntity {
     String? mediaToken,
     DateTime? mediaExpiryTimestamp,
     ReplyToEntity? replyTo,
+    String? senderName,
+    int? totalMembers,
+    int? deliveredCount,
+    int? readCount,
+    String? fileName,
+    int? fileSize,
+    bool? isCompressed,
   }) {
     return MessageEntity(
       id: id ?? this.id,
@@ -128,6 +168,13 @@ class MessageEntity {
       mediaToken: mediaToken ?? this.mediaToken,
       mediaExpiryTimestamp: mediaExpiryTimestamp ?? this.mediaExpiryTimestamp,
       replyTo: replyTo ?? this.replyTo,
+      senderName: senderName ?? this.senderName,
+      totalMembers: totalMembers ?? this.totalMembers,
+      deliveredCount: deliveredCount ?? this.deliveredCount,
+      readCount: readCount ?? this.readCount,
+      fileName: fileName ?? this.fileName,
+      fileSize: fileSize ?? this.fileSize,
+      isCompressed: isCompressed ?? this.isCompressed,
     );
   }
 }
@@ -142,6 +189,9 @@ enum MessageType {
 
   // @HiveField(2)
   system,
+
+  // @HiveField(3)
+  file,
 }
 
 // @HiveType(typeId: 2)

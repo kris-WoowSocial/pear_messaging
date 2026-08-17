@@ -41,6 +41,11 @@
     <!-- Gallery permissions for older Android versions -->
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
+    <!-- We only open photos/documents/PDFs, never video or audio files.
+         The open_filex plugin declares these unconditionally in its own
+         manifest; remove them since the app doesn't need video/audio access. -->
+    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" tools:node="remove" />
+    <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" tools:node="remove" />
     <!-- Foreground service to keep call alive when app is backgrounded -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />

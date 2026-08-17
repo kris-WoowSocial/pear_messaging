@@ -54,6 +54,17 @@ class SocketService extends GetxService {
   Function(Map<String, dynamic>)? onCallResync;
   Function(Map<String, dynamic>)? onCalleeConnecting;
 
+  // Callbacks for group chat events
+  Function(Map<String, dynamic>)? onGroupMessageReceived;
+  Function(Map<String, dynamic>)? onGroupMessageStatus;
+  Function(Map<String, dynamic>)? onGroupTyping;
+  Function(Map<String, dynamic>)? onGroupCreated;
+  Function(Map<String, dynamic>)? onGroupMemberAdded;
+  Function(Map<String, dynamic>)? onGroupMemberRemoved;
+  Function(Map<String, dynamic>)? onGroupMemberLeft;
+  Function(Map<String, dynamic>)? onGroupInfoUpdated;
+  Function(Map<String, dynamic>)? onGroupDissolved;
+
   // Getters
   String? get deviceId => _deviceId;
 
@@ -433,6 +444,68 @@ class SocketService extends GetxService {
         onCallResync!(Map<String, dynamic>.from(data));
       }
     });
+
+    // Group chat: incoming message
+    _socket?.on('group_message', (data) {
+      debugPrint('👥 Group message: $data');
+      if (onGroupMessageReceived != null && data != null) {
+        onGroupMessageReceived!(Map<String, dynamic>.from(data));
+      }
+    });
+
+    // Group chat: message status update
+    _socket?.on('group_message_status', (data) {
+      debugPrint('👥 Group message status: $data');
+      if (onGroupMessageStatus != null && data != null) {
+        onGroupMessageStatus!(Map<String, dynamic>.from(data));
+      }
+    });
+
+    // Group chat: typing indicator
+    _socket?.on('group_typing_indicator', (data) {
+      debugPrint('👥 Group typing: $data');
+      if (onGroupTyping != null && data != null) {
+        onGroupTyping!(Map<String, dynamic>.from(data));
+      }
+    });
+
+    // Group management events
+    _socket?.on('group_created', (data) {
+      debugPrint('👥 Group created: $data');
+      if (onGroupCreated != null && data != null) {
+        onGroupCreated!(Map<String, dynamic>.from(data));
+      }
+    });
+    _socket?.on('group_member_added', (data) {
+      debugPrint('👥 Group member added: $data');
+      if (onGroupMemberAdded != null && data != null) {
+        onGroupMemberAdded!(Map<String, dynamic>.from(data));
+      }
+    });
+    _socket?.on('group_member_removed', (data) {
+      debugPrint('👥 Group member removed: $data');
+      if (onGroupMemberRemoved != null && data != null) {
+        onGroupMemberRemoved!(Map<String, dynamic>.from(data));
+      }
+    });
+    _socket?.on('group_member_left', (data) {
+      debugPrint('👥 Group member left: $data');
+      if (onGroupMemberLeft != null && data != null) {
+        onGroupMemberLeft!(Map<String, dynamic>.from(data));
+      }
+    });
+    _socket?.on('group_info_updated', (data) {
+      debugPrint('👥 Group info updated: $data');
+      if (onGroupInfoUpdated != null && data != null) {
+        onGroupInfoUpdated!(Map<String, dynamic>.from(data));
+      }
+    });
+    _socket?.on('group_dissolved', (data) {
+      debugPrint('👥 Group dissolved: $data');
+      if (onGroupDissolved != null && data != null) {
+        onGroupDissolved!(Map<String, dynamic>.from(data));
+      }
+    });
   }
 
   /// Register device with the server
@@ -457,7 +530,8 @@ class SocketService extends GetxService {
       'platform': platform,
       'isForeground': _isInForeground,
     });
-    debugPrint('📝 Device registration requested: $_deviceId (platform: $platform)');
+    debugPrint(
+        '📝 Device registration requested: $_deviceId (platform: $platform)');
 
     // Also register FCM token if available
     _registerFCMTokenIfAvailable();
@@ -530,6 +604,9 @@ class SocketService extends GetxService {
     required String recipientDeviceId,
     required String content,
     Map<String, dynamic>? replyTo,
+    String? fileName,
+    int? fileSize,
+    bool? isCompressed,
   }) async {
     if (!isConnected.value) {
       debugPrint('❌ Cannot send message: not connected');
@@ -572,6 +649,8 @@ class SocketService extends GetxService {
     String notificationBody = 'You have a new message';
     if (content.startsWith('MEDIA:') || content.startsWith('IMAGE:')) {
       notificationBody = '📷 Photo';
+    } else if (content.startsWith('FILE:')) {
+      notificationBody = '📎 Document';
     }
 
     final messageData = {
@@ -585,6 +664,10 @@ class SocketService extends GetxService {
       // Don't include sender name - recipient will determine from their local storage
       // Add replyTo if present
       if (replyTo != null) 'replyTo': replyTo,
+      // File metadata so receiver can render file bubble
+      if (fileName != null) 'fileName': fileName,
+      if (fileSize != null) 'fileSize': fileSize,
+      if (isCompressed != null) 'compressed': isCompressed,
     };
 
     _socket?.emit('send_message', messageData);
@@ -638,6 +721,143 @@ class SocketService extends GetxService {
       recipientDeviceId: recipientDeviceId,
       content: 'MEDIA:$mediaToken',
     );
+  }
+
+  /// Send a file-token message to another device.
+  Future<bool> sendFileMessage({
+    required String messageId,
+    required String recipientDeviceId,
+    required String mediaToken,
+    required String fileName,
+    required int fileSize,
+    bool isCompressed = false,
+  }) async {
+    debugPrint(
+        '📎 SocketService.sendFileMessage token=$mediaToken file=$fileName');
+
+    if (!isConnected.value) {
+      debugPrint('❌ Cannot send file message: not connected');
+      return false;
+    }
+
+    return sendMessage(
+      messageId: messageId,
+      recipientDeviceId: recipientDeviceId,
+      content: 'FILE:$mediaToken',
+      fileName: fileName,
+      fileSize: fileSize,
+      isCompressed: isCompressed,
+    );
+  }
+
+  /// Send a message to a group.
+  /// [encryptedPayload] is the encrypted message content.
+  Future<bool> sendGroupMessage({
+    required String groupId,
+    required String messageId,
+    required String encryptedPayload,
+    required String messageType,
+    Map<String, dynamic>? replyTo,
+    String? fileName,
+    int? fileSize,
+    bool? isCompressed,
+  }) async {
+    if (!isConnected.value) {
+      debugPrint('❌ Cannot send group message: not connected');
+      return false;
+    }
+
+    final timestamp = DateTime.now().millisecondsSinceEpoch;
+    final payload = {
+      'groupId': groupId,
+      'messageId': messageId,
+      'encryptedPayload': encryptedPayload,
+      'messageType': messageType,
+      'timestamp': timestamp,
+      if (replyTo != null) 'replyTo': replyTo,
+      if (fileName != null) 'fileName': fileName,
+      if (fileSize != null) 'fileSize': fileSize,
+      if (isCompressed != null) 'compressed': isCompressed,
+    };
+
+    _socket?.emit('group_send_message', payload);
+    debugPrint('👥 Group message sent: $messageId to $groupId');
+    return true;
+  }
+
+  /// Send media message to a group.
+  Future<bool> sendGroupMediaMessage({
+    required String groupId,
+    required String messageId,
+    required String mediaToken,
+    Map<String, dynamic>? replyTo,
+  }) async {
+    return sendGroupMessage(
+      groupId: groupId,
+      messageId: messageId,
+      encryptedPayload: 'MEDIA:$mediaToken',
+      messageType: 'image',
+      replyTo: replyTo,
+    );
+  }
+
+  /// Send file message to a group.
+  Future<bool> sendGroupFileMessage({
+    required String groupId,
+    required String messageId,
+    required String mediaToken,
+    required String fileName,
+    required int fileSize,
+    Map<String, dynamic>? replyTo,
+    bool isCompressed = false,
+  }) async {
+    return sendGroupMessage(
+      groupId: groupId,
+      messageId: messageId,
+      encryptedPayload: 'FILE:$mediaToken',
+      messageType: 'file',
+      replyTo: replyTo,
+      fileName: fileName,
+      fileSize: fileSize,
+      isCompressed: isCompressed,
+    );
+  }
+
+  /// Send group message delivery acknowledgment.
+  void sendGroupMessageAck(
+      {required String messageId, required String groupId}) {
+    if (!isConnected.value) {
+      debugPrint('❌ Cannot send group message ack - socket not connected');
+      return;
+    }
+
+    _socket?.emit('group_message_ack', {
+      'messageId': messageId,
+      'groupId': groupId,
+    });
+    debugPrint('✓ Group message ACK sent for: $messageId in $groupId');
+  }
+
+  /// Send group message read acknowledgment.
+  void sendGroupReadAck({required String messageId, required String groupId}) {
+    if (!isConnected.value) return;
+
+    _socket?.emit('group_read_ack', {
+      'messageId': messageId,
+      'groupId': groupId,
+    });
+    debugPrint('👁️ Group read ack sent for: $messageId in $groupId');
+  }
+
+  /// Send group typing indicator.
+  void sendGroupTyping({required String groupId, required bool isTyping}) {
+    if (!isConnected.value) return;
+
+    _socket?.emit('group_typing', {
+      'groupId': groupId,
+      'isTyping': isTyping,
+    });
+    debugPrint('👥 Group typing sent: $isTyping to $groupId');
   }
 
   /// Block a user

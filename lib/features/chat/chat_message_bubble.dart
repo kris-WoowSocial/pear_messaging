@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
@@ -6,6 +7,8 @@ import 'package:flutter/services.dart';
 import 'package:get/get.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:open_filex/open_filex.dart';
 import '../../core/constants/app_colors.dart';
 import '../../core/constants/app_sizes.dart';
 import '../../core/services/encryption_service.dart';
@@ -21,8 +24,13 @@ import 'widgets/quoted_message_bubble.dart';
 
 class ChatMessageBubble extends StatefulWidget {
   final ChatMessageModel message;
+  final bool isGroup;
 
-  const ChatMessageBubble({super.key, required this.message});
+  const ChatMessageBubble({
+    super.key,
+    required this.message,
+    this.isGroup = false,
+  });
 
   @override
   State<ChatMessageBubble> createState() => _ChatMessageBubbleState();
@@ -42,6 +50,10 @@ class _ChatMessageBubbleState extends State<ChatMessageBubble> {
   final RxBool _isLoadingImage = false.obs;
   final RxBool _isExpired = false.obs;
   final RxDouble _downloadProgress = 0.0.obs;
+
+  // File preview state
+  final RxBool _isDownloadingFile = false.obs;
+  final RxDouble _fileDownloadProgress = 0.0.obs;
 
   // Static in-memory cache shared across all bubble instances
   static final Map<String, Uint8List> _memoryCache = {};
@@ -257,6 +269,24 @@ class _ChatMessageBubbleState extends State<ChatMessageBubble> {
                     ? CrossAxisAlignment.end
                     : CrossAxisAlignment.start,
                 children: [
+                  if (widget.isGroup &&
+                      !widget.message.isMe &&
+                      widget.message.senderName != null &&
+                      widget.message.senderName!.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(
+                        left: 4,
+                        bottom: 2,
+                      ),
+                      child: Text(
+                        widget.message.senderName!,
+                        style: TextStyle(
+                          fontSize: AppSizes.fontXS,
+                          fontWeight: FontWeight.w600,
+                          color: Colors.black.withOpacity(0.7),
+                        ),
+                      ),
+                    ),
                   Row(
                     mainAxisSize: MainAxisSize.min,
                     crossAxisAlignment: CrossAxisAlignment.end,
@@ -302,8 +332,10 @@ class _ChatMessageBubbleState extends State<ChatMessageBubble> {
   bool _shouldWrapToContent() {
     // Always wrap to content for non-text messages
     if (widget.message.isImage ||
+        widget.message.isFile ||
         widget.message.content.startsWith('MEDIA:') ||
-        widget.message.content.startsWith('IMAGE:')) {
+        widget.message.content.startsWith('IMAGE:') ||
+        widget.message.content.startsWith('FILE:')) {
       return true;
     }
 
@@ -471,8 +503,19 @@ class _ChatMessageBubbleState extends State<ChatMessageBubble> {
   }
 
   Widget _buildMessageContent() {
-    // Check if this is an image message (type flag OR content prefix as fallback)
+    // Check if this is a file message
     final content = widget.message.content;
+    if (widget.message.isFile || content.startsWith('FILE:')) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (widget.message.replyTo != null) _buildQuotedBubble(),
+          _buildFileContent(),
+        ],
+      );
+    }
+
+    // Check if this is an image message (type flag OR content prefix as fallback)
     if (widget.message.isImage ||
         content.startsWith('MEDIA:') ||
         content.startsWith('IMAGE:')) {
@@ -629,6 +672,257 @@ class _ChatMessageBubbleState extends State<ChatMessageBubble> {
       if (mounted) {
         _isPreviewLoading.value = false;
       }
+    }
+  }
+
+  /// Build WhatsApp-style file/document bubble
+  Widget _buildFileContent() {
+    final fileName = widget.message.fileName ?? 'Document';
+    final fileSize = widget.message.fileSize;
+    final isUploading = widget.message.status == MessageStatus.sending;
+
+    // Get file extension for icon color
+    final ext =
+        fileName.contains('.') ? fileName.split('.').last.toLowerCase() : '';
+    final Color fileIconColor;
+    switch (ext) {
+      case 'pdf':
+        fileIconColor = Colors.red;
+        break;
+      case 'doc':
+      case 'docx':
+        fileIconColor = Colors.blue;
+        break;
+      case 'xls':
+      case 'xlsx':
+        fileIconColor = Colors.green;
+        break;
+      case 'ppt':
+      case 'pptx':
+        fileIconColor = Colors.orange;
+        break;
+      case 'zip':
+      case 'rar':
+      case '7z':
+        fileIconColor = Colors.amber.shade700;
+        break;
+      default:
+        fileIconColor = Colors.blueGrey;
+    }
+
+    // Format file size
+    String sizeText = '';
+    if (fileSize != null) {
+      if (fileSize < 1024) {
+        sizeText = '$fileSize B';
+      } else if (fileSize < 1024 * 1024) {
+        sizeText = '${(fileSize / 1024).toStringAsFixed(1)} KB';
+      } else {
+        sizeText = '${(fileSize / (1024 * 1024)).toStringAsFixed(1)} MB';
+      }
+    }
+
+    // Upload progress
+    RxDouble? uploadProgress;
+    if (isUploading) {
+      try {
+        final chatController = Get.find<ChatController>();
+        uploadProgress = chatController.uploadProgressMap[widget.message.id];
+      } catch (_) {}
+    }
+
+    return GestureDetector(
+      onTap: isUploading ? null : _openFile,
+      child: Container(
+        width: 220,
+        padding: const EdgeInsets.all(10),
+        decoration: BoxDecoration(
+          color: widget.message.isMe
+              ? Colors.black.withValues(alpha: 0.05)
+              : Colors.black.withValues(alpha: 0.04),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Row(
+          children: [
+            // File icon or progress
+            if (isUploading && uploadProgress != null)
+              Obx(() {
+                final pct = uploadProgress!.value;
+                return SizedBox(
+                  width: 40,
+                  height: 40,
+                  child: Stack(
+                    alignment: Alignment.center,
+                    children: [
+                      CircularProgressIndicator(
+                        value: pct > 0 ? pct : null,
+                        strokeWidth: 2.5,
+                        color: fileIconColor,
+                        backgroundColor: fileIconColor.withValues(alpha: 0.2),
+                      ),
+                      Icon(Icons.insert_drive_file,
+                          color: fileIconColor, size: 18),
+                    ],
+                  ),
+                );
+              })
+            else
+              Obx(() {
+                if (_isDownloadingFile.value) {
+                  final pct = _fileDownloadProgress.value;
+                  return SizedBox(
+                    width: 40,
+                    height: 40,
+                    child: Stack(
+                      alignment: Alignment.center,
+                      children: [
+                        CircularProgressIndicator(
+                          value: pct > 0 ? pct : null,
+                          strokeWidth: 2.5,
+                          color: fileIconColor,
+                          backgroundColor: fileIconColor.withValues(alpha: 0.2),
+                        ),
+                        Icon(Icons.download, color: fileIconColor, size: 16),
+                      ],
+                    ),
+                  );
+                }
+                return Container(
+                  width: 40,
+                  height: 40,
+                  decoration: BoxDecoration(
+                    color: fileIconColor.withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Icon(Icons.insert_drive_file,
+                      color: fileIconColor, size: 22),
+                );
+              }),
+            const SizedBox(width: 10),
+            // File name and size
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    fileName,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      color: Colors.black87,
+                    ),
+                  ),
+                  if (sizeText.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 2),
+                      child: Text(
+                        sizeText,
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: Colors.grey[600],
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Open the file for preview. Downloads and caches it first if needed
+  /// (for the receiver), or opens the locally cached copy instantly
+  /// (for the sender, or if already downloaded once).
+  Future<void> _openFile() async {
+    if (_isDownloadingFile.value) return;
+
+    try {
+      final cacheService = Get.find<ImageCacheService>();
+      Uint8List? fileBytes =
+          await cacheService.getCachedImageById(widget.message.id);
+
+      if (fileBytes == null) {
+        final content = widget.message.content;
+        if (!content.startsWith('FILE:')) {
+          Get.snackbar(
+            'Unavailable',
+            'This file is no longer available.',
+            snackPosition: SnackPosition.BOTTOM,
+          );
+          return;
+        }
+
+        final token = content.substring(5);
+        _isDownloadingFile.value = true;
+        _fileDownloadProgress.value = 0.0;
+
+        final encryptedBlob = await MediaUploadService.downloadImage(
+          token,
+          onProgress: (progress) {
+            _fileDownloadProgress.value = progress;
+          },
+        );
+
+        if (encryptedBlob == null) {
+          _isDownloadingFile.value = false;
+          Get.snackbar(
+            'Unavailable',
+            'This file has expired or was already downloaded.',
+            snackPosition: SnackPosition.BOTTOM,
+          );
+          return;
+        }
+
+        final base64Data = EncryptionService.decryptMessage(encryptedBlob);
+        var decodedBytes = await compute(_decodeBase64File, base64Data);
+
+        if (widget.message.isCompressed == true) {
+          decodedBytes = await compute(_gunzipBytes, decodedBytes);
+        }
+
+        fileBytes = decodedBytes;
+        await cacheService.cacheImageById(widget.message.id, fileBytes);
+        _isDownloadingFile.value = false;
+      }
+
+      if (fileBytes.isEmpty) {
+        Get.snackbar(
+          'Error',
+          'Could not read the file contents.',
+          snackPosition: SnackPosition.BOTTOM,
+        );
+        return;
+      }
+
+      // Write to a temp file with the original name/extension so the OS
+      // picks the right viewer app, then open it.
+      final tempDir = await getTemporaryDirectory();
+      final safeFileName = widget.message.fileName ?? 'document';
+      final filePath = '${tempDir.path}/${widget.message.id}_$safeFileName';
+      final tempFile = File(filePath);
+      await tempFile.writeAsBytes(fileBytes);
+
+      final result = await OpenFilex.open(filePath);
+      if (result.type != ResultType.done) {
+        debugPrint('⚠️ OpenFilex could not open file: ${result.message}');
+        Get.snackbar(
+          'Cannot Open File',
+          'No app found to open this file type.',
+          snackPosition: SnackPosition.BOTTOM,
+        );
+      }
+    } catch (e) {
+      _isDownloadingFile.value = false;
+      debugPrint('❌ Error opening file: $e');
+      Get.snackbar(
+        'Error',
+        'Failed to open file. Please try again.',
+        snackPosition: SnackPosition.BOTTOM,
+      );
     }
   }
 
@@ -1534,5 +1828,24 @@ class _ChatMessageBubbleState extends State<ChatMessageBubble> {
         chatController.scrollToMessage(widget.message.replyTo!.messageId);
       },
     );
+  }
+}
+
+/// Decodes a base64 string to raw bytes. Runs in a background isolate via
+/// [compute] so decoding large files doesn't block the UI thread.
+Uint8List _decodeBase64File(String base64String) {
+  try {
+    return base64Decode(base64String);
+  } catch (_) {
+    return Uint8List(0);
+  }
+}
+
+/// Gunzip-decompresses [bytes]. Runs in a background isolate via [compute].
+Uint8List _gunzipBytes(Uint8List bytes) {
+  try {
+    return Uint8List.fromList(GZipCodec().decode(bytes));
+  } catch (_) {
+    return bytes;
   }
 }

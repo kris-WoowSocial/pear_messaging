@@ -6,16 +6,19 @@ import 'package:get/get.dart';
 import 'package:pear_messaging/features/chat_list/chat_list_model.dart';
 import 'package:uuid/uuid.dart';
 import '../../core/constants/app_colors.dart';
+import '../../core/services/api_service.dart';
 import '../../core/services/fcm_service.dart';
 import '../../core/services/local_storage_service.dart';
 import '../../core/services/socket_service.dart';
 import '../../core/services/block_service.dart';
+import '../../core/services/encryption_service.dart';
 import '../../core/services/image_cache_service.dart';
 import '../../core/services/url_preview_service.dart';
 import '../../core/services/badge_service.dart';
 import '../../core/utils/presence_utils.dart';
 import '../../storage/models/message_entity.dart';
 import '../../storage/models/chat_entity.dart';
+import '../../storage/models/group_member_entity.dart';
 import '../../storage/models/reply_to_entity.dart';
 import '../chat_list/chat_list_controller.dart';
 import 'chat_message_model.dart';
@@ -43,6 +46,9 @@ class ChatController extends GetxController with WidgetsBindingObserver {
   late String
       recipientDeviceId; // The recipient's device ID for socket messaging
   late String myDeviceId;
+  late bool isGroup;
+  final RxList<GroupMemberEntity> groupMembers = <GroupMemberEntity>[].obs;
+  final RxInt groupMemberCount = 0.obs;
 
   final TextEditingController messageController = TextEditingController();
   final ScrollController scrollController = ScrollController();
@@ -86,6 +92,17 @@ class ChatController extends GetxController with WidgetsBindingObserver {
     displayName.value = args['userName'] ?? 'Unknown';
     recipientDeviceId = args['recipientDeviceId'] ?? '';
     myDeviceId = args['myDeviceId'] ?? '';
+    isGroup = args['isGroup'] as bool? ?? false;
+
+    if (isGroup) {
+      final membersJson = args['members'] as List<dynamic>? ?? [];
+      groupMembers.value = membersJson
+          .map((m) => GroupMemberEntity.fromJson(m is Map<String, dynamic>
+              ? m
+              : Map<String, dynamic>.from(m as Map)))
+          .toList();
+      groupMemberCount.value = groupMembers.length;
+    }
 
     // Initialize scroll position
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -101,14 +118,16 @@ class ChatController extends GetxController with WidgetsBindingObserver {
       }
     });
 
-    // Initialize block state from global service
-    _updateLocalBlockState();
-
-    // Listen to global block state changes
-    ever(_blockService.blockedUsersRx, (Map<String, bool> blockedUsers) {
-      // Update local block state when global block state changes
+    if (!isGroup) {
+      // Initialize block state from global service
       _updateLocalBlockState();
-    });
+
+      // Listen to global block state changes
+      ever(_blockService.blockedUsersRx, (Map<String, bool> blockedUsers) {
+        // Update local block state when global block state changes
+        _updateLocalBlockState();
+      });
+    }
 
     // Setup socket listeners
     _setupSocketListeners();
@@ -120,10 +139,10 @@ class ChatController extends GetxController with WidgetsBindingObserver {
       connectionStatus.value = connected ? 'Online' : 'Offline';
 
       // Check recipient presence and block status when we connect
-      if (connected) {
+      if (connected && !isGroup) {
         _checkRecipientPresence();
         _checkBlockStatus();
-      } else {
+      } else if (!isGroup) {
         recipientOnline.value = false;
         _updatePresenceStatus();
       }
@@ -134,20 +153,22 @@ class ChatController extends GetxController with WidgetsBindingObserver {
     connectionStatus.value =
         _socketService.isConnected.value ? 'Online' : 'Offline';
 
-    // Load last seen timestamp from storage
-    _loadLastSeenFromStorage();
+    if (!isGroup) {
+      // Load last seen timestamp from storage
+      _loadLastSeenFromStorage();
 
-    // Check recipient presence if already connected
-    if (_socketService.isConnected.value) {
-      _checkRecipientPresence();
-      _checkBlockStatus();
+      // Check recipient presence if already connected
+      if (_socketService.isConnected.value) {
+        _checkRecipientPresence();
+        _checkBlockStatus();
+      }
     }
 
     // Mark this chat as active so foreground notifications are suppressed
-    FCMService.activeChatId = recipientDeviceId;
+    FCMService.activeChatId = isGroup ? chatId : recipientDeviceId;
 
     // Dismiss any existing notification for this sender
-    _dismissNotificationForSender(recipientDeviceId);
+    _dismissNotificationForSender(isGroup ? chatId : recipientDeviceId);
 
     // Load messages after first frame so navigation animation starts instantly
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -293,11 +314,27 @@ class ChatController extends GetxController with WidgetsBindingObserver {
           .map((msg) => ChatMessageModel.fromEntity(msg))
           .toList();
 
+      // Preserve any in-flight pending messages (e.g. images/files still
+      // uploading) that haven't been persisted to storage yet. Without this,
+      // a storage refresh (triggered by app resume, e.g. after the file
+      // picker backgrounds the app) would wipe out the pending bubble while
+      // the upload is still in progress.
+      final newMessageIds = newMessages.map((m) => m.id).toSet();
+      final stillPendingMessages = messages
+          .where((m) =>
+              !newMessageIds.contains(m.id) &&
+              (m.status == MessageStatus.sending ||
+                  uploadProgressMap.containsKey(m.id)))
+          .toList();
+      if (stillPendingMessages.isNotEmpty) {
+        newMessages.addAll(stillPendingMessages);
+      }
+
       final lastNewId = newMessages.isNotEmpty ? newMessages.last.id : null;
       final lastCurrentId = messages.isNotEmpty ? messages.last.id : null;
       if (newMessages.length != messages.length || lastNewId != lastCurrentId) {
         debugPrint(
-            '📬 Found new messages from storage (${messages.length} → ${newMessages.length})');
+            '📬 Found new messages from storage (${messages.length} → ${newMessages.length}, preserved ${stillPendingMessages.length} pending)');
         messages.value = newMessages;
         hasMoreMessages.value = startIndex > 0;
       }
@@ -307,21 +344,26 @@ class ChatController extends GetxController with WidgetsBindingObserver {
     }
   }
 
-  // Store the previous handler to chain calls
+  // Store the previous handlers to chain/restore calls when this controller closes
   Function(Map<String, dynamic>)? _previousMessageHandler;
+  Function(Map<String, dynamic>)? _previousGroupMessageHandler;
+  Function(Map<String, dynamic>)? _previousGroupTypingHandler;
 
   /// Check recipient's online presence
   void _checkRecipientPresence() {
+    if (isGroup) return;
     _socketService.checkPresence(recipientDeviceId);
   }
 
   /// Check block status with the recipient
   void _checkBlockStatus() {
+    if (isGroup) return;
     _socketService.checkBlockStatus(recipientDeviceId);
   }
 
   /// Block the current chat recipient
   void blockUser() {
+    if (isGroup) return;
     _blockService.blockUser(recipientDeviceId);
     // Update local state to match global state
     _updateLocalBlockState();
@@ -329,6 +371,7 @@ class ChatController extends GetxController with WidgetsBindingObserver {
 
   /// Unblock the current chat recipient
   void unblockUser() {
+    if (isGroup) return;
     _blockService.unblockUser(recipientDeviceId);
     // Update local state to match global state
     _updateLocalBlockState();
@@ -358,6 +401,7 @@ class ChatController extends GetxController with WidgetsBindingObserver {
 
   /// Load last seen timestamp from storage
   void _loadLastSeenFromStorage() {
+    if (isGroup) return;
     try {
       final timestamp = _storageService.getLastSeen(recipientDeviceId);
       if (timestamp != null) {
@@ -372,6 +416,7 @@ class ChatController extends GetxController with WidgetsBindingObserver {
 
   /// Save last seen timestamp to storage
   void _saveLastSeenToStorage() {
+    if (isGroup) return;
     try {
       if (recipientLastSeen.value != null) {
         _storageService.setLastSeen(
@@ -434,6 +479,10 @@ class ChatController extends GetxController with WidgetsBindingObserver {
             mediaToken: messages[index].mediaToken,
             mediaExpiryTimestamp: messages[index].mediaExpiryTimestamp,
             replyTo: messages[index].replyTo,
+            senderName: messages[index].senderName,
+            totalMembers: messages[index].totalMembers,
+            deliveredCount: messages[index].deliveredCount,
+            readCount: messages[index].readCount,
           );
         }
 
@@ -443,7 +492,14 @@ class ChatController extends GetxController with WidgetsBindingObserver {
         if (originalStatus == MessageStatus.delivered) {
           debugPrint(
               '📖 Sending read acknowledgment for delivered message: ${message.id} to recipient: $recipientDeviceId');
-          _socketService.sendReadAck(message.id, recipientDeviceId);
+          if (isGroup) {
+            _socketService.sendGroupReadAck(
+              messageId: message.id,
+              groupId: chatId,
+            );
+          } else {
+            _socketService.sendReadAck(message.id, recipientDeviceId);
+          }
         } else {
           debugPrint(
               '📖 Not sending read acknowledgment for message ${message.id} - original status: $originalStatus');
@@ -522,10 +578,17 @@ class ChatController extends GetxController with WidgetsBindingObserver {
     _socketService.socket?.off('device_online');
     _socketService.socket?.off('device_offline');
 
-    // Setup block event listeners
-    _setupBlockListeners();
+    // Setup block event listeners (only relevant for 1-on-1 chats)
+    if (!isGroup) {
+      _setupBlockListeners();
+    }
 
     // Connection request listener is now handled in onMessageReceived above
+
+    if (isGroup) {
+      _setupGroupSocketListeners();
+      return;
+    }
 
     // Handle presence status responses
     _socketService.socket?.on('presence_status', (data) {
@@ -630,7 +693,9 @@ class ChatController extends GetxController with WidgetsBindingObserver {
 
         // Determine message type
         MessageType messageType = MessageType.text;
-        if (decryptedContent.startsWith('MEDIA:') ||
+        if (decryptedContent.startsWith('FILE:')) {
+          messageType = MessageType.file;
+        } else if (decryptedContent.startsWith('MEDIA:') ||
             decryptedContent.startsWith('IMAGE:')) {
           messageType = MessageType.image;
         }
@@ -672,6 +737,9 @@ class ChatController extends GetxController with WidgetsBindingObserver {
           isMe: false,
           type: messageType,
           replyTo: replyTo,
+          fileName: data['fileName'] as String?,
+          fileSize: data['fileSize'] as int?,
+          isCompressed: data['compressed'] as bool?,
         );
 
         await _storageService.saveMessage(message);
@@ -760,6 +828,247 @@ class ChatController extends GetxController with WidgetsBindingObserver {
         debugPrint('👤 Recipient is offline, message will be stored');
       }
     };
+  }
+
+  /// Setup group-specific socket listeners.
+  void _setupGroupSocketListeners() {
+    // Save the previous handlers so we can restore them when this screen closes.
+    // Do NOT call socket.off(...) here; SocketService owns the IO listeners and
+    // they simply dispatch to the current callback. Removing them would prevent
+    // group_message_status and other group events from ever reaching the UI.
+    _previousGroupMessageHandler ??= _socketService.onGroupMessageReceived;
+    _previousGroupTypingHandler ??= _socketService.onGroupTyping;
+
+    _socketService.onGroupMessageReceived = (Map<String, dynamic> data) async {
+      debugPrint('📩 ChatController received group message: $data');
+
+      final groupId = data['groupId']?.toString();
+      final senderId = data['senderDeviceId']?.toString();
+      final messageId = data['messageId']?.toString() ?? _uuid.v4();
+
+      if (groupId == null || groupId != chatId) {
+        debugPrint('🔁 Group message not for current chat, ignoring');
+        return;
+      }
+
+      final existsInUi = messages.any((m) => m.id == messageId);
+      if (existsInUi) {
+        debugPrint(
+            '🔁 Group socket message $messageId already in UI, skipping');
+        return;
+      }
+
+      final existsInHive = _storageService.messageExists(messageId);
+      if (existsInHive) {
+        final savedMessages = await _storageService.getChatMessages(chatId);
+        final savedMessage = savedMessages.firstWhere(
+          (m) => m.id == messageId,
+          orElse: () => MessageEntity(
+            id: '',
+            chatId: '',
+            senderId: '',
+            receiverId: '',
+            content: '',
+            timestamp: DateTime.now(),
+            status: MessageStatus.sending,
+            isMe: false,
+          ),
+        );
+        if (savedMessage.id.isNotEmpty) {
+          messages.add(ChatMessageModel.fromEntity(savedMessage));
+          _scrollToBottom();
+          if (_isScreenActive) {
+            _socketService.sendGroupReadAck(
+                messageId: messageId, groupId: groupId);
+            _updateMessageStatusIfNotRead(messageId, MessageStatus.read);
+          }
+          return;
+        }
+      }
+
+      final cipherText = data['encryptedPayload']?.toString() ?? '';
+      final decryptedContent = SocketService.decryptMessage(cipherText);
+      final timestamp = DateTime.fromMillisecondsSinceEpoch(
+          data['timestamp'] ?? DateTime.now().millisecondsSinceEpoch);
+
+      MessageType messageType = MessageType.text;
+      if (decryptedContent.startsWith('FILE:')) {
+        messageType = MessageType.file;
+      } else if (decryptedContent.startsWith('MEDIA:') ||
+          decryptedContent.startsWith('IMAGE:')) {
+        messageType = MessageType.image;
+      }
+
+      ReplyToEntity? replyTo;
+      if (data['replyTo'] != null) {
+        try {
+          replyTo =
+              ReplyToEntity.fromJson(data['replyTo'] as Map<String, dynamic>);
+        } catch (e) {
+          debugPrint('⚠️ Failed to parse group reply metadata: $e');
+        }
+      }
+
+      final messageStatus = (_isScreenActive && !existsInHive)
+          ? MessageStatus.read
+          : MessageStatus.delivered;
+
+      final senderName = _storageService.getDisplayName(senderId ?? '');
+
+      final message = MessageEntity(
+        id: messageId,
+        chatId: chatId,
+        senderId: senderId ?? '',
+        receiverId: chatId,
+        content: decryptedContent,
+        timestamp: timestamp,
+        status: messageStatus,
+        isMe: senderId == myDeviceId,
+        type: messageType,
+        replyTo: replyTo,
+        senderName: senderName,
+        fileName: data['fileName'] as String?,
+        fileSize: data['fileSize'] as int?,
+        isCompressed: data['compressed'] as bool?,
+      );
+
+      await _storageService.saveMessage(message);
+      messages.add(ChatMessageModel.fromEntity(message));
+
+      if (_isScreenActive) {
+        _socketService.sendGroupReadAck(messageId: messageId, groupId: groupId);
+        _updateMessageStatusIfNotRead(messageId, MessageStatus.read);
+      }
+
+      _scrollToBottom();
+    };
+
+    _socketService.onGroupMessageStatus = (Map<String, dynamic> data) {
+      debugPrint('📊 Group message status update: $data');
+      final messageId = data['messageId']?.toString();
+      final totalMembers = data['totalMembers'] as int?;
+      final deliveredTo = data['deliveredTo'] as List<dynamic>?;
+      final readBy = data['readBy'] as List<dynamic>?;
+      final serverStatus = data['status']?.toString().toLowerCase();
+
+      if (messageId == null) return;
+
+      final index = messages.indexWhere((msg) => msg.id == messageId);
+      if (index == -1) return;
+
+      final deliveredCount = deliveredTo?.length ?? 0;
+      final readCount = readBy?.length ?? 0;
+
+      // Derive the tick status from the explicit server status and the member counts.
+      // We only upgrade the status; _updateMessageStatusIfNotRead prevents downgrades.
+      MessageStatus? newStatus;
+      if (serverStatus == 'failed') {
+        newStatus = MessageStatus.failed;
+      } else if (totalMembers != null && totalMembers > 0) {
+        if (readCount >= totalMembers) {
+          newStatus = MessageStatus.read;
+        } else if (deliveredCount >= totalMembers) {
+          newStatus = MessageStatus.delivered;
+        } else if (serverStatus == 'sent' ||
+            deliveredCount > 0 ||
+            readCount > 0) {
+          // Server has accepted the message and begun delivery.
+          newStatus = MessageStatus.sent;
+        }
+      } else if (serverStatus == 'sent') {
+        newStatus = MessageStatus.sent;
+      }
+
+      if (newStatus != null) {
+        _updateMessageStatusIfNotRead(messageId, newStatus);
+      }
+
+      _updateMessageCounts(
+        messageId: messageId,
+        totalMembers: totalMembers,
+        deliveredCount: deliveredCount,
+        readCount: readCount,
+      );
+    };
+
+    _socketService.onGroupTyping = (Map<String, dynamic> data) {
+      debugPrint('👥 Group typing indicator: $data');
+      final groupId = data['groupId']?.toString();
+      if (groupId != chatId) return;
+      final typing = data['isTyping'] as bool? ?? false;
+      recipientTyping.value = typing;
+      if (!typing) {
+        Future.delayed(const Duration(seconds: 3), () {
+          if (recipientTyping.value) recipientTyping.value = false;
+        });
+      }
+    };
+
+    _socketService.onGroupInfoUpdated = (Map<String, dynamic> data) async {
+      debugPrint('👥 ChatController group info updated: $data');
+      final groupId = data['groupId']?.toString();
+      if (groupId != chatId) return;
+      await _refreshGroupInfo();
+    };
+
+    _socketService.onGroupMemberAdded = (Map<String, dynamic> data) async {
+      debugPrint('👥 ChatController group member added: $data');
+      final groupId = data['groupId']?.toString();
+      if (groupId != chatId) return;
+      await _refreshGroupInfo();
+    };
+
+    _socketService.onGroupMemberRemoved = (Map<String, dynamic> data) async {
+      debugPrint('👥 ChatController group member removed: $data');
+      final groupId = data['groupId']?.toString();
+      if (groupId != chatId) return;
+      final removedDeviceId = data['deviceId']?.toString();
+      if (removedDeviceId == myDeviceId) {
+        // Current user was removed from the group
+        Get.offAllNamed('/main');
+        Get.snackbar('Removed', 'You were removed from the group');
+        return;
+      }
+      await _refreshGroupInfo();
+    };
+
+    _socketService.onGroupMemberLeft = (Map<String, dynamic> data) async {
+      debugPrint('👥 ChatController group member left: $data');
+      final groupId = data['groupId']?.toString();
+      if (groupId != chatId) return;
+      await _refreshGroupInfo();
+    };
+
+    _socketService.onGroupDissolved = (Map<String, dynamic> data) {
+      debugPrint('👥 ChatController group dissolved: $data');
+      final groupId = data['groupId']?.toString();
+      if (groupId != chatId) return;
+      Get.offAllNamed('/main');
+      Get.snackbar('Group dissolved', 'This group has been dissolved');
+    };
+  }
+
+  Future<void> _refreshGroupInfo() async {
+    try {
+      if (myDeviceId.isEmpty) return;
+      final response = await ApiService.to.getGroup(
+        groupId: chatId,
+        deviceId: myDeviceId,
+      );
+      final groupData = response['group'] as Map<String, dynamic>?;
+      if (groupData == null) return;
+
+      await _storageService.saveGroupChatFromApi(groupData,
+          myDeviceId: myDeviceId);
+      final chat = _storageService.getChat(chatId);
+      if (chat != null) {
+        displayName.value = chat.groupName ?? chat.userName;
+        groupMembers.value = List.from(chat.members);
+        groupMemberCount.value = chat.members.length;
+      }
+    } catch (e) {
+      debugPrint('⚠️ Failed to refresh group info: $e');
+    }
   }
 
   /// Setup block event listeners
@@ -878,8 +1187,8 @@ class ChatController extends GetxController with WidgetsBindingObserver {
     final text = messageController.text.trim();
     if (text.isEmpty) return;
 
-    // Prevent sending if blocked
-    if (isBlocked.value) {
+    // Prevent sending if blocked (1-on-1 only)
+    if (!isGroup && isBlocked.value) {
       debugPrint('🚫 Cannot send message - user is blocked');
       return;
     }
@@ -895,7 +1204,7 @@ class ChatController extends GetxController with WidgetsBindingObserver {
       id: messageId,
       chatId: chatId,
       senderId: myDeviceId,
-      receiverId: recipientDeviceId,
+      receiverId: isGroup ? chatId : recipientDeviceId,
       content: text,
       timestamp: timestamp,
       status: MessageStatus.sending,
@@ -917,23 +1226,41 @@ class ChatController extends GetxController with WidgetsBindingObserver {
     // Update chat list immediately after sending
     _updateChatListAfterSending(text, timestamp);
 
-    // Send via socket with reply metadata
-    _socketService
-        .sendMessage(
-      messageId: messageId,
-      recipientDeviceId: recipientDeviceId,
-      content: text,
-      replyTo: replyToData,
-    )
-        .then((success) {
-      // Don't update status locally - wait for server status update
-      // This prevents race condition where server sends 'failed' before local 'sent' update
-      // Server will send 'sent'/'delivered'/'read' status via onMessageStatus callback
-      if (!success) {
-        debugPrint(
-            '⚠️ Socket send failed for $messageId - keeping in sending state for retry');
-      }
-    });
+    if (isGroup) {
+      // Send via group socket with reply metadata
+      _socketService
+          .sendGroupMessage(
+        groupId: chatId,
+        messageId: messageId,
+        encryptedPayload: EncryptionService.encryptMessage(text),
+        messageType: 'text',
+        replyTo: replyToData,
+      )
+          .then((success) {
+        if (!success) {
+          debugPrint(
+              '⚠️ Group socket send failed for $messageId - keeping in sending state for retry');
+        }
+      });
+    } else {
+      // Send via socket with reply metadata
+      _socketService
+          .sendMessage(
+        messageId: messageId,
+        recipientDeviceId: recipientDeviceId,
+        content: text,
+        replyTo: replyToData,
+      )
+          .then((success) {
+        // Don't update status locally - wait for server status update
+        // This prevents race condition where server sends 'failed' before local 'sent' update
+        // Server will send 'sent'/'delivered'/'read' status via onMessageStatus callback
+        if (!success) {
+          debugPrint(
+              '⚠️ Socket send failed for $messageId - keeping in sending state for retry');
+        }
+      });
+    }
 
     // Schedule timeout so message eventually shows as failed if never delivered
     _scheduleMessageTimeout(messageId);
@@ -942,7 +1269,10 @@ class ChatController extends GetxController with WidgetsBindingObserver {
   }
 
   void onTyping(String text) {
-    // Typing indicator could be added here if server supports it
+    // Send typing indicator for groups
+    if (isGroup && text.isNotEmpty) {
+      _socketService.sendGroupTyping(groupId: chatId, isTyping: true);
+    }
 
     // Handle URL preview
     _handleUrlPreview(text);
@@ -983,8 +1313,8 @@ class ChatController extends GetxController with WidgetsBindingObserver {
       final chatListController = Get.find<ChatListController>();
 
       // Find the current chat in the list
-      final chatIndex = chatListController.chats
-          .indexWhere((chat) => chat.id == recipientDeviceId);
+      final chatIndex = chatListController.chats.indexWhere(
+          (chat) => chat.id == (isGroup ? chatId : recipientDeviceId));
 
       if (chatIndex != -1) {
         // Update existing chat
@@ -995,31 +1325,41 @@ class ChatController extends GetxController with WidgetsBindingObserver {
           lastMessage: messageContent,
           lastMessageTime: timestamp,
           unreadCount: existingChat.unreadCount, // Keep existing unread count
+          isGroup: existingChat.isGroup,
         );
 
         // Move to top of list and update
         chatListController.chats.removeAt(chatIndex);
         chatListController.chats.insert(0, updatedChat);
 
-        // Persist last-message update to storage
-        _storageService.saveChat(
-          ChatEntity(
-            id: updatedChat.id,
-            userName: updatedChat.userName,
+        // Persist last-message update to storage, preserving existing entity fields
+        final existingEntity = _storageService.getChat(updatedChat.id);
+        if (existingEntity != null) {
+          _storageService.saveChat(existingEntity.copyWith(
             lastMessage: updatedChat.lastMessage,
             lastMessageTime: updatedChat.lastMessageTime,
-            unreadCount: updatedChat.unreadCount,
-            isReply: replyToMessage.value != null,
-            replyContent: replyToMessage.value?.content,
-          ),
-        );
+          ));
+        } else {
+          _storageService.saveChat(
+            ChatEntity(
+              id: updatedChat.id,
+              userName: updatedChat.userName,
+              lastMessage: updatedChat.lastMessage,
+              lastMessageTime: updatedChat.lastMessageTime,
+              unreadCount: updatedChat.unreadCount,
+              isReply: replyToMessage.value != null,
+              replyContent: replyToMessage.value?.content,
+              isGroup: updatedChat.isGroup,
+            ),
+          );
+        }
 
         // Update filtered chats to trigger UI refresh
         chatListController.filteredChats.value =
             List.from(chatListController.chats);
 
         debugPrint('✅ Chat list updated after sending message');
-      } else {
+      } else if (!isGroup) {
         // Chat doesn't exist in list yet — create and persist it now so it
         // survives app restarts and appears in the chat list immediately.
         debugPrint(
@@ -1062,10 +1402,12 @@ class ChatController extends GetxController with WidgetsBindingObserver {
   /// Add the bubble immediately with [localBytes] preview and uploading state.
   /// Returns the messageId so the caller can track progress and finalize.
   Future<String?> createPendingImageMessage(Uint8List localBytes) async {
-    _updateLocalBlockState();
-    if (isBlocked.value) {
-      debugPrint('🚫 Cannot send image - user is blocked');
-      return null;
+    if (!isGroup) {
+      _updateLocalBlockState();
+      if (isBlocked.value) {
+        debugPrint('🚫 Cannot send image - user is blocked');
+        return null;
+      }
     }
 
     final messageId = _uuid.v4();
@@ -1082,7 +1424,7 @@ class ChatController extends GetxController with WidgetsBindingObserver {
       id: messageId,
       chatId: chatId,
       senderId: myDeviceId,
-      receiverId: recipientDeviceId,
+      receiverId: isGroup ? chatId : recipientDeviceId,
       content: 'MEDIA:pending',
       timestamp: timestamp,
       status: MessageStatus.sending,
@@ -1111,7 +1453,7 @@ class ChatController extends GetxController with WidgetsBindingObserver {
       id: messageId,
       chatId: chatId,
       senderId: myDeviceId,
-      receiverId: recipientDeviceId,
+      receiverId: isGroup ? chatId : recipientDeviceId,
       content: 'MEDIA:$token',
       timestamp: timestamp,
       status: MessageStatus.sending,
@@ -1125,11 +1467,17 @@ class ChatController extends GetxController with WidgetsBindingObserver {
     _updateChatListAfterSending('📷 Photo', timestamp);
 
     try {
-      final success = await _socketService.sendMediaMessage(
-        messageId: messageId,
-        recipientDeviceId: recipientDeviceId,
-        mediaToken: token,
-      );
+      final success = isGroup
+          ? await _socketService.sendGroupMediaMessage(
+              groupId: chatId,
+              messageId: messageId,
+              mediaToken: token,
+            )
+          : await _socketService.sendMediaMessage(
+              messageId: messageId,
+              recipientDeviceId: recipientDeviceId,
+              mediaToken: token,
+            );
 
       if (success) {
         final idx = messages.indexWhere((msg) => msg.id == messageId);
@@ -1153,6 +1501,129 @@ class ChatController extends GetxController with WidgetsBindingObserver {
     final msgId = await createPendingImageMessage(localBytes);
     if (msgId == null) return false;
     return finalizeImageMessage(msgId, token);
+  }
+
+  /// Step 1 of file/document send:
+  /// Add the bubble immediately with file metadata and uploading state.
+  Future<String?> createPendingFileMessage({
+    required String fileName,
+    required int fileSize,
+    Uint8List? localBytes,
+  }) async {
+    if (!isGroup) {
+      _updateLocalBlockState();
+      if (isBlocked.value) {
+        debugPrint('🚫 Cannot send file - user is blocked');
+        return null;
+      }
+    }
+
+    final messageId = _uuid.v4();
+    final timestamp = DateTime.now();
+
+    uploadProgressMap[messageId] = 0.0.obs;
+
+    // Cache the original raw file bytes locally so the sender can preview/open
+    // the file instantly without needing to re-download it from the (one-time)
+    // media server.
+    if (localBytes != null) {
+      try {
+        final cacheService = Get.find<ImageCacheService>();
+        await cacheService.cacheImageById(messageId, localBytes);
+      } catch (_) {}
+    }
+
+    final message = MessageEntity(
+      id: messageId,
+      chatId: chatId,
+      senderId: myDeviceId,
+      receiverId: isGroup ? chatId : recipientDeviceId,
+      content: 'FILE:pending',
+      timestamp: timestamp,
+      status: MessageStatus.sending,
+      isMe: true,
+      type: MessageType.file,
+      fileName: fileName,
+      fileSize: fileSize,
+    );
+
+    messages.add(ChatMessageModel.fromEntity(message));
+    messages.refresh();
+    _scrollToBottom();
+    return messageId;
+  }
+
+  /// Step 2 of file/document send:
+  /// Called after upload completes. Updates bubble content with real token
+  /// and fires the socket event.
+  Future<bool> finalizeFileMessage({
+    required String messageId,
+    required String token,
+    required String fileName,
+    required int fileSize,
+    bool isCompressed = false,
+  }) async {
+    uploadProgressMap.remove(messageId);
+
+    final index = messages.indexWhere((msg) => msg.id == messageId);
+    if (index == -1) return false;
+
+    final timestamp = messages[index].timestamp;
+
+    final message = MessageEntity(
+      id: messageId,
+      chatId: chatId,
+      senderId: myDeviceId,
+      receiverId: isGroup ? chatId : recipientDeviceId,
+      content: 'FILE:$token',
+      timestamp: timestamp,
+      status: MessageStatus.sending,
+      isMe: true,
+      type: MessageType.file,
+      fileName: fileName,
+      fileSize: fileSize,
+      isCompressed: isCompressed,
+    );
+
+    messages[index] = ChatMessageModel.fromEntity(message);
+    messages.refresh();
+    _storageService.saveMessage(message);
+    _updateChatListAfterSending('📎 $fileName', timestamp);
+
+    try {
+      final success = isGroup
+          ? await _socketService.sendGroupFileMessage(
+              groupId: chatId,
+              messageId: messageId,
+              mediaToken: token,
+              fileName: fileName,
+              fileSize: fileSize,
+              isCompressed: isCompressed,
+            )
+          : await _socketService.sendFileMessage(
+              messageId: messageId,
+              recipientDeviceId: recipientDeviceId,
+              mediaToken: token,
+              fileName: fileName,
+              fileSize: fileSize,
+              isCompressed: isCompressed,
+            );
+
+      if (success) {
+        final idx = messages.indexWhere((msg) => msg.id == messageId);
+        if (idx != -1) {
+          _updateMessageStatusIfNotRead(messageId, MessageStatus.sent);
+          _messageTimeouts[messageId]?.cancel();
+          _messageTimeouts.remove(messageId);
+        }
+      }
+      _scheduleMessageTimeout(messageId);
+      return true;
+    } catch (e) {
+      debugPrint('❌ Error finalizing file message: $e');
+      _scheduleMessageTimeout(messageId);
+      return true;
+    }
   }
 
   /// Update contact name for this chat
@@ -1341,7 +1812,7 @@ class ChatController extends GetxController with WidgetsBindingObserver {
   /// Delete this chat
   void deleteChat() {
     // Delete from storage
-    _storageService.deleteChat(recipientDeviceId);
+    _storageService.deleteChat(isGroup ? chatId : recipientDeviceId);
     // Note: Individual message deletion not implemented in storage service
     // Messages will be cleaned up when chat is deleted
 
@@ -1394,17 +1865,34 @@ class ChatController extends GetxController with WidgetsBindingObserver {
         final token = msg.content.startsWith('MEDIA:')
             ? msg.content.substring(6)
             : msg.content;
-        success = await _socketService.sendMediaMessage(
-          messageId: msg.id,
-          recipientDeviceId: recipientDeviceId,
-          mediaToken: token,
-        );
+        if (isGroup) {
+          success = await _socketService.sendGroupMediaMessage(
+            groupId: chatId,
+            messageId: msg.id,
+            mediaToken: token,
+          );
+        } else {
+          success = await _socketService.sendMediaMessage(
+            messageId: msg.id,
+            recipientDeviceId: recipientDeviceId,
+            mediaToken: token,
+          );
+        }
       } else {
-        success = await _socketService.sendMessage(
-          messageId: msg.id,
-          recipientDeviceId: recipientDeviceId,
-          content: msg.content,
-        );
+        if (isGroup) {
+          success = await _socketService.sendGroupMessage(
+            groupId: chatId,
+            messageId: msg.id,
+            encryptedPayload: EncryptionService.encryptMessage(msg.content),
+            messageType: 'text',
+          );
+        } else {
+          success = await _socketService.sendMessage(
+            messageId: msg.id,
+            recipientDeviceId: recipientDeviceId,
+            content: msg.content,
+          );
+        }
       }
 
       if (success) {
@@ -1477,9 +1965,68 @@ class ChatController extends GetxController with WidgetsBindingObserver {
         mediaToken: messages[index].mediaToken,
         mediaExpiryTimestamp: messages[index].mediaExpiryTimestamp,
         replyTo: messages[index].replyTo,
+        senderName: messages[index].senderName,
+        totalMembers: messages[index].totalMembers,
+        deliveredCount: messages[index].deliveredCount,
+        readCount: messages[index].readCount,
       );
     } catch (e) {
       debugPrint('❌ Error updating message status: $e');
+    }
+  }
+
+  /// Update group message delivery/read counts in UI and storage.
+  Future<void> _updateMessageCounts({
+    required String messageId,
+    int? totalMembers,
+    int? deliveredCount,
+    int? readCount,
+  }) async {
+    try {
+      final index = messages.indexWhere((msg) => msg.id == messageId);
+      if (index == -1) return;
+
+      final updated = ChatMessageModel(
+        id: messages[index].id,
+        content: messages[index].content,
+        isMe: messages[index].isMe,
+        timestamp: messages[index].timestamp,
+        status: messages[index].status,
+        type: messages[index].type,
+        mediaToken: messages[index].mediaToken,
+        mediaExpiryTimestamp: messages[index].mediaExpiryTimestamp,
+        replyTo: messages[index].replyTo,
+        senderName: messages[index].senderName,
+        totalMembers: totalMembers ?? messages[index].totalMembers,
+        deliveredCount: deliveredCount ?? messages[index].deliveredCount,
+        readCount: readCount ?? messages[index].readCount,
+      );
+      messages[index] = updated;
+
+      // Persist counts to storage
+      final storedMessages = await _storageService.getChatMessages(chatId);
+      final stored = storedMessages.firstWhere(
+        (m) => m.id == messageId,
+        orElse: () => MessageEntity(
+          id: '',
+          chatId: '',
+          senderId: '',
+          receiverId: '',
+          content: '',
+          timestamp: DateTime.now(),
+          status: MessageStatus.sending,
+          isMe: false,
+        ),
+      );
+      if (stored.id.isNotEmpty) {
+        await _storageService.saveMessage(stored.copyWith(
+          totalMembers: totalMembers ?? stored.totalMembers,
+          deliveredCount: deliveredCount ?? stored.deliveredCount,
+          readCount: readCount ?? stored.readCount,
+        ));
+      }
+    } catch (e) {
+      debugPrint('❌ Error updating group message counts: $e');
     }
   }
 
@@ -1596,10 +2143,19 @@ class ChatController extends GetxController with WidgetsBindingObserver {
       FCMService.activeChatId = null;
     }
 
-    // Restore the previous handler when controller is disposed
+    // Restore the previous handlers when controller is disposed so the chat list
+    // (or any other screen) can receive group events again.
     if (_previousMessageHandler != null) {
       _socketService.onMessageReceived = _previousMessageHandler;
     }
+    if (_previousGroupMessageHandler != null) {
+      _socketService.onGroupMessageReceived = _previousGroupMessageHandler;
+    }
+    if (_previousGroupTypingHandler != null) {
+      _socketService.onGroupTyping = _previousGroupTypingHandler;
+    }
+    // Status updates are only relevant while inside the chat screen.
+    _socketService.onGroupMessageStatus = null;
 
     // Safely dispose controllers
     try {
