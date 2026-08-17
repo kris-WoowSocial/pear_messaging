@@ -15,6 +15,7 @@ import '../utils/string_utils.dart';
 import '../../routes/app_routes.dart';
 import '../../storage/models/message_entity.dart';
 import '../../storage/models/chat_entity.dart';
+import '../../features/chat_list/chat_list_controller.dart';
 import 'local_storage_service.dart';
 import 'socket_service.dart';
 import 'block_service.dart';
@@ -71,37 +72,44 @@ Future<void> onNotificationTap(NotificationResponse response) async {
 
     final data = jsonDecode(response.payload!) as Map<String, dynamic>;
     final senderId = data['senderId'] as String?;
+    final chatId = data['chatId']?.toString() ?? senderId;
+    final isGroup = data['isGroup']?.toString() == 'true';
 
-    if (senderId != null) {
+    if (chatId != null) {
       // Store pending navigation in SharedPreferences so we can navigate
       // even if app was terminated and GetX services aren't ready yet
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setString('pending_notification_sender', senderId);
+      await prefs.setString('pending_notification_sender', chatId);
+      await prefs.setBool('pending_notification_is_group', isGroup);
 
       // Try to navigate immediately if services are already initialized
       try {
         final storageService = Get.find<LocalStorageService>();
-        final chat = storageService.getChat(senderId);
+        final chat = storageService.getChat(chatId);
         final displayName =
-            chat?.userName ?? StringUtils.generateFriendlyName(senderId);
+            chat?.userName ?? StringUtils.generateFriendlyName(chatId);
+        final members = chat?.members.map((m) => m.toJson()).toList() ?? [];
 
         // Clear pending navigation since we're handling it now
         await prefs.remove('pending_notification_sender');
+        await prefs.remove('pending_notification_is_group');
 
         // Navigate to chat screen
         Get.toNamed(
           AppRoutes.chat,
           arguments: {
-            'chatId': senderId,
+            'chatId': chatId,
             'userName': displayName,
-            'recipientDeviceId': senderId,
+            'recipientDeviceId': isGroup ? chatId : senderId ?? chatId,
+            'isGroup': isGroup,
+            'members': members,
           },
         );
       } catch (_) {
         // Services not ready yet (app was terminated) — navigation will be
         // handled by checkPendingNotificationNavigation() after app init
         debugPrint(
-          '📱 Services not ready, pending navigation stored for: $senderId',
+          '📱 Services not ready, pending navigation stored for: $chatId',
         );
       }
     }
@@ -115,27 +123,33 @@ Future<void> onNotificationTap(NotificationResponse response) async {
 Future<void> checkPendingNotificationNavigation() async {
   try {
     final prefs = await SharedPreferences.getInstance();
-    final senderId = prefs.getString('pending_notification_sender');
-    if (senderId == null || senderId.isEmpty) return;
+    final chatId = prefs.getString('pending_notification_sender');
+    if (chatId == null || chatId.isEmpty) return;
+
+    final isGroup = prefs.getBool('pending_notification_is_group') ?? false;
 
     await prefs.remove('pending_notification_sender');
+    await prefs.remove('pending_notification_is_group');
 
     final storageService = Get.find<LocalStorageService>();
-    final chat = storageService.getChat(senderId);
+    final chat = storageService.getChat(chatId);
     final displayName =
-        chat?.userName ?? StringUtils.generateFriendlyName(senderId);
+        chat?.userName ?? StringUtils.generateFriendlyName(chatId);
+    final members = chat?.members.map((m) => m.toJson()).toList() ?? [];
 
     // Use a small delay to ensure the navigator is ready
     await Future.delayed(const Duration(milliseconds: 500));
     Get.toNamed(
       AppRoutes.chat,
       arguments: {
-        'chatId': senderId,
+        'chatId': chatId,
         'userName': displayName,
-        'recipientDeviceId': senderId,
+        'recipientDeviceId': isGroup ? chatId : chatId,
+        'isGroup': isGroup,
+        'members': members,
       },
     );
-    debugPrint('📱 Pending notification navigation completed for: $senderId');
+    debugPrint('📱 Pending notification navigation completed for: $chatId');
   } catch (e) {
     debugPrint('⚠️ Error handling pending notification navigation: $e');
   }
@@ -155,10 +169,10 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
       AndroidInitializationSettings('@drawable/ic_stat_ic_notification');
   const DarwinInitializationSettings initializationSettingsIOS =
       DarwinInitializationSettings(
-        requestAlertPermission: true,
-        requestBadgePermission: true,
-        requestSoundPermission: true,
-      );
+    requestAlertPermission: true,
+    requestBadgePermission: true,
+    requestSoundPermission: true,
+  );
   const InitializationSettings initializationSettings = InitializationSettings(
     android: initializationSettingsAndroid,
     iOS: initializationSettingsIOS,
@@ -180,10 +194,9 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
     showBadge: true,
   );
 
-  final androidPlugin = flutterLocalNotificationsPlugin
-      .resolvePlatformSpecificImplementation<
-        AndroidFlutterLocalNotificationsPlugin
-      >();
+  final androidPlugin =
+      flutterLocalNotificationsPlugin.resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin>();
   await androidPlugin?.createNotificationChannel(androidChannel);
 
   // Handle incoming call notifications and cancellations
@@ -283,9 +296,56 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
     return;
   }
 
-  // Get sender info
+  // Handle group invitation / member-added notifications
+  if (message.data['type'] == 'group_invitation') {
+    try {
+      final groupId = message.data['groupId']?.toString() ?? '';
+      final groupName = message.data['groupName']?.toString() ?? 'Group chat';
+      if (groupId.isNotEmpty) {
+        await _saveGroupPlaceholderFromBackground(groupId, groupName);
+      }
+      await flutterLocalNotificationsPlugin.show(
+        DateTime.now().millisecondsSinceEpoch.remainder(100000),
+        groupName,
+        message.notification?.body ?? 'You were added to a group',
+        const NotificationDetails(
+          android: AndroidNotificationDetails(
+            'high_importance_channel',
+            'High Importance Notifications',
+            channelDescription:
+                'This channel is used for important notifications.',
+            importance: Importance.max,
+            priority: Priority.max,
+            playSound: true,
+            enableVibration: true,
+          ),
+          iOS: DarwinNotificationDetails(
+            presentAlert: true,
+            presentBadge: true,
+            presentSound: true,
+          ),
+        ),
+        payload: jsonEncode({
+          'senderId': message.data['inviterDeviceId']?.toString() ?? '',
+          'chatId': groupId,
+          'isGroup': 'true',
+        }),
+      );
+      debugPrint('📱 Background group invitation notification shown: $groupId');
+    } catch (e) {
+      debugPrint(
+          '❌ Background: Error showing group invitation notification: $e');
+    }
+    return;
+  }
+
+  // Determine message type and identifiers
+  final messageType = message.data['type']?.toString() ?? 'message';
+  final isGroup = messageType == 'group_message';
   final senderId =
       message.data['senderDeviceId'] ?? message.data['sender'] ?? '';
+  final chatId =
+      isGroup ? (message.data['groupId']?.toString() ?? senderId) : senderId;
 
   if (senderId.isEmpty) {
     debugPrint('⚠️ Background FCM: No sender ID found, skipping');
@@ -296,7 +356,11 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   try {
     var title = message.notification?.title ?? 'New Message';
     final body = message.notification?.body ?? 'You have a new message';
-    final payload = jsonEncode({'senderId': senderId});
+    final payload = jsonEncode({
+      'senderId': senderId,
+      'chatId': chatId,
+      'isGroup': isGroup.toString(),
+    });
 
     // If title is a raw device ID (no username found), format it as friendly name
     if (title == senderId && senderId.length > 5) {
@@ -339,8 +403,7 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
     await storageService.init();
 
     final messageId = message.data['messageId'] ?? '';
-    final timestampMs =
-        int.tryParse(message.data['timestamp'] ?? '') ??
+    final timestampMs = int.tryParse(message.data['timestamp'] ?? '') ??
         DateTime.now().millisecondsSinceEpoch;
     final encryptedContent = message.data['originalMessage'] ?? '';
 
@@ -387,8 +450,11 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
             '📱 Background: Decryption successful, content length: ${contentToStore.length}',
           );
 
-          // Detect media messages only after successful decryption
-          if (contentToStore.startsWith('IMAGE:') ||
+          // Detect media/file messages only after successful decryption
+          if (contentToStore.startsWith('FILE:')) {
+            msgType = MessageType.file;
+            debugPrint('📱 Background: Detected as file message');
+          } else if (contentToStore.startsWith('IMAGE:') ||
               contentToStore.startsWith('MEDIA:')) {
             msgType = MessageType.image;
             debugPrint('📱 Background: Detected as media message');
@@ -409,14 +475,16 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
       await storageService.saveMessage(
         MessageEntity(
           id: messageId,
-          chatId: senderId,
+          chatId: chatId,
           senderId: senderId,
-          receiverId: '',
+          receiverId: isGroup ? chatId : '',
           content: contentToStore,
           timestamp: DateTime.fromMillisecondsSinceEpoch(timestampMs),
           status: MessageStatus.delivered,
           isMe: false,
           type: msgType,
+          fileName: message.data['fileName']?.toString(),
+          fileSize: int.tryParse(message.data['fileSize']?.toString() ?? ''),
         ),
       );
       debugPrint(
@@ -426,30 +494,32 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
       // Update chat entity's last message (but don't increment unreadCount in background)
       // unreadCount will be recalculated when app opens based on actual unread messages
       try {
-        final chat = storageService.getChat(senderId);
+        final chat = storageService.getChat(chatId);
         if (chat != null) {
           final updatedChat = chat.copyWith(
             lastMessage: msgType == MessageType.image
                 ? '📷 Photo'
-                : contentToStore,
+                : msgType == MessageType.file
+                    ? '� Document'
+                    : contentToStore,
             lastMessageTime: DateTime.fromMillisecondsSinceEpoch(timestampMs),
           );
           await storageService.saveChat(updatedChat);
-          debugPrint('💾 Background: updated last message for chat $senderId');
-        } else {
-          // Create new chat entity if it doesn't exist (with unreadCount 0 initially)
+          debugPrint('💾 Background: updated last message for chat $chatId');
+        } else if (!isGroup) {
+          // Create new chat entity only for 1-on-1 if it doesn't exist.
+          // For groups, we need the group metadata from the server/API.
           final newChat = ChatEntity(
-            id: senderId,
+            id: chatId,
             userName: senderId, // Will be updated when user opens chat
-            lastMessage: msgType == MessageType.image
-                ? '📷 Photo'
-                : contentToStore,
+            lastMessage:
+                msgType == MessageType.image ? '📷 Photo' : contentToStore,
             lastMessageTime: DateTime.fromMillisecondsSinceEpoch(timestampMs),
             unreadCount: 0, // Will be recalculated when app opens
           );
           await storageService.saveChat(newChat);
           debugPrint(
-            '💾 Background: created new chat entity for $senderId with unreadCount: 0',
+            '💾 Background: created new chat entity for $chatId with unreadCount: 0',
           );
         }
       } catch (e) {
@@ -457,11 +527,42 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
       }
 
       // Queue delivery ack so sender gets 'delivered' status when socket reconnects
-      FCMService._storeAcknowledgmentRequestStatic(messageId, senderId);
+      FCMService._storeAcknowledgmentRequestStatic(
+        messageId,
+        senderId,
+        groupId: isGroup ? chatId : null,
+      );
     }
   } catch (e) {
     debugPrint('⚠️ Background: Could not save message to storage: $e');
     // Don't fail the notification if storage fails
+  }
+}
+
+/// Creates a minimal placeholder group chat so a notification tap can open it.
+/// The full metadata is refreshed from the API when the chat screen loads.
+Future<void> _saveGroupPlaceholderFromBackground(
+  String groupId,
+  String groupName,
+) async {
+  try {
+    await Hive.initFlutter();
+    final storageService = LocalStorageService();
+    await storageService.init();
+
+    if (storageService.getChat(groupId) != null) return;
+
+    await storageService.saveChat(
+      ChatEntity(
+        id: groupId,
+        userName: groupName,
+        isGroup: true,
+        groupName: groupName,
+      ),
+    );
+    debugPrint('💾 Background: saved group placeholder for $groupId');
+  } catch (e) {
+    debugPrint('⚠️ Background: could not save group placeholder: $e');
   }
 }
 
@@ -551,10 +652,9 @@ class FCMService extends GetxService {
       );
 
       // Register channels
-      final androidPlugin = _notifications
-          .resolvePlatformSpecificImplementation<
-            AndroidFlutterLocalNotificationsPlugin
-          >();
+      final androidPlugin =
+          _notifications.resolvePlatformSpecificImplementation<
+              AndroidFlutterLocalNotificationsPlugin>();
       await androidPlugin?.createNotificationChannel(highImportanceChannel);
       await androidPlugin?.createNotificationChannel(disabledChannel);
       debugPrint('✅ Notifications initialized');
@@ -797,8 +897,7 @@ class FCMService extends GetxService {
         final membershipService = Get.find();
         await (membershipService as dynamic).activateMembership(
           selectedPlan: planId,
-          purchaseId:
-              message.data['txHash'] ??
+          purchaseId: message.data['txHash'] ??
               'fcm_${DateTime.now().millisecondsSinceEpoch}',
         );
         debugPrint('✅ Membership activated from FCM: $planId');
@@ -816,15 +915,71 @@ class FCMService extends GetxService {
       return;
     }
 
+    // Handle group invitation / member-added notifications
+    if (message.data['type'] == 'group_invitation') {
+      try {
+        final groupId = message.data['groupId']?.toString() ?? '';
+        final groupName = message.data['groupName']?.toString() ?? 'Group chat';
+        final inviterId = message.data['inviterDeviceId']?.toString() ?? '';
+        if (groupId.isNotEmpty) {
+          final chat = _storageService.getChat(groupId);
+          if (chat == null) {
+            await _storageService.saveChat(
+              ChatEntity(
+                id: groupId,
+                userName: groupName,
+                isGroup: true,
+                groupName: groupName,
+              ),
+            );
+          }
+          // Refresh the chat list so the group appears
+          try {
+            Get.find<ChatListController>().loadChats();
+          } catch (_) {}
+        }
+
+        if (activeChatId == groupId) {
+          debugPrint(
+              '📱 Foreground: suppress group invitation notification, user is in the group');
+          return;
+        }
+
+        final body = message.notification?.body ??
+            '${StringUtils.generateFriendlyName(inviterId)} added you to $groupName';
+        await _notifications.show(
+          DateTime.now().millisecondsSinceEpoch.remainder(100000),
+          groupName,
+          body,
+          getNotificationDetails(0),
+          payload: jsonEncode({
+            'senderId': inviterId,
+            'chatId': groupId,
+            'isGroup': 'true',
+          }),
+        );
+        debugPrint(
+            '📱 Foreground group invitation notification shown: $groupId');
+      } catch (e) {
+        debugPrint(
+            '❌ Foreground: Error showing group invitation notification: $e');
+      }
+      return;
+    }
+
     // Get sender info first so we can check suppression
+    final messageType = message.data['type']?.toString() ?? 'message';
+    final isGroup = messageType == 'group_message';
     final senderId =
         message.data['senderDeviceId'] ?? message.data['sender'] ?? '';
-    debugPrint('📱 Foreground message sender id: $senderId');
+    final chatId =
+        isGroup ? (message.data['groupId']?.toString() ?? senderId) : senderId;
+    debugPrint(
+        '📱 Foreground message sender id: $senderId, chat: $chatId, group: $isGroup');
 
     // ── Persist to local DB (socket may be disconnected or slow) ──
     final messageId = message.data['messageId'] ?? '';
-    final timestampMs =
-        int.tryParse(message.data['timestamp'] ?? '') ??
+    final timestampMs = int.tryParse(message.data['timestamp'] ?? '') ??
         DateTime.now().millisecondsSinceEpoch;
     final encryptedContent = message.data['originalMessage'] ?? '';
 
@@ -855,26 +1010,29 @@ class FCMService extends GetxService {
         debugPrint('⚠️ Foreground: Error checking processed messages: $e');
       }
 
-      // Check bidirectional block status before processing message
-      try {
-        final blockService = Get.find<BlockService>();
+      // Check bidirectional block status before processing message (1-on-1 only)
+      if (!isGroup) {
+        try {
+          final blockService = Get.find<BlockService>();
 
-        // Check if messaging is allowed in both directions
-        if (!blockService.isMessagingAllowed(senderId)) {
-          if (blockService.isUserBlocked(senderId)) {
-            debugPrint('🚫 FCM message from user I blocked $senderId ignored');
-          } else if (blockService.hasUserBlockedMe(senderId)) {
-            debugPrint(
-              '🚫 FCM message from user who blocked me $senderId ignored',
-            );
-          } else {
-            debugPrint('🚫 FCM message from $senderId ignored (blocking)');
+          // Check if messaging is allowed in both directions
+          if (!blockService.isMessagingAllowed(senderId)) {
+            if (blockService.isUserBlocked(senderId)) {
+              debugPrint(
+                  '🚫 FCM message from user I blocked $senderId ignored');
+            } else if (blockService.hasUserBlockedMe(senderId)) {
+              debugPrint(
+                '🚫 FCM message from user who blocked me $senderId ignored',
+              );
+            } else {
+              debugPrint('🚫 FCM message from $senderId ignored (blocking)');
+            }
+            return;
           }
-          return;
+        } catch (e) {
+          debugPrint('⚠️ Could not check block status for FCM message: $e');
+          // Continue processing if block service is not available
         }
-      } catch (e) {
-        debugPrint('⚠️ Could not check block status for FCM message: $e');
-        // Continue processing if block service is not available
       }
 
       if (!_storageService.messageExists(messageId)) {
@@ -892,9 +1050,12 @@ class FCMService extends GetxService {
               '📱 Foreground: Decryption successful, content length: ${contentToStore.length}',
             );
 
-            // Detect media messages only after successful decryption
+            // Detect media/file messages only after successful decryption
             // Check for exact MEDIA: or IMAGE: prefix at the start
-            if (contentToStore.startsWith('IMAGE:') ||
+            if (contentToStore.startsWith('FILE:')) {
+              msgType = MessageType.file;
+              debugPrint('📱 Foreground: Detected as file message');
+            } else if (contentToStore.startsWith('IMAGE:') ||
                 contentToStore.startsWith('MEDIA:')) {
               msgType = MessageType.image;
               debugPrint('📱 Foreground: Detected as media message');
@@ -939,14 +1100,17 @@ class FCMService extends GetxService {
           await _storageService.saveMessage(
             MessageEntity(
               id: messageId,
-              chatId: senderId,
+              chatId: chatId,
               senderId: senderId,
-              receiverId: '',
+              receiverId: isGroup ? chatId : '',
               content: contentToStore, // Original MEDIA:token preserved
               timestamp: DateTime.fromMillisecondsSinceEpoch(timestampMs),
               status: MessageStatus.delivered,
               isMe: false,
               type: msgType, // Correct type for media messages
+              fileName: message.data['fileName']?.toString(),
+              fileSize:
+                  int.tryParse(message.data['fileSize']?.toString() ?? ''),
             ),
           );
           debugPrint(
@@ -955,24 +1119,31 @@ class FCMService extends GetxService {
 
           // Update chat entity's unreadCount
           try {
-            final chat = _storageService.getChat(senderId);
+            final chat = _storageService.getChat(chatId);
             if (chat != null) {
               final currentUnreadCount = chat.unreadCount;
               final updatedChat = chat.copyWith(
+                lastMessage: msgType == MessageType.image
+                    ? '📷 Photo'
+                    : msgType == MessageType.file
+                        ? '� Document'
+                        : contentToStore,
+                lastMessageTime:
+                    DateTime.fromMillisecondsSinceEpoch(timestampMs),
                 unreadCount: currentUnreadCount + 1,
               );
               await _storageService.saveChat(updatedChat);
               debugPrint(
-                '💾 Foreground: updated unreadCount for chat $senderId: $currentUnreadCount -> ${currentUnreadCount + 1}',
+                '💾 Foreground: updated unreadCount for chat $chatId: $currentUnreadCount -> ${currentUnreadCount + 1}',
               );
-            } else {
-              // Create new chat entity if it doesn't exist
+            } else if (!isGroup) {
+              // Create new chat entity only for 1-on-1 if it doesn't exist.
+              // Group metadata must come from server; skip creation here.
               final newChat = ChatEntity(
-                id: senderId,
+                id: chatId,
                 userName: senderId, // Will be updated when user opens chat
-                lastMessage: msgType == MessageType.image
-                    ? '📷 Photo'
-                    : contentToStore,
+                lastMessage:
+                    msgType == MessageType.image ? '📷 Photo' : contentToStore,
                 lastMessageTime: DateTime.fromMillisecondsSinceEpoch(
                   timestampMs,
                 ),
@@ -980,7 +1151,7 @@ class FCMService extends GetxService {
               );
               await _storageService.saveChat(newChat);
               debugPrint(
-                '💾 Foreground: created new chat entity for $senderId with unreadCount: 1',
+                '💾 Foreground: created new chat entity for $chatId with unreadCount: 1',
               );
             }
 
@@ -999,7 +1170,7 @@ class FCMService extends GetxService {
             }
           } catch (e) {
             debugPrint(
-              '⚠️ Foreground: Error updating unreadCount for chat $senderId: $e',
+              '⚠️ Foreground: Error updating unreadCount for chat $chatId: $e',
             );
           }
         } catch (e) {
@@ -1079,14 +1250,11 @@ class FCMService extends GetxService {
 
       // Register new token with socket if available
       if (_socketService != null) {
-        _socketService!
-            .registerFCMToken(token)
-            .then((_) {
-              debugPrint('✅ New FCM token registered with socket');
-            })
-            .catchError((e) {
-              debugPrint('❌ Error registering token with socket: $e');
-            });
+        _socketService!.registerFCMToken(token).then((_) {
+          debugPrint('✅ New FCM token registered with socket');
+        }).catchError((e) {
+          debugPrint('❌ Error registering token with socket: $e');
+        });
       }
     });
   }
@@ -1148,8 +1316,8 @@ class FCMService extends GetxService {
       debugPrint('🔔 DEBUG: payload created: $payload');
 
       final notificationId = DateTime.now().millisecondsSinceEpoch.remainder(
-        100000,
-      );
+            100000,
+          );
       debugPrint('🔔 DEBUG: notificationId: $notificationId');
 
       // Get current badge count for notification
@@ -1177,10 +1345,12 @@ class FCMService extends GetxService {
   }
 
   /// Store acknowledgment request for later processing (static version)
+  /// [groupId] is optional; when provided, a group message acknowledgment is sent.
   static void _storeAcknowledgmentRequestStatic(
     String messageId,
-    String senderId,
-  ) async {
+    String senderId, {
+    String? groupId,
+  }) async {
     try {
       final prefs = await SharedPreferences.getInstance();
 
@@ -1188,14 +1358,14 @@ class FCMService extends GetxService {
       final acknowledgments =
           prefs.getStringList('pending_acknowledgments') ?? [];
 
-      // Add new acknowledgment
-      acknowledgments.add('$messageId:$senderId');
+      // Add new acknowledgment; format: messageId:senderId:groupId (groupId empty for 1-on-1)
+      acknowledgments.add('$messageId:$senderId:${groupId ?? ''}');
 
       // Save back
       await prefs.setStringList('pending_acknowledgments', acknowledgments);
 
       debugPrint(
-        '💾 Stored acknowledgment request (static) for $messageId from $senderId',
+        '💾 Stored acknowledgment request (static) for $messageId from $senderId${groupId != null ? ' group $groupId' : ''}',
       );
     } catch (e) {
       debugPrint('⚠️ Error storing acknowledgment request (static): $e');
@@ -1238,9 +1408,17 @@ class FCMService extends GetxService {
       for (final acknowledgment in acknowledgments) {
         try {
           final parts = acknowledgment.split(':');
-          if (parts.length == 2) {
+          if (parts.length >= 2) {
             final messageId = parts[0];
-            socketService.sendMessageAck(messageId);
+            final groupId = parts.length > 2 ? parts[2] : '';
+            if (groupId.isNotEmpty) {
+              socketService.sendGroupMessageAck(
+                messageId: messageId,
+                groupId: groupId,
+              );
+            } else {
+              socketService.sendMessageAck(messageId);
+            }
             sentAcknowledgments.add(acknowledgment);
 
             debugPrint('✅ Sent delivery acknowledgment for $messageId');

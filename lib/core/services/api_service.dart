@@ -32,8 +32,15 @@ class ApiService extends GetxService {
       .post(_uri(path), headers: _headers, body: jsonEncode(body))
       .timeout(_timeout);
 
-  Future<http.Response> _delete(String path) =>
-      http.delete(_uri(path), headers: _headers).timeout(_timeout);
+  Future<http.Response> _delete(String path, {Map<String, dynamic>? body}) =>
+      http
+          .delete(_uri(path),
+              headers: _headers, body: body != null ? jsonEncode(body) : null)
+          .timeout(_timeout);
+
+  Future<http.Response> _patch(String path, Map<String, dynamic> body) => http
+      .patch(_uri(path), headers: _headers, body: jsonEncode(body))
+      .timeout(_timeout);
 
   /// Decode and return body map, throws on non-2xx.
   Map<String, dynamic> _decode(http.Response res, String label) {
@@ -95,7 +102,8 @@ class ApiService extends GetxService {
   // New, additive endpoints - do not affect the existing in_app_purchase flow.
 
   Future<Map<String, dynamic>> createStripeSubscription(
-      String deviceId, String planId, {String? email}) async {
+      String deviceId, String planId,
+      {String? email}) async {
     final res = await _post('/api/membership/stripe/create-subscription', {
       'deviceId': deviceId,
       'planId': planId,
@@ -113,8 +121,7 @@ class ApiService extends GetxService {
     return _decode(res, 'confirmStripeSubscription');
   }
 
-  Future<Map<String, dynamic>> cancelStripeSubscription(
-      String deviceId) async {
+  Future<Map<String, dynamic>> cancelStripeSubscription(String deviceId) async {
     final res = await _post(
         '/api/membership/stripe/cancel-subscription', {'deviceId': deviceId});
     return _decode(res, 'cancelStripeSubscription');
@@ -122,7 +129,8 @@ class ApiService extends GetxService {
 
   Future<Map<String, dynamic>> getStripeSubscriptionStatus(
       String deviceId) async {
-    final res = await _get('/api/membership/stripe/subscription-status/$deviceId');
+    final res =
+        await _get('/api/membership/stripe/subscription-status/$deviceId');
     return _decode(res, 'getStripeSubscriptionStatus');
   }
 
@@ -142,8 +150,8 @@ class ApiService extends GetxService {
   }
 
   Future<Map<String, dynamic>> getCryptoCheckoutStatus(String deviceId) async {
-    final res = await _get(
-        '/api/membership/stripe/crypto-checkout-status/$deviceId');
+    final res =
+        await _get('/api/membership/stripe/crypto-checkout-status/$deviceId');
     return _decode(res, 'getCryptoCheckoutStatus');
   }
 
@@ -247,7 +255,8 @@ class ApiService extends GetxService {
       }
       final res = await _post('/api/referrals/claim-accepted-invite', body);
       if (res.statusCode < 200 || res.statusCode >= 300) {
-        debugPrint('⚠️ claimAcceptedInvite HTTP ${res.statusCode}: ${res.body}');
+        debugPrint(
+            '⚠️ claimAcceptedInvite HTTP ${res.statusCode}: ${res.body}');
         return false;
       }
       final data = jsonDecode(res.body) as Map<String, dynamic>;
@@ -276,8 +285,8 @@ class ApiService extends GetxService {
     required String token,
     required String deviceId,
   }) async {
-    final res = await _post(
-        '/api/referrals/link-vant-account', {'token': token, 'deviceId': deviceId});
+    final res = await _post('/api/referrals/link-vant-account',
+        {'token': token, 'deviceId': deviceId});
     return _decode(res, 'linkVantAccount');
   }
 
@@ -299,5 +308,132 @@ class ApiService extends GetxService {
       debugPrint('⚠️ reportUnverifiedIap failed: $e');
       return false;
     }
+  }
+
+  // ── Groups ────────────────────────────────────────────────────────────────────
+
+  Future<Map<String, dynamic>> createGroup({
+    required String name,
+    required String createdBy,
+    List<String> memberDeviceIds = const [],
+    String? avatarUrl,
+  }) async {
+    final res = await _post('/api/groups', {
+      'name': name,
+      'createdBy': createdBy,
+      'memberDeviceIds': memberDeviceIds,
+      if (avatarUrl != null) 'avatarUrl': avatarUrl,
+    });
+    return _decode(res, 'createGroup');
+  }
+
+  Future<Map<String, dynamic>> getGroup({
+    required String groupId,
+    required String deviceId,
+  }) async {
+    final res = await _get('/api/groups/$groupId?deviceId=$deviceId');
+    return _decode(res, 'getGroup');
+  }
+
+  Future<List<dynamic>> getGroupsForDevice(String deviceId) async {
+    final res = await _get('/api/groups?deviceId=$deviceId');
+    final data = _decode(res, 'getGroupsForDevice');
+    return data['groups'] as List<dynamic>? ?? [];
+  }
+
+  Future<Map<String, dynamic>> addGroupMembers({
+    required String groupId,
+    required String deviceId,
+    required List<String> memberDeviceIds,
+  }) async {
+    final res = await _post('/api/groups/$groupId/members', {
+      'deviceId': deviceId,
+      'memberDeviceIds': memberDeviceIds,
+    });
+    return _decode(res, 'addGroupMembers');
+  }
+
+  Future<Map<String, dynamic>> removeGroupMember({
+    required String groupId,
+    required String targetDeviceId,
+    required String deviceId,
+  }) async {
+    final res = await _delete(
+      '/api/groups/$groupId/members/$targetDeviceId',
+      body: {'deviceId': deviceId},
+    );
+    return _decode(res, 'removeGroupMember');
+  }
+
+  Future<Map<String, dynamic>> leaveGroup({
+    required String groupId,
+    required String deviceId,
+  }) async {
+    return removeGroupMember(
+      groupId: groupId,
+      targetDeviceId: deviceId,
+      deviceId: deviceId,
+    );
+  }
+
+  Future<Map<String, dynamic>> updateGroupInfo({
+    required String groupId,
+    required String deviceId,
+    String? name,
+    String? avatarUrl,
+  }) async {
+    final body = <String, dynamic>{'deviceId': deviceId};
+    if (name != null) body['name'] = name;
+    if (avatarUrl != null) body['avatarUrl'] = avatarUrl;
+    final res = await _patch('/api/groups/$groupId', body);
+    return _decode(res, 'updateGroupInfo');
+  }
+
+  Future<Map<String, dynamic>> promoteGroupMember({
+    required String groupId,
+    required String targetDeviceId,
+    required String deviceId,
+  }) async {
+    final res = await _post(
+      '/api/groups/$groupId/admins/$targetDeviceId',
+      {'deviceId': deviceId},
+    );
+    return _decode(res, 'promoteGroupMember');
+  }
+
+  Future<Map<String, dynamic>> demoteGroupMember({
+    required String groupId,
+    required String targetDeviceId,
+    required String deviceId,
+  }) async {
+    final res = await _delete(
+      '/api/groups/$groupId/admins/$targetDeviceId',
+      body: {'deviceId': deviceId},
+    );
+    return _decode(res, 'demoteGroupMember');
+  }
+
+  Future<Map<String, dynamic>> dissolveGroup({
+    required String groupId,
+    required String deviceId,
+  }) async {
+    final res =
+        await _delete('/api/groups/$groupId', body: {'deviceId': deviceId});
+    return _decode(res, 'dissolveGroup');
+  }
+
+  Future<Map<String, dynamic>> joinGroupByInvite({
+    required String inviteCode,
+    required String deviceId,
+  }) async {
+    final res = await _post('/api/groups/join/$inviteCode', {
+      'deviceId': deviceId,
+    });
+    return _decode(res, 'joinGroupByInvite');
+  }
+
+  Future<Map<String, dynamic>> getGroupByInviteCode(String inviteCode) async {
+    final res = await _get('/api/groups/invite/$inviteCode');
+    return _decode(res, 'getGroupByInviteCode');
   }
 }

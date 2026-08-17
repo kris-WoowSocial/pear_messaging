@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
+import 'package:pear_messaging/core/services/api_service.dart';
 import 'package:pear_messaging/core/services/fcm_service.dart';
 import 'package:pear_messaging/storage/models/connection_request_entity.dart';
 import 'package:uuid/uuid.dart';
@@ -27,6 +28,7 @@ import 'package:flutter/foundation.dart' as foundation;
 class ChatListController extends GetxController {
   final LocalStorageService _storageService = Get.find();
   final SocketService _socketService = Get.find();
+  final ApiService _apiService = ApiService.to;
 
   final TextEditingController searchController = TextEditingController();
   final TextEditingController userNameController = TextEditingController();
@@ -56,6 +58,7 @@ class ChatListController extends GetxController {
     _loadUserName();
     _syncExistingUsernames();
     _syncMembership();
+    _syncGroupsFromServer();
   }
 
   /// Sync membership from server in background on app open.
@@ -69,6 +72,28 @@ class ChatListController extends GetxController {
         await membershipService.syncMembershipFromServer(deviceId);
       } catch (e) {
         foundation.debugPrint('⚠️ Membership sync failed: $e');
+      }
+    });
+  }
+
+  /// Sync groups from server in background on app open.
+  void _syncGroupsFromServer() {
+    Future.microtask(() async {
+      try {
+        final deviceId = _storageService.deviceId;
+        if (deviceId == null) return;
+        final groups = await _apiService.getGroupsForDevice(deviceId);
+        for (final group in groups) {
+          final groupData = group is Map<String, dynamic>
+              ? group
+              : Map<String, dynamic>.from(group as Map);
+          await _storageService.saveGroupChatFromApi(groupData,
+              myDeviceId: deviceId);
+        }
+        loadChats();
+        debugPrint('🔄 Synced ${groups.length} groups from server');
+      } catch (e) {
+        debugPrint('⚠️ Failed to sync groups from server: $e');
       }
     });
   }
@@ -262,6 +287,16 @@ class ChatListController extends GetxController {
     // Listen for incoming messages to create/update conversations
     _socketService.onMessageReceived = _handleIncomingMessage;
     _socketService.onPendingMessages = _handlePendingMessages;
+    _socketService.onGroupMessageReceived = _handleGroupMessage;
+
+    // Listen for group management events
+    _socketService.onGroupCreated = _onGroupCreated;
+    _socketService.onGroupMemberAdded = _onGroupMemberChange;
+    _socketService.onGroupMemberRemoved = _onGroupMemberChange;
+    _socketService.onGroupMemberLeft = _onGroupMemberChange;
+    _socketService.onGroupInfoUpdated = _onGroupInfoUpdated;
+    _socketService.onGroupDissolved = _onGroupDissolved;
+
     _socketService.processPendingMessages();
   }
 
@@ -323,13 +358,15 @@ class ChatListController extends GetxController {
     final messageTime = DateTime.fromMillisecondsSinceEpoch(timestamp);
 
     // Check if this is an image message (MEDIA: token or legacy IMAGE: base64)
-    final bool isImageMessage =
-        decryptedContent.startsWith('MEDIA:') ||
+    final bool isImageMessage = decryptedContent.startsWith('MEDIA:') ||
         decryptedContent.startsWith('IMAGE:');
+    final bool isFileMessage = decryptedContent.startsWith('FILE:');
     final String content = decryptedContent;
-    final MessageType messageType = isImageMessage
-        ? MessageType.image
-        : MessageType.text;
+    final MessageType messageType = isFileMessage
+        ? MessageType.file
+        : isImageMessage
+            ? MessageType.image
+            : MessageType.text;
 
     // Check if chat exists for this sender
     final existingChatIndex = chats.indexWhere((chat) => chat.id == senderId);
@@ -417,8 +454,7 @@ class ChatListController extends GetxController {
             '📋 CHAT LIST LOG: Found invitation chat: ${invitationChat.toJson()}',
           );
 
-          final displayName =
-              invitationChat.userName.isNotEmpty &&
+          final displayName = invitationChat.userName.isNotEmpty &&
                   invitationChat.userName != invitationChat.id
               ? invitationChat.userName
               : StringUtils.generateFriendlyName(senderId);
@@ -593,7 +629,8 @@ class ChatListController extends GetxController {
     filteredChats.value = List.from(chats);
   }
 
-  Future<void> _handlePendingMessages(List<Map<String, dynamic>> messages) async {
+  Future<void> _handlePendingMessages(
+      List<Map<String, dynamic>> messages) async {
     foundation.debugPrint('📬 Handling ${messages.length} pending messages');
 
     // Sort messages by timestamp to maintain order
@@ -645,6 +682,165 @@ class ChatListController extends GetxController {
     }
   }
 
+  /// Handle an incoming group message.
+  Future<void> _handleGroupMessage(Map<String, dynamic> data) async {
+    debugPrint('📬 CHAT LIST LOG: _handleGroupMessage called');
+    debugPrint('🔍 CHAT LIST LOG: Incoming group message data: $data');
+
+    final groupId = data['groupId']?.toString();
+    final senderId = data['senderDeviceId']?.toString();
+    final messageId = data['messageId']?.toString() ?? _uuid.v4();
+    final cipherText = data['encryptedPayload']?.toString() ?? '';
+    final timestamp =
+        data['timestamp'] as int? ?? DateTime.now().millisecondsSinceEpoch;
+
+    if (groupId == null || senderId == null) {
+      debugPrint('⚠️ CHAT LIST LOG: Invalid group message payload: $data');
+      return;
+    }
+
+    if (_processedMessageIds.contains(messageId)) {
+      debugPrint('⚠️ Group message already processed, skipping: $messageId');
+      return;
+    }
+    _processedMessageIds.add(messageId);
+
+    if (_storageService.messageExists(messageId)) {
+      debugPrint('🔁 Group message $messageId already in storage, skipping');
+      return;
+    }
+
+    // Parse reply metadata if present
+    ReplyToEntity? replyToEntity;
+    if (data['replyTo'] != null) {
+      try {
+        replyToEntity = ReplyToEntity.fromJson(
+          Map<String, dynamic>.from(data['replyTo'] as Map),
+        );
+      } catch (e) {
+        debugPrint('⚠️ Failed to parse group reply metadata: $e');
+      }
+    }
+
+    final decryptedContent = SocketService.decryptMessage(cipherText);
+    final messageTime = DateTime.fromMillisecondsSinceEpoch(timestamp);
+    final isImageMessage = decryptedContent.startsWith('MEDIA:') ||
+        decryptedContent.startsWith('IMAGE:');
+    final isFileMessage = decryptedContent.startsWith('FILE:');
+    final content = decryptedContent;
+    final messageType = isFileMessage
+        ? MessageType.file
+        : isImageMessage
+            ? MessageType.image
+            : MessageType.text;
+
+    // Ensure the group chat exists locally; fetch from server if missing.
+    ChatEntity? groupChat = _storageService.getChat(groupId);
+    if (groupChat == null) {
+      try {
+        final deviceId = _storageService.deviceId ?? '';
+        if (deviceId.isNotEmpty) {
+          final response =
+              await _apiService.getGroup(groupId: groupId, deviceId: deviceId);
+          final groupData = response['group'] as Map<String, dynamic>?;
+          if (groupData != null) {
+            groupChat = await _storageService.saveGroupChatFromApi(groupData,
+                myDeviceId: deviceId);
+          }
+        }
+      } catch (e) {
+        debugPrint('⚠️ Failed to fetch group info for $groupId: $e');
+      }
+    }
+
+    // Save message
+    final message = MessageEntity(
+      id: messageId,
+      chatId: groupId,
+      senderId: senderId,
+      receiverId: groupId,
+      content: content,
+      timestamp: messageTime,
+      status: MessageStatus.delivered,
+      isMe: senderId == _storageService.deviceId,
+      type: messageType,
+      replyTo: replyToEntity,
+    );
+    await _storageService.saveMessage(message);
+
+    // Send delivery ack
+    if (_socketService.isConnected.value) {
+      _socketService.sendGroupMessageAck(
+          messageId: messageId, groupId: groupId);
+    }
+
+    // Update UI
+    loadChats();
+
+    // Show notification if not currently viewing this group
+    if (FCMService.activeChatId != groupId) {
+      final badgeService = Get.find<BadgeService>();
+      await badgeService.incrementBadge();
+    }
+  }
+
+  /// Handle group_created event (e.g. when added to a new group).
+  Future<void> _onGroupCreated(Map<String, dynamic> data) async {
+    debugPrint('👥 CHAT LIST LOG: group_created: $data');
+    final groupData = data['group'] as Map<String, dynamic>?;
+    if (groupData == null) return;
+    await _saveGroupAndRefresh(groupData);
+  }
+
+  /// Handle group member added/removed/left events.
+  Future<void> _onGroupMemberChange(Map<String, dynamic> data) async {
+    debugPrint('👥 CHAT LIST LOG: group member change: $data');
+    final groupId = data['groupId']?.toString();
+    if (groupId == null) return;
+    await _refreshGroupFromServer(groupId);
+  }
+
+  /// Handle group_info_updated event.
+  Future<void> _onGroupInfoUpdated(Map<String, dynamic> data) async {
+    debugPrint('👥 CHAT LIST LOG: group_info_updated: $data');
+    final groupId = data['groupId']?.toString();
+    if (groupId == null) return;
+    await _refreshGroupFromServer(groupId);
+  }
+
+  /// Handle group_dissolved event.
+  Future<void> _onGroupDissolved(Map<String, dynamic> data) async {
+    debugPrint('👥 CHAT LIST LOG: group_dissolved: $data');
+    final groupId = data['groupId']?.toString();
+    if (groupId == null) return;
+    await _storageService.deleteChat(groupId);
+    loadChats();
+  }
+
+  Future<void> _saveGroupAndRefresh(Map<String, dynamic> groupData) async {
+    final deviceId = _storageService.deviceId;
+    if (deviceId == null || deviceId.isEmpty) return;
+    await _storageService.saveGroupChatFromApi(groupData, myDeviceId: deviceId);
+    loadChats();
+  }
+
+  Future<void> _refreshGroupFromServer(String groupId) async {
+    final deviceId = _storageService.deviceId;
+    if (deviceId == null || deviceId.isEmpty) return;
+    try {
+      final response =
+          await _apiService.getGroup(groupId: groupId, deviceId: deviceId);
+      final groupData = response['group'] as Map<String, dynamic>?;
+      if (groupData != null) {
+        await _storageService.saveGroupChatFromApi(groupData,
+            myDeviceId: deviceId);
+        loadChats();
+      }
+    } catch (e) {
+      debugPrint('⚠️ Failed to refresh group $groupId: $e');
+    }
+  }
+
   /// Check if message already exists locally (deduplication)
   bool _messageExists(String messageId) {
     try {
@@ -665,10 +861,13 @@ class ChatListController extends GetxController {
         chats.add(
           ChatListModel(
             id: chat.id,
-            userName: chat.userName,
+            userName: chat.isGroupChat
+                ? (chat.groupName ?? chat.userName)
+                : chat.userName,
             lastMessage: chat.lastMessage ?? '',
             lastMessageTime: chat.lastMessageTime ?? DateTime.now(),
             unreadCount: chat.unreadCount,
+            isGroup: chat.isGroupChat,
           ),
         );
       }
@@ -723,11 +922,62 @@ class ChatListController extends GetxController {
             (chat) =>
                 chat.userName.toLowerCase().contains(query.toLowerCase()) ||
                 (chat.lastMessage?.toLowerCase().contains(
-                      query.toLowerCase(),
-                    ) ??
+                          query.toLowerCase(),
+                        ) ??
                     false),
           )
           .toList();
+    }
+  }
+
+  /// Create a new group and open it.
+  Future<void> createGroup({
+    required String name,
+    required List<String> memberDeviceIds,
+  }) async {
+    try {
+      final deviceId = _storageService.deviceId;
+      if (deviceId == null || deviceId.isEmpty) {
+        Get.snackbar('Error', 'Device ID not available');
+        return;
+      }
+
+      final response = await _apiService.createGroup(
+        name: name.trim(),
+        createdBy: deviceId,
+        memberDeviceIds: memberDeviceIds,
+      );
+      final groupData = response['group'] as Map<String, dynamic>?;
+      if (groupData == null) {
+        Get.snackbar('Error', 'Failed to create group');
+        return;
+      }
+
+      final chat = await _storageService.saveGroupChatFromApi(
+        groupData,
+        myDeviceId: deviceId,
+      );
+      if (chat == null) {
+        Get.snackbar('Error', 'Failed to save group');
+        return;
+      }
+
+      loadChats();
+
+      Get.toNamed(
+        AppRoutes.chat,
+        arguments: {
+          'chatId': chat.id,
+          'userName': chat.groupName ?? chat.userName,
+          'recipientDeviceId': chat.id,
+          'myDeviceId': deviceId,
+          'isGroup': true,
+          'members': chat.members.map((m) => m.toJson()).toList(),
+        },
+      );
+    } catch (e) {
+      debugPrint('❌ Error creating group: $e');
+      Get.snackbar('Error', 'Failed to create group: $e');
     }
   }
 
@@ -742,6 +992,9 @@ class ChatListController extends GetxController {
       firstMessageSent = true; // Since they already sent the request
     }
 
+    final isGroup = chat.isGroup;
+    final chatEntity = _storageService.getChat(chat.id);
+
     Get.toNamed(
       AppRoutes.chat,
       arguments: {
@@ -751,6 +1004,8 @@ class ChatListController extends GetxController {
         'myDeviceId': _storageService.deviceId, // Add current user's device ID
         'isPendingConnection': isPendingConnection,
         'firstMessageSent': firstMessageSent,
+        'isGroup': isGroup,
+        'members': chatEntity?.members.map((m) => m.toJson()).toList() ?? [],
       },
     );
   }

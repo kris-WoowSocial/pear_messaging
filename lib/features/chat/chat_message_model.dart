@@ -11,6 +11,13 @@ class ChatMessageModel {
   final String? mediaToken;
   final DateTime? mediaExpiryTimestamp;
   final ReplyToEntity? replyTo;
+  final String? senderName;
+  final int? totalMembers;
+  final int? deliveredCount;
+  final int? readCount;
+  final String? fileName;
+  final int? fileSize;
+  final bool? isCompressed;
 
   ChatMessageModel({
     required this.id,
@@ -22,10 +29,20 @@ class ChatMessageModel {
     this.mediaToken,
     this.mediaExpiryTimestamp,
     this.replyTo,
+    this.senderName,
+    this.totalMembers,
+    this.deliveredCount,
+    this.readCount,
+    this.fileName,
+    this.fileSize,
+    this.isCompressed,
   });
 
   /// Check if message is an image
   bool get isImage => type == MessageType.image;
+
+  /// Check if message is a file/document
+  bool get isFile => type == MessageType.file;
 
   /// Check if media has expired
   bool get isMediaExpired {
@@ -47,6 +64,13 @@ class ChatMessageModel {
       mediaToken: entity.mediaToken,
       mediaExpiryTimestamp: entity.mediaExpiryTimestamp,
       replyTo: entity.replyTo,
+      senderName: entity.senderName,
+      totalMembers: entity.totalMembers,
+      deliveredCount: entity.deliveredCount,
+      readCount: entity.readCount,
+      fileName: entity.fileName,
+      fileSize: entity.fileSize,
+      isCompressed: entity.isCompressed,
     );
   }
 }

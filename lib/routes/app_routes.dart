@@ -21,6 +21,8 @@ import '../features/call/active_call_screen.dart';
 import '../features/call/call_controller.dart';
 import '../features/call_history/call_history_screen.dart';
 import '../features/call_history/call_history_controller.dart';
+import '../features/groups/create_group_screen.dart';
+import '../features/groups/group_settings_screen.dart';
 
 class AppRoutes {
   static const String notificationPermission = '/notification-permission';
@@ -37,6 +39,8 @@ class AppRoutes {
   static const String callOutgoing = '/call/outgoing';
   static const String callActive = '/call/active';
   static const String callHistory = '/call-history';
+  static const String createGroup = '/create-group';
+  static const String groupSettings = '/group-settings';
 
   static final routes = [
     GetPage(
@@ -93,6 +97,14 @@ class AppRoutes {
       binding: BindingsBuilder(() {
         Get.put(ChatController());
       }),
+    ),
+    GetPage(
+      name: createGroup,
+      page: () => const CreateGroupScreen(),
+    ),
+    GetPage(
+      name: groupSettings,
+      page: () => const GroupSettingsScreen(),
     ),
     GetPage(
       name: profile,

@@ -6,6 +6,7 @@ import 'package:get/get.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:pear_messaging/storage/models/chat_entity.dart';
 import 'package:pear_messaging/storage/models/connection_request_entity.dart';
+import 'package:pear_messaging/storage/models/group_member_entity.dart';
 import 'package:pear_messaging/storage/models/message_entity.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -132,7 +133,7 @@ class LocalStorageService extends GetxService {
 
   /// Get display name for a specific device ID
   /// For current device: custom name if set, otherwise generated friendly name
-  /// For other devices: generated friendly name (since we don't store custom names for other users)
+  /// For other devices: use the saved chat contact name, fallback to generated friendly name
   String getDisplayName(String deviceId) {
     // Check if this is the current device
     if (deviceId == this.deviceId) {
@@ -141,7 +142,11 @@ class LocalStorageService extends GetxService {
         return customName;
       }
     }
-    // For any device (current or other), return generated friendly name
+    // Try the saved 1-on-1 chat name for this device
+    final savedChatName = _prefs.getString('chat_name_$deviceId');
+    if (savedChatName != null && savedChatName.isNotEmpty) {
+      return savedChatName;
+    }
     return StringUtils.generateFriendlyName(deviceId);
   }
 
@@ -198,6 +203,15 @@ class LocalStorageService extends GetxService {
   }
 
   // Chat operations
+
+  /// Check if a chat ID represents a group chat.
+  bool isGroupChatId(String chatId) => chatId.startsWith('g_');
+
+  /// Get all group chats stored locally.
+  List<ChatEntity> getGroupChats() {
+    return getAllChats().where((chat) => chat.isGroupChat).toList();
+  }
+
   List<ChatEntity> getAllChats() {
     try {
       debugPrint(
@@ -263,7 +277,7 @@ class LocalStorageService extends GetxService {
       await _chatsBox.put(chat.id, jsonData);
 
       // Also save chat name for background notification access
-      if (chat.userName.isNotEmpty) {
+      if (chat.userName.isNotEmpty && !chat.isGroupChat) {
         await _prefs.setString('chat_name_${chat.id}', chat.userName);
         debugPrint(
             '💾 Chat name saved to SharedPreferences: ${chat.id} -> ${chat.userName}');
@@ -288,6 +302,49 @@ class LocalStorageService extends GetxService {
           '💾 Chat saved successfully. Box now has ${_chatsBox.length} items');
     } catch (e) {
       debugPrint('💾 Error saving chat: $e');
+    }
+  }
+
+  /// Save or update a group chat from backend API data.
+  Future<ChatEntity?> saveGroupChatFromApi(
+    Map<String, dynamic> apiGroup, {
+    String? myDeviceId,
+  }) async {
+    try {
+      final groupId = apiGroup['id'] as String?;
+      final name = apiGroup['name'] as String?;
+      if (groupId == null || name == null) return null;
+
+      final members = (apiGroup['members'] as List<dynamic>?)
+              ?.map((m) => GroupMemberEntity.fromJson(
+                  Map<String, dynamic>.from(m as Map)))
+              .toList() ??
+          [];
+      final admins =
+          members.where((m) => m.isAdmin).map((m) => m.deviceId).toList();
+
+      final chat = ChatEntity(
+        id: groupId,
+        userName: name,
+        isGroup: true,
+        groupName: name,
+        members: members,
+        admins: admins,
+        inviteCode: apiGroup['invite_code']?.toString(),
+        avatarUrl: apiGroup['avatar_url']?.toString(),
+        maxMembers: apiGroup['max_members'] as int? ?? 50,
+      );
+
+      final existing = getChat(groupId);
+      await saveChat(chat.copyWith(
+        lastMessage: existing?.lastMessage,
+        lastMessageTime: existing?.lastMessageTime,
+        unreadCount: existing?.unreadCount,
+      ));
+      return chat;
+    } catch (e) {
+      debugPrint('💾 Error saving group chat from API: $e');
+      return null;
     }
   }
 

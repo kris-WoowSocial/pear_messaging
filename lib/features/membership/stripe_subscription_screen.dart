@@ -805,8 +805,8 @@ class _StripeSubscriptionScreenState extends State<StripeSubscriptionScreen> {
       );
       Get.back();
       Get.snackbar(
-        'Trial Started!',
-        'Enjoy Premium free for 7 days. Cancel anytime.',
+        'Membership Activated',
+        'Your membership has been activated successfully.',
         snackPosition: SnackPosition.BOTTOM,
         backgroundColor: Colors.green.shade100,
         colorText: Colors.green.shade800,

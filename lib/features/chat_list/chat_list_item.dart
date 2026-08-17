@@ -23,6 +23,11 @@ class ChatListItem extends StatelessWidget {
       return 'No messages yet';
     }
 
+    // Check if this is a file message
+    if (lastMessage.startsWith('FILE:')) {
+      return '📎 Document';
+    }
+
     // Check if this looks like base64 image data (starts with /9j/ or data:image or is very long)
     if (lastMessage.startsWith('/9j/') ||
         lastMessage.startsWith('data:image') ||

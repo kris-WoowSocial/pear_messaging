@@ -7,6 +7,7 @@ class ChatListModel {
   final String avatarLetter;
   final bool isReply;
   final String? replyContent;
+  final bool isGroup;
 
   ChatListModel({
     required this.id,
@@ -16,5 +17,6 @@ class ChatListModel {
     this.unreadCount = 0,
     this.isReply = false,
     this.replyContent,
+    this.isGroup = false,
   }) : avatarLetter = userName.isNotEmpty ? userName[0].toUpperCase() : 'U';
 }

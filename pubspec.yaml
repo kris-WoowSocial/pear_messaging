@@ -2,7 +2,7 @@ name: pear_messaging
 description: "Secure local chat application"
 publish_to: "none"
 
-version: 1.5.4+154
+version: 1.6.1+161
 
 environment:
   sdk: ^3.5.4
@@ -101,6 +101,7 @@ dependencies:
   # Additional UI
   loading_animation_widget: ^1.2.0+8
   flutter_expandable_fab: ^2.5.2
+  open_filex: ^4.7.0
 
   # Encryption handled internally (XOR) - Now using proper cryptography
 

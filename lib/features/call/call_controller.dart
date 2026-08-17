@@ -840,9 +840,7 @@ class CallController extends GetxController {
         await prefs
             .reload(); // Force fresh read from disk - bypasses stale cache
         final pendingCallId = prefs.getString('pendingAcceptedCallId');
-        debugPrint(
-          '📞 _checkPendingAutoAccept (retry $retryCount): pendingCallId = $pendingCallId',
-        );
+       
 
         if (pendingCallId != null && pendingCallId.isNotEmpty) {
           debugPrint('📞 Found pending accepted call: $pendingCallId');
@@ -879,11 +877,12 @@ class CallController extends GetxController {
             // Clear auto-accept flag since we can't proceed
             clearPendingAutoAccept();
           }
-        } else {
-          debugPrint(
-            '📞 No pending accepted call found in storage (retry $retryCount)',
-          );
-        }
+        } 
+        // else {
+        //   debugPrint(
+        //     '📞 No pending accepted call found in storage (retry $retryCount)',
+        //   );
+        // }
       } catch (e) {
         debugPrint(
           '❌ Error checking pending auto-accept (retry $retryCount): $e',

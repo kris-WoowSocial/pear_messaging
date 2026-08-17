@@ -22,6 +22,7 @@ import '../../core/services/encryption_service.dart';
 import '../../core/services/media_upload_service.dart';
 import '../../core/utils/string_utils.dart';
 import 'chat_settings_screen.dart';
+import '../groups/group_settings_screen.dart';
 
 class ChatScreen extends GetView<ChatController> {
   const ChatScreen({super.key});
@@ -65,13 +66,15 @@ class ChatScreen extends GetView<ChatController> {
             children: [
               Obx(
                 () => Text(
-                  (controller.displayName.value.isNotEmpty &&
-                          controller.recipientDeviceId !=
-                              controller.displayName.value)
+                  controller.isGroup
                       ? controller.displayName.value
-                      : StringUtils.generateFriendlyName(
-                          controller.recipientDeviceId,
-                        ),
+                      : (controller.displayName.value.isNotEmpty &&
+                              controller.recipientDeviceId !=
+                                  controller.displayName.value)
+                          ? controller.displayName.value
+                          : StringUtils.generateFriendlyName(
+                              controller.recipientDeviceId,
+                            ),
                   style: const TextStyle(
                     fontSize: AppSizes.fontM,
                     fontWeight: FontWeight.bold,
@@ -80,23 +83,35 @@ class ChatScreen extends GetView<ChatController> {
                 ),
               ),
               Obx(
-                () => Text(
-                  controller.recipientStatus.value,
-                  style: TextStyle(
-                    fontSize: AppSizes.fontS,
-                    fontWeight: FontWeight.w600,
-                    color: controller.recipientOnline.value ||
-                            (controller.recipientLastSeen.value != null &&
-                                DateTime.now()
-                                        .difference(
-                                          controller.recipientLastSeen.value!,
-                                        )
-                                        .inHours <
-                                    24)
-                        ? Colors.green
-                        : Colors.grey,
-                  ),
-                ),
+                () => controller.isGroup
+                    ? Text(
+                        controller.groupMemberCount.value > 0
+                            ? '${controller.groupMemberCount.value} members'
+                            : 'Group',
+                        style: const TextStyle(
+                          fontSize: AppSizes.fontS,
+                          fontWeight: FontWeight.w600,
+                          color: Colors.grey,
+                        ),
+                      )
+                    : Text(
+                        controller.recipientStatus.value,
+                        style: TextStyle(
+                          fontSize: AppSizes.fontS,
+                          fontWeight: FontWeight.w600,
+                          color: controller.recipientOnline.value ||
+                                  (controller.recipientLastSeen.value != null &&
+                                      DateTime.now()
+                                              .difference(
+                                                controller
+                                                    .recipientLastSeen.value!,
+                                              )
+                                              .inHours <
+                                          24)
+                              ? Colors.green
+                              : Colors.grey,
+                        ),
+                      ),
               ),
             ],
           ),
@@ -117,21 +132,26 @@ class ChatScreen extends GetView<ChatController> {
             },
           ),
           actions: [
-            IconButton(
-              icon: const Icon(Icons.call, color: Colors.black),
-              onPressed: () {
-                debugPrint('📞 Call button pressed');
-                _startAudioCall();
-              },
-              tooltip: 'Audio Call',
-            ),
+            if (!controller.isGroup)
+              IconButton(
+                icon: const Icon(Icons.call, color: Colors.black),
+                onPressed: () {
+                  debugPrint('📞 Call button pressed');
+                  _startAudioCall();
+                },
+                tooltip: 'Audio Call',
+              ),
             IconButton(
               icon: const Icon(Icons.settings, color: Colors.black),
               onPressed: () {
                 debugPrint('🔧 DEBUG: settings button pressed');
-                Get.to(() => const ChatSettingsScreen());
+                if (controller.isGroup) {
+                  Get.to(() => const GroupSettingsScreen());
+                } else {
+                  Get.to(() => const ChatSettingsScreen());
+                }
               },
-              tooltip: 'Chat Settings',
+              tooltip: controller.isGroup ? 'Group Settings' : 'Chat Settings',
             ),
           ],
         ),
@@ -217,6 +237,7 @@ class ChatScreen extends GetView<ChatController> {
                                 'msg_${message.id}_${message.timestamp.millisecondsSinceEpoch}',
                               ),
                               message: message,
+                              isGroup: controller.isGroup,
                             );
                           },
                         ),
@@ -500,57 +521,62 @@ class ChatScreen extends GetView<ChatController> {
     final ImagePicker imagePicker = ImagePicker();
 
     Get.bottomSheet(
-      Container(
-        decoration: const BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-        ),
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            // Handle bar
-            Container(
-              width: 40,
-              height: 4,
-              margin: const EdgeInsets.only(bottom: 20),
-              decoration: BoxDecoration(
-                color: Colors.grey[300],
-                borderRadius: BorderRadius.circular(2),
+      SafeArea(
+        child: Container(
+          decoration: const BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+          ),
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // Handle bar
+              Container(
+                width: 36,
+                height: 4,
+                margin: const EdgeInsets.only(bottom: 24),
+                decoration: BoxDecoration(
+                  color: Colors.grey[300],
+                  borderRadius: BorderRadius.circular(2),
+                ),
               ),
-            ),
-            const Text(
-              'Send Photo',
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 24),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-              children: [
-                // Camera option
-                _buildAttachmentOption(
-                  icon: Icons.camera_alt,
-                  label: 'Camera',
-                  color: Colors.blue,
-                  onTap: () async {
-                    Get.back();
-                    await _pickAndSendImage(imagePicker, ImageSource.camera);
-                  },
-                ),
-                // Gallery option
-                _buildAttachmentOption(
-                  icon: Icons.photo_library,
-                  label: 'Gallery',
-                  color: Colors.green,
-                  onTap: () async {
-                    Get.back();
-                    await _pickAndSendImage(imagePicker, ImageSource.gallery);
-                  },
-                ),
-              ],
-            ),
-            const SizedBox(height: 16),
-          ],
+              // First row of options
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceAround,
+                children: [
+                  _buildAttachmentOption(
+                    icon: Icons.insert_drive_file,
+                    label: 'Document',
+                    color: const Color(0xFF7F66FF),
+                    onTap: () async {
+                      Get.back();
+                      await _pickAndSendDocument();
+                    },
+                  ),
+                  _buildAttachmentOption(
+                    icon: Icons.camera_alt,
+                    label: 'Camera',
+                    color: const Color(0xFFFF2E74),
+                    onTap: () async {
+                      Get.back();
+                      await _pickAndSendImage(imagePicker, ImageSource.camera);
+                    },
+                  ),
+                  _buildAttachmentOption(
+                    icon: Icons.photo,
+                    label: 'Gallery',
+                    color: const Color(0xFFC861F9),
+                    onTap: () async {
+                      Get.back();
+                      await _pickAndSendImage(imagePicker, ImageSource.gallery);
+                    },
+                  ),
+                ],
+              ),
+              const SizedBox(height: 20),
+            ],
+          ),
         ),
       ),
       isScrollControlled: true,
@@ -566,21 +592,171 @@ class ChatScreen extends GetView<ChatController> {
     return GestureDetector(
       onTap: onTap,
       child: Column(
+        mainAxisSize: MainAxisSize.min,
         children: [
           Container(
-            width: 60,
-            height: 60,
+            width: 56,
+            height: 56,
             decoration: BoxDecoration(
-              color: color.withOpacity(0.1),
-              borderRadius: BorderRadius.circular(30),
+              color: color,
+              shape: BoxShape.circle,
             ),
-            child: Icon(icon, color: color, size: 28),
+            child: Icon(icon, color: Colors.white, size: 26),
           ),
           const SizedBox(height: 8),
-          Text(label, style: TextStyle(fontSize: 12, color: Colors.grey[700])),
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 12,
+              color: Colors.grey[700],
+              fontWeight: FontWeight.w500,
+            ),
+          ),
         ],
       ),
     );
+  }
+
+  /// File extensions that are already compressed — gzip won't help and just
+  /// wastes CPU time, slowing down the send.
+  static const Set<String> _preCompressedExtensions = {
+    'pdf',
+    'zip',
+    'rar',
+    '7z',
+    'jpg',
+    'jpeg',
+    'png',
+    'gif',
+    'webp',
+    'mp4',
+    'mp3',
+    'mov',
+    'avi',
+    'mkv',
+    'docx',
+    'xlsx',
+    'pptx',
+    'apk',
+  };
+
+  /// Pick a document/file and send it through the media upload pipeline.
+  Future<void> _pickAndSendDocument() async {
+    String? pendingMsgId;
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.any,
+        allowMultiple: false,
+        withData: true,
+      );
+      if (result == null || result.files.isEmpty) return;
+
+      final file = result.files.first;
+      final fileName = file.name;
+      final bytes = file.bytes ??
+          (file.path != null ? await File(file.path!).readAsBytes() : null);
+      if (bytes == null || bytes.isEmpty) {
+        Get.snackbar(
+          'Error',
+          'Could not read the selected file.',
+          snackPosition: SnackPosition.BOTTOM,
+          backgroundColor: Colors.red.shade100,
+          colorText: Colors.red.shade800,
+        );
+        return;
+      }
+
+      final fileSize = bytes.length;
+      final rawBytes = Uint8List.fromList(bytes);
+
+      // Hard limit: 10 MB
+      if (fileSize > 10 * 1024 * 1024) {
+        Get.snackbar(
+          'File Too Large',
+          'Please select a file smaller than 10 MB.',
+          snackPosition: SnackPosition.BOTTOM,
+          backgroundColor: Colors.red.shade100,
+          colorText: Colors.red.shade800,
+        );
+        return;
+      }
+
+      // Create a pending file message with metadata; cache raw bytes locally
+      // so the sender can preview/open it instantly without re-downloading.
+      pendingMsgId = await controller.createPendingFileMessage(
+        fileName: fileName,
+        fileSize: fileSize,
+        localBytes: rawBytes,
+      );
+      if (pendingMsgId == null) return;
+
+      // If file > 5 MB and not already a compressed format, try gzip
+      // (off the main thread so the UI stays responsive).
+      final ext =
+          fileName.contains('.') ? fileName.split('.').last.toLowerCase() : '';
+      bool isCompressed = false;
+      Uint8List dataToSend = rawBytes;
+      if (fileSize > 5 * 1024 * 1024 &&
+          !_preCompressedExtensions.contains(ext)) {
+        debugPrint(
+            '📦 Document > 5 MB ($fileSize bytes), trying gzip compression...');
+        final compressedBytes = await compute(_gzipIfBeneficial, rawBytes);
+        if (compressedBytes != null) {
+          dataToSend = compressedBytes;
+          isCompressed = true;
+          debugPrint('📦 Compressed: $fileSize -> ${dataToSend.length} bytes');
+        } else {
+          debugPrint('📦 Compression not beneficial, using original');
+        }
+      }
+
+      // Encrypt off the main thread to avoid UI jank on large files.
+      final encryptedBlob = await compute(_encryptFileBlob, dataToSend);
+
+      final token = await MediaUploadService.uploadImage(
+        encryptedBlob,
+        onProgress: (progress) {
+          controller.uploadProgressMap[pendingMsgId]?.value = progress;
+        },
+      );
+
+      await controller.finalizeFileMessage(
+        messageId: pendingMsgId,
+        token: token,
+        fileName: fileName,
+        fileSize: fileSize,
+        isCompressed: isCompressed,
+      );
+      debugPrint(
+          '✅ Document sent via media server, token=$token, name=$fileName');
+    } catch (e) {
+      debugPrint('❌ Error sending document: $e');
+      if (pendingMsgId != null) {
+        controller.uploadProgressMap.remove(pendingMsgId);
+        controller.messages.removeWhere((msg) => msg.id == pendingMsgId);
+      }
+
+      String errorMessage = 'Failed to send file. Please try again.';
+      if (e.toString().contains('413') ||
+          e.toString().toLowerCase().contains('too large')) {
+        errorMessage =
+            'File is too large for the server. Please choose a smaller file.';
+      } else if (e.toString().contains('timeout')) {
+        errorMessage =
+            'Upload timed out. Please check your connection and try again.';
+      } else if (e.toString().contains('Network')) {
+        errorMessage = 'Network error. Please check your internet connection.';
+      }
+
+      Get.snackbar(
+        'Upload Failed',
+        errorMessage,
+        snackPosition: SnackPosition.BOTTOM,
+        backgroundColor: Colors.red.shade100,
+        colorText: Colors.red.shade800,
+        duration: const Duration(seconds: 4),
+      );
+    }
   }
 
   void _checkAndAutoOpenEditSheet() {
@@ -1061,7 +1237,9 @@ class ChatScreen extends GetView<ChatController> {
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
         child: Text(
-          '🔒 Messages and photos in this chat are end-to-end encrypted and peer-to-peer, with no servers in between. Only the people in this chat can read or share them. We are physically incapable of complying with data requests from third parties or government agencies. Our answer to every request is simple: The data does not exist.',
+          controller.isGroup
+              ? '🔒 Messages and photos in this group are end-to-end encrypted. Only members of this group can read or share them.'
+              : '🔒 Messages and photos in this chat are end-to-end encrypted and peer-to-peer, with no servers in between. Only the people in this chat can read or share them. We are physically incapable of complying with data requests from third parties or government agencies. Our answer to every request is simple: The data does not exist.',
           style: TextStyle(
             fontSize: 12,
             color: Colors.black,
@@ -1105,6 +1283,24 @@ class ChatScreen extends GetView<ChatController> {
       );
     }
   }
+}
+
+/// Gzip-compresses [bytes] if doing so actually reduces the size.
+/// Runs in a background isolate via [compute] to avoid blocking the UI
+/// thread for large files.
+Uint8List? _gzipIfBeneficial(Uint8List bytes) {
+  final compressed = GZipCodec().encode(bytes);
+  return compressed.length < bytes.length
+      ? Uint8List.fromList(compressed)
+      : null;
+}
+
+/// Base64-encodes and XOR-encrypts [bytes] for upload.
+/// Runs in a background isolate via [compute] so encrypting large files
+/// doesn't jank the UI thread.
+String _encryptFileBlob(Uint8List bytes) {
+  final base64Data = base64Encode(bytes);
+  return EncryptionService.encryptMessage(base64Data);
 }
 
 /// Compresses image at [filePath] targeting ≤ 150 KB binary output (reduced from 250KB).
