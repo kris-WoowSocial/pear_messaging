@@ -18,6 +18,8 @@ class ChatMessageModel {
   final String? fileName;
   final int? fileSize;
   final bool? isCompressed;
+  final int? audioDuration;
+  final String? waveformData;
 
   ChatMessageModel({
     required this.id,
@@ -36,6 +38,8 @@ class ChatMessageModel {
     this.fileName,
     this.fileSize,
     this.isCompressed,
+    this.audioDuration,
+    this.waveformData,
   });
 
   /// Check if message is an image
@@ -43,6 +47,9 @@ class ChatMessageModel {
 
   /// Check if message is a file/document
   bool get isFile => type == MessageType.file;
+
+  /// Check if message is an audio/voice message
+  bool get isAudio => type == MessageType.audio;
 
   /// Check if media has expired
   bool get isMediaExpired {
@@ -71,6 +78,8 @@ class ChatMessageModel {
       fileName: entity.fileName,
       fileSize: entity.fileSize,
       isCompressed: entity.isCompressed,
+      audioDuration: entity.audioDuration,
+      waveformData: entity.waveformData,
     );
   }
 }

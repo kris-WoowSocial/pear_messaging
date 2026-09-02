@@ -73,7 +73,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
           },
           backgroundColor: AppColors.surface,
           selectedItemColor: AppColors.primary,
-          unselectedItemColor: Colors.grey,
+          unselectedItemColor: Colors.black,
           type: BottomNavigationBarType.fixed,
           selectedLabelStyle: const TextStyle(fontWeight: FontWeight.w600),
           items: [

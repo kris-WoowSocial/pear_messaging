@@ -72,34 +72,8 @@ class ApiService extends GetxService {
     }
   }
 
-  /// Reports a successful in-app purchase (Apple IAP / Google Play Billing)
-  /// to the backend so it's recorded and referral commission is credited to
-  /// the influencer/inviter chain, if any. Without this call, real purchases
-  /// never reach the backend and influencers never get paid.
-  Future<Map<String, dynamic>> recordIAPPurchase({
-    required String deviceId,
-    required String planId,
-    required int amountCents,
-    required String currency,
-    required String purchaseId,
-    required String countryCode,
-    required String platform, // 'android' or 'ios'
-  }) async {
-    final res = await _post('/api/membership/record-google-play-purchase', {
-      'deviceId': deviceId,
-      'planId': planId,
-      'amount': amountCents,
-      'currency': currency,
-      'purchaseId': purchaseId,
-      'countryCode': countryCode,
-      'platform': platform,
-    });
-    return _decode(res, 'recordIAPPurchase');
-  }
-
   // ── Stripe subscription (7-day trial + auto-renew on the app's real ────────
   // 6_months / 1_year plans) ──────────────────────────────────────────────────
-  // New, additive endpoints - do not affect the existing in_app_purchase flow.
 
   Future<Map<String, dynamic>> createStripeSubscription(
       String deviceId, String planId,

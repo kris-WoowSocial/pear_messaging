@@ -390,6 +390,22 @@ object VantCallManager {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
+        val caller = androidx.core.app.Person.Builder()
+            .setName(callerName)
+            .setIcon(
+                androidx.core.graphics.drawable.IconCompat.createWithResource(
+                    context,
+                    R.drawable.ic_call_notification
+                )
+            )
+            .build()
+
+        val callStyle = NotificationCompat.CallStyle.forIncomingCall(
+            caller,
+            declinePendingIntent,
+            answerPendingIntent
+        )
+
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
             .setContentTitle(if (isVideo) "Incoming video call" else "Incoming call")
             .setContentText(callerName)
@@ -397,13 +413,11 @@ object VantCallManager {
             .setPriority(NotificationCompat.PRIORITY_MAX)
             .setCategory(NotificationCompat.CATEGORY_CALL)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-            .setFullScreenIntent(fullScreenPendingIntent, true)
+            .setStyle(callStyle)
             .setContentIntent(fullScreenPendingIntent)
             .setOngoing(true)
             .setAutoCancel(false)
             .setSilent(true)
-            .addAction(R.drawable.ic_call_answer, "Answer", answerPendingIntent)
-            .addAction(R.drawable.ic_call_end, "Decline", declinePendingIntent)
             .build()
 
         val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager

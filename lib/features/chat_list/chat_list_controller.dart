@@ -357,16 +357,19 @@ class ChatListController extends GetxController {
     final decryptedContent = SocketService.decryptMessage(cipherText);
     final messageTime = DateTime.fromMillisecondsSinceEpoch(timestamp);
 
-    // Check if this is an image message (MEDIA: token or legacy IMAGE: base64)
+    // Check if this is an image/audio/file message
     final bool isImageMessage = decryptedContent.startsWith('MEDIA:') ||
         decryptedContent.startsWith('IMAGE:');
+    final bool isAudioMessage = decryptedContent.startsWith('AUDIO:');
     final bool isFileMessage = decryptedContent.startsWith('FILE:');
     final String content = decryptedContent;
-    final MessageType messageType = isFileMessage
-        ? MessageType.file
-        : isImageMessage
-            ? MessageType.image
-            : MessageType.text;
+    final MessageType messageType = isAudioMessage
+        ? MessageType.audio
+        : isFileMessage
+            ? MessageType.file
+            : isImageMessage
+                ? MessageType.image
+                : MessageType.text;
 
     // Check if chat exists for this sender
     final existingChatIndex = chats.indexWhere((chat) => chat.id == senderId);
@@ -402,7 +405,9 @@ class ChatListController extends GetxController {
         debugPrint('📝 Found existing chat in storage for sender: $senderId');
 
         final actualUnreadCount = await _calculateUnreadCount(senderId);
-        final displayMessage = isImageMessage ? '📷 Photo' : content;
+        final displayMessage = isAudioMessage
+            ? '🎤 Voice message'
+            : (isImageMessage ? '📷 Photo' : content);
 
         // Update in storage
         final updatedChat = existingChat.copyWith(
@@ -459,7 +464,9 @@ class ChatListController extends GetxController {
               ? invitationChat.userName
               : StringUtils.generateFriendlyName(senderId);
           final actualUnreadCount = await _calculateUnreadCount(senderId);
-          final displayMessage = isImageMessage ? '📷 Photo' : content;
+          final displayMessage = isAudioMessage
+              ? '🎤 Voice message'
+              : (isImageMessage ? '📷 Photo' : content);
 
           debugPrint(
             '🏗️ CHAT LIST LOG: Creating regular chat for invitation response:',
@@ -526,7 +533,9 @@ class ChatListController extends GetxController {
           }
 
           final actualUnreadCount = await _calculateUnreadCount(senderId);
-          final displayMessage = isImageMessage ? '📷 Photo' : content;
+          final displayMessage = isAudioMessage
+              ? '🎤 Voice message'
+              : (isImageMessage ? '📷 Photo' : content);
 
           final chatModel = ChatListModel(
             id: senderId,
@@ -580,8 +589,10 @@ class ChatListController extends GetxController {
       // Calculate actual unread count by counting unread messages (now includes the new message)
       final actualUnreadCount = await _calculateUnreadCount(senderId);
 
-      // Display "📷 Photo" for image messages in chat list
-      final displayMessage = isImageMessage ? '📷 Photo' : content;
+      // Display "🎤 Voice message" or "📷 Photo" for media in chat list
+      final displayMessage = isAudioMessage
+          ? '🎤 Voice message'
+          : (isImageMessage ? '📷 Photo' : content);
 
       final updatedChat = ChatListModel(
         id: existingChat.id,
@@ -726,13 +737,16 @@ class ChatListController extends GetxController {
     final messageTime = DateTime.fromMillisecondsSinceEpoch(timestamp);
     final isImageMessage = decryptedContent.startsWith('MEDIA:') ||
         decryptedContent.startsWith('IMAGE:');
+    final isAudioMessage = decryptedContent.startsWith('AUDIO:');
     final isFileMessage = decryptedContent.startsWith('FILE:');
     final content = decryptedContent;
-    final messageType = isFileMessage
-        ? MessageType.file
-        : isImageMessage
-            ? MessageType.image
-            : MessageType.text;
+    final messageType = isAudioMessage
+        ? MessageType.audio
+        : isFileMessage
+            ? MessageType.file
+            : isImageMessage
+                ? MessageType.image
+                : MessageType.text;
 
     // Ensure the group chat exists locally; fetch from server if missing.
     ChatEntity? groupChat = _storageService.getChat(groupId);

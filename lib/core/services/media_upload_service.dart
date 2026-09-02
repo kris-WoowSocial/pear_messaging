@@ -173,4 +173,67 @@ class MediaUploadService {
       return null;
     }
   }
+
+  /// Download the encrypted blob for [token] without deleting it from S3.
+  /// Used for audio messages that must be downloaded by multiple recipients.
+  static Future<String?> downloadAudio(
+    String token, {
+    void Function(double progress)? onProgress,
+  }) async {
+    debugPrint('📥 MediaUploadService: downloading audio token=$token');
+
+    try {
+      final request = http.Request(
+        'GET',
+        Uri.parse('$_baseUrl/api/media/$token/download'),
+      );
+      final client = http.Client();
+
+      try {
+        final streamedResponse = await client.send(request).timeout(_timeout);
+
+        if (streamedResponse.statusCode == 410) {
+          debugPrint(
+            '⚠️ MediaUploadService: audio media expired or unavailable (410)',
+          );
+          return null;
+        }
+
+        if (streamedResponse.statusCode != 200) {
+          debugPrint(
+            '❌ MediaUploadService: audio download failed HTTP ${streamedResponse.statusCode}',
+          );
+          return null;
+        }
+
+        final contentLength = streamedResponse.contentLength ?? 0;
+        final chunks = <int>[];
+        int downloaded = 0;
+
+        await for (final chunk in streamedResponse.stream) {
+          chunks.addAll(chunk);
+          downloaded += chunk.length;
+
+          if (contentLength > 0) {
+            onProgress?.call(downloaded / contentLength);
+          }
+        }
+
+        final responseBody = utf8.decode(chunks);
+        final data = jsonDecode(responseBody) as Map<String, dynamic>;
+        final blob = data['encryptedBlob'] as String;
+
+        onProgress?.call(1.0);
+        debugPrint(
+          '✅ MediaUploadService: audio download succeeded (${blob.length} chars)',
+        );
+        return blob;
+      } finally {
+        client.close();
+      }
+    } catch (e) {
+      debugPrint('❌ MediaUploadService: audio download error: $e');
+      return null;
+    }
+  }
 }

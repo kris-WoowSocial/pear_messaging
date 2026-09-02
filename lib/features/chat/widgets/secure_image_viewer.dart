@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:photo_view/photo_view.dart';
 import '../../../core/services/secure_image_storage_service.dart';
+import '../../../core/services/image_download_service.dart';
 
 /// Secure Image Viewer
 ///
@@ -188,6 +189,20 @@ class _FullScreenImageViewer extends StatelessWidget {
     required this.onClose,
   });
 
+  Future<void> _saveImage(BuildContext context) async {
+    final saved = await ImageDownloadService.downloadImageToGallery(imageData);
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          saved
+              ? 'Image saved to the Vant Chat gallery folder'
+              : 'Allow photo access in Settings and try again',
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -206,9 +221,21 @@ class _FullScreenImageViewer extends StatelessWidget {
           SafeArea(
             child: Padding(
               padding: const EdgeInsets.all(8.0),
-              child: IconButton(
-                icon: const Icon(Icons.close, color: Colors.white, size: 28),
-                onPressed: onClose,
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  IconButton(
+                    icon:
+                        const Icon(Icons.close, color: Colors.white, size: 28),
+                    onPressed: onClose,
+                  ),
+                  IconButton(
+                    tooltip: 'Save to gallery',
+                    icon: const Icon(Icons.download,
+                        color: Colors.white, size: 28),
+                    onPressed: () => _saveImage(context),
+                  ),
+                ],
               ),
             ),
           ),

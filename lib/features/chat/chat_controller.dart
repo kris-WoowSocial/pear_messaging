@@ -30,6 +30,12 @@ class ChatController extends GetxController with WidgetsBindingObserver {
   final UrlPreviewService _urlPreviewService = Get.find();
   final _uuid = const Uuid(); // Initialize UUID generator
 
+  // Guards against duplicate UI bubbles when the same messageId is delivered
+  // twice in quick succession (e.g. a live socket event racing a
+  // pending-messages replay on reconnect). Must be checked/added
+  // synchronously before any `await` in the receive handlers below.
+  final Set<String> _processingMessageIds = {};
+
   bool _isDisposed = false;
   bool _isScreenActive = false;
   final Map<String, Timer> _messageTimeouts = {};
@@ -61,6 +67,7 @@ class ChatController extends GetxController with WidgetsBindingObserver {
 
   final RxBool recipientTyping = false.obs;
   final RxBool recipientOnline = false.obs;
+  final RxBool hasText = false.obs;
   final Rx<DateTime?> recipientLastSeen = Rx<DateTime?>(null);
   final RxString displayName = ''.obs;
   final RxBool isBlockedByMe = false.obs;
@@ -631,6 +638,20 @@ class ChatController extends GetxController with WidgetsBindingObserver {
     _socketService.onMessageReceived = (Map<String, dynamic> data) async {
       debugPrint('📩 ChatController received message: $data');
 
+      // Guard against the same message being delivered twice in quick
+      // succession (e.g. live delivery racing a pending-messages replay).
+      // Must run before any `await` so a second concurrent event can't
+      // slip through while the first is still mid-flight.
+      final incomingMessageId = data['messageId'] as String?;
+      if (incomingMessageId != null) {
+        if (_processingMessageIds.contains(incomingMessageId)) {
+          debugPrint(
+              '🔁 Duplicate message event ignored (already in flight): $incomingMessageId');
+          return;
+        }
+        _processingMessageIds.add(incomingMessageId);
+      }
+
       // Always call the previous handler first (ChatListController)
       // This ensures chat list is updated
       final previousResult = _previousMessageHandler?.call(data);
@@ -698,6 +719,8 @@ class ChatController extends GetxController with WidgetsBindingObserver {
         } else if (decryptedContent.startsWith('MEDIA:') ||
             decryptedContent.startsWith('IMAGE:')) {
           messageType = MessageType.image;
+        } else if (decryptedContent.startsWith('AUDIO:')) {
+          messageType = MessageType.audio;
         }
 
         // Parse reply metadata if present
@@ -740,6 +763,8 @@ class ChatController extends GetxController with WidgetsBindingObserver {
           fileName: data['fileName'] as String?,
           fileSize: data['fileSize'] as int?,
           isCompressed: data['compressed'] as bool?,
+          audioDuration: data['duration'] as int?,
+          waveformData: data['waveformData'] as String?,
         );
 
         await _storageService.saveMessage(message);
@@ -851,6 +876,14 @@ class ChatController extends GetxController with WidgetsBindingObserver {
         return;
       }
 
+      // Guard against duplicate delivery races (see onMessageReceived above).
+      if (_processingMessageIds.contains(messageId)) {
+        debugPrint(
+            '🔁 Duplicate group message event ignored (already in flight): $messageId');
+        return;
+      }
+      _processingMessageIds.add(messageId);
+
       final existsInUi = messages.any((m) => m.id == messageId);
       if (existsInUi) {
         debugPrint(
@@ -897,6 +930,8 @@ class ChatController extends GetxController with WidgetsBindingObserver {
       } else if (decryptedContent.startsWith('MEDIA:') ||
           decryptedContent.startsWith('IMAGE:')) {
         messageType = MessageType.image;
+      } else if (decryptedContent.startsWith('AUDIO:')) {
+        messageType = MessageType.audio;
       }
 
       ReplyToEntity? replyTo;
@@ -930,6 +965,8 @@ class ChatController extends GetxController with WidgetsBindingObserver {
         fileName: data['fileName'] as String?,
         fileSize: data['fileSize'] as int?,
         isCompressed: data['compressed'] as bool?,
+        audioDuration: data['duration'] as int?,
+        waveformData: data['waveformData'] as String?,
       );
 
       await _storageService.saveMessage(message);
@@ -1269,6 +1306,8 @@ class ChatController extends GetxController with WidgetsBindingObserver {
   }
 
   void onTyping(String text) {
+    hasText.value = text.trim().isNotEmpty;
+
     // Send typing indicator for groups
     if (isGroup && text.isNotEmpty) {
       _socketService.sendGroupTyping(groupId: chatId, isTyping: true);
@@ -1621,6 +1660,123 @@ class ChatController extends GetxController with WidgetsBindingObserver {
       return true;
     } catch (e) {
       debugPrint('❌ Error finalizing file message: $e');
+      _scheduleMessageTimeout(messageId);
+      return true;
+    }
+  }
+
+  /// Step 1 of audio/voice message send:
+  /// Add the bubble immediately with audio metadata and cached raw bytes.
+  Future<String?> createPendingAudioMessage({
+    required int duration,
+    required String waveformData,
+    Uint8List? localBytes,
+  }) async {
+    if (!isGroup) {
+      _updateLocalBlockState();
+      if (isBlocked.value) {
+        debugPrint('🚫 Cannot send audio - user is blocked');
+        return null;
+      }
+    }
+
+    final messageId = _uuid.v4();
+    final timestamp = DateTime.now();
+
+    uploadProgressMap[messageId] = 0.0.obs;
+
+    // Cache the original audio bytes so the sender can play instantly
+    if (localBytes != null) {
+      try {
+        final cacheService = Get.find<ImageCacheService>();
+        await cacheService.cacheImageById(messageId, localBytes);
+      } catch (_) {}
+    }
+
+    final message = MessageEntity(
+      id: messageId,
+      chatId: chatId,
+      senderId: myDeviceId,
+      receiverId: isGroup ? chatId : recipientDeviceId,
+      content: 'AUDIO:pending',
+      timestamp: timestamp,
+      status: MessageStatus.sending,
+      isMe: true,
+      type: MessageType.audio,
+      audioDuration: duration,
+      waveformData: waveformData,
+    );
+
+    messages.add(ChatMessageModel.fromEntity(message));
+    messages.refresh();
+    _scrollToBottom();
+    return messageId;
+  }
+
+  /// Step 2 of audio/voice message send:
+  /// Called after upload completes. Updates bubble content with real token
+  /// and fires the socket event.
+  Future<bool> finalizeAudioMessage({
+    required String messageId,
+    required String token,
+    required int duration,
+    required String waveformData,
+  }) async {
+    uploadProgressMap.remove(messageId);
+
+    final index = messages.indexWhere((msg) => msg.id == messageId);
+    if (index == -1) return false;
+
+    final timestamp = messages[index].timestamp;
+
+    final message = MessageEntity(
+      id: messageId,
+      chatId: chatId,
+      senderId: myDeviceId,
+      receiverId: isGroup ? chatId : recipientDeviceId,
+      content: 'AUDIO:$token',
+      timestamp: timestamp,
+      status: MessageStatus.sending,
+      isMe: true,
+      type: MessageType.audio,
+      audioDuration: duration,
+      waveformData: waveformData,
+    );
+
+    messages[index] = ChatMessageModel.fromEntity(message);
+    messages.refresh();
+    _storageService.saveMessage(message);
+    _updateChatListAfterSending('🎤 Voice message', timestamp);
+
+    try {
+      final success = isGroup
+          ? await _socketService.sendGroupAudioMessage(
+              groupId: chatId,
+              messageId: messageId,
+              mediaToken: token,
+              duration: duration,
+              waveformData: waveformData,
+            )
+          : await _socketService.sendAudioMessage(
+              messageId: messageId,
+              recipientDeviceId: recipientDeviceId,
+              mediaToken: token,
+              duration: duration,
+              waveformData: waveformData,
+            );
+
+      if (success) {
+        final idx = messages.indexWhere((msg) => msg.id == messageId);
+        if (idx != -1) {
+          _updateMessageStatusIfNotRead(messageId, MessageStatus.sent);
+          _messageTimeouts[messageId]?.cancel();
+          _messageTimeouts.remove(messageId);
+        }
+      }
+      _scheduleMessageTimeout(messageId);
+      return true;
+    } catch (e) {
+      debugPrint('❌ Error finalizing audio message: $e');
       _scheduleMessageTimeout(messageId);
       return true;
     }

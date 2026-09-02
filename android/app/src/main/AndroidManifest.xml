@@ -2,9 +2,13 @@
     xmlns:tools="http://schemas.android.com/tools"
     package="com.vant.chat">
 
-    <!-- Required for incoming call full-screen UI over lock screen -->
-    <!-- Justification: Voice/video calling is a core feature of the app -->
-    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+    <!-- Force-remove USE_FULL_SCREEN_INTENT that is pulled in by flutter_callkit_incoming -->
+    <uses-permission
+        android:name="android.permission.USE_FULL_SCREEN_INTENT"
+        tools:node="remove" />
+
+    <!-- Incoming call UI is shown via Android Telecom/CallStyle notifications,
+         not the deprecated USE_FULL_SCREEN_INTENT permission. -->
     <!-- Required for dismissing keyguard to show call UI over lock screen -->
     <uses-permission android:name="android.permission.DISABLE_KEYGUARD" />
     <!-- Permissions for biometric authentication -->
@@ -31,8 +35,7 @@
     <uses-permission android:name="com.huawei.android.launcher.permission.CHANGE_BADGE" />
     <uses-permission android:name="com.huawei.android.launcher.permission.READ_SETTINGS" />
     <uses-permission android:name="com.huawei.android.launcher.permission.WRITE_SETTINGS" />
-    <!-- Google Play Billing permission for in-app purchases -->
-    <uses-permission android:name="com.android.vending.BILLING" />
+
     <!-- Audio call permissions -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />

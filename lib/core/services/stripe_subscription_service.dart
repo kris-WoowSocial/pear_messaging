@@ -10,7 +10,7 @@ import '../services/local_storage_service.dart';
 /// collects Card, Apple Pay, and Google Pay for the app's real 6-month or
 /// 1-year plan (same plans/prices as PricingConfig) and charges immediately
 /// on confirmation (no free trial, unless one is configured server-side via
-/// STRIPE_TRIAL_DAYS). Does not touch/replace the existing IAPService flow.
+/// STRIPE_TRIAL_DAYS).
 class StripeSubscriptionService extends GetxService {
   static StripeSubscriptionService get to => Get.find();
 

@@ -1,0 +1,17 @@
+name: social_media_recorder
+description: Local fork of the social_media_recorder package with updated permissions and record API compatibility.
+version: 1.2.1+fork.0
+publish_to: none
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  animated_text_kit: ^4.2.2
+  cupertino_icons: ^1.0.8
+  path_provider: ^2.1.1
+  permission_handler: ^11.3.1
+  provider: ^6.1.1
+  record: ^6.1.1

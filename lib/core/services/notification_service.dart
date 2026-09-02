@@ -134,7 +134,8 @@ class NotificationService {
             icon: '@drawable/ic_stat_ic_notification',
             importance: Importance.max,
             priority: Priority.max,
-            fullScreenIntent: true, // Shows over lock screen
+            // CallStyle-style high-priority call notification. Full-screen lock UI
+            // on Android 12+ is handled by the native Telecom/ConnectionService path.
             category: AndroidNotificationCategory.call,
             visibility: NotificationVisibility.public, // Show on lock screen
             ongoing: false,

@@ -13,6 +13,7 @@ import '../../core/constants/app_colors.dart';
 import '../../core/constants/app_sizes.dart';
 import '../../core/services/encryption_service.dart';
 import '../../core/services/image_cache_service.dart';
+import '../../core/services/image_download_service.dart';
 import '../../core/services/media_upload_service.dart';
 import '../../core/services/url_preview_service.dart';
 import '../../core/utils/time_utils.dart';
@@ -21,6 +22,7 @@ import 'chat_controller.dart';
 import 'chat_message_model.dart';
 import '../../core/widgets/report_bottom_sheet.dart';
 import 'widgets/quoted_message_bubble.dart';
+import 'widgets/audio_message_bubble.dart';
 
 class ChatMessageBubble extends StatefulWidget {
   final ChatMessageModel message;
@@ -529,6 +531,17 @@ class _ChatMessageBubbleState extends State<ChatMessageBubble> {
       );
     }
 
+    // Check if this is an audio/voice message
+    if (widget.message.isAudio || content.startsWith('AUDIO:')) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (widget.message.replyTo != null) _buildQuotedBubble(),
+          _buildAudioContent(),
+        ],
+      );
+    }
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -926,6 +939,13 @@ class _ChatMessageBubbleState extends State<ChatMessageBubble> {
     }
   }
 
+  Widget _buildAudioContent() {
+    return AudioMessageBubble(
+      key: ValueKey('${widget.message.id}:${widget.message.content}'),
+      message: widget.message,
+    );
+  }
+
   Widget _buildImageContent() {
     // Only trigger lazy load if image is not cached and not already loading
     if (_cachedImageData.value == null && !_isLoadingImage.value) {
@@ -1285,15 +1305,42 @@ class _ChatMessageBubbleState extends State<ChatMessageBubble> {
             Positioned(
               top: 40,
               right: 16,
-              child: IconButton(
-                icon: const Icon(Icons.close, color: Colors.white, size: 30),
-                onPressed: () => Get.back(),
+              child: Row(
+                children: [
+                  IconButton(
+                    tooltip: 'Save to gallery',
+                    icon: const Icon(Icons.download,
+                        color: Colors.white, size: 28),
+                    onPressed: () => _saveImageToGallery(imageBytes),
+                  ),
+                  IconButton(
+                    icon:
+                        const Icon(Icons.close, color: Colors.white, size: 30),
+                    onPressed: () => Get.back(),
+                  ),
+                ],
               ),
             ),
           ],
         ),
       ),
       barrierColor: Colors.black87,
+    );
+  }
+
+  Future<void> _saveImageToGallery(Uint8List imageBytes) async {
+    final saved = await ImageDownloadService.downloadImageToGallery(
+      imageBytes,
+      fileName: 'vant_chat_${widget.message.id}',
+    );
+    Get.snackbar(
+      saved ? 'Saved' : 'Unable to save image',
+      saved
+          ? 'Image saved to the Vant Chat gallery folder'
+          : 'Allow photo access in Settings and try again',
+      snackPosition: SnackPosition.BOTTOM,
+      colorText: Colors.white,
+      backgroundColor: saved ? Colors.green : Colors.red,
     );
   }
 
