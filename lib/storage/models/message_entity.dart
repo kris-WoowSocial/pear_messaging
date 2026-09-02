@@ -53,6 +53,10 @@ class MessageEntity {
   final int? fileSize;
   final bool? isCompressed;
 
+  // Audio message fields
+  final int? audioDuration;
+  final String? waveformData;
+
   MessageEntity({
     required this.id,
     required this.chatId,
@@ -73,6 +77,8 @@ class MessageEntity {
     this.fileName,
     this.fileSize,
     this.isCompressed,
+    this.audioDuration,
+    this.waveformData,
   });
 
   Map<String, dynamic> toJson() {
@@ -96,6 +102,8 @@ class MessageEntity {
       'fileName': fileName,
       'fileSize': fileSize,
       'isCompressed': isCompressed,
+      'audioDuration': audioDuration,
+      'waveformData': waveformData,
     };
   }
 
@@ -131,6 +139,8 @@ class MessageEntity {
       fileName: json['fileName'] as String?,
       fileSize: json['fileSize'] as int?,
       isCompressed: json['isCompressed'] as bool?,
+      audioDuration: json['audioDuration'] as int?,
+      waveformData: json['waveformData'] as String?,
     );
   }
 
@@ -154,6 +164,8 @@ class MessageEntity {
     String? fileName,
     int? fileSize,
     bool? isCompressed,
+    int? audioDuration,
+    String? waveformData,
   }) {
     return MessageEntity(
       id: id ?? this.id,
@@ -175,6 +187,8 @@ class MessageEntity {
       fileName: fileName ?? this.fileName,
       fileSize: fileSize ?? this.fileSize,
       isCompressed: isCompressed ?? this.isCompressed,
+      audioDuration: audioDuration ?? this.audioDuration,
+      waveformData: waveformData ?? this.waveformData,
     );
   }
 }
@@ -192,6 +206,9 @@ enum MessageType {
 
   // @HiveField(3)
   file,
+
+  // @HiveField(4)
+  audio,
 }
 
 // @HiveType(typeId: 2)

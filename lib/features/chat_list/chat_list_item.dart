@@ -23,6 +23,11 @@ class ChatListItem extends StatelessWidget {
       return 'No messages yet';
     }
 
+    // Check if this is an audio message
+    if (lastMessage.startsWith('AUDIO:')) {
+      return '🎤 Voice message';
+    }
+
     // Check if this is a file message
     if (lastMessage.startsWith('FILE:')) {
       return '📎 Document';
@@ -126,7 +131,7 @@ class ChatListItem extends StatelessWidget {
                       Expanded(
                         child: Text(
                           chat.isReply && chat.replyContent != null
-                              ? 'Replied to: ${chat.replyContent!.startsWith("MEDIA:") ? "📷 Photo" : chat.replyContent!.length > 30 ? '${chat.replyContent!.substring(0, 30)}...' : chat.replyContent}'
+                              ? 'Replied to: ${chat.replyContent!.startsWith("MEDIA:") ? "📷 Photo" : chat.replyContent!.startsWith("AUDIO:") ? "🎤 Voice message" : chat.replyContent!.length > 30 ? '${chat.replyContent!.substring(0, 30)}...' : chat.replyContent}'
                               : _getDisplayMessage(chat.lastMessage),
                           style: TextStyle(
                             fontSize: AppSizes.fontM,

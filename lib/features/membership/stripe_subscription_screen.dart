@@ -11,16 +11,13 @@ import '../../core/services/local_storage_service.dart';
 import '../../core/services/membership_service.dart';
 import '../../core/services/stripe_subscription_service.dart';
 
-/// New, additive screen offering the app's real 2 plans (6 Months / 1 Year -
-/// same [PricingConfig] plans/prices as [MembershipScreen]'s in_app_purchase
-/// flow) through:
+/// Membership/premium subscription screen offering the app's real 2 plans
+/// (6 Months / 1 Year - same [PricingConfig] plans/prices) through:
 ///  - A single unified Stripe Payment Sheet (Card + Apple Pay + Google Pay)
 ///    with a 7-day free trial, then auto-renewal at the plan's price.
 ///  - A separate one-time "Pay with Crypto" option (USDC via Stripe Checkout),
 ///    since Stripe's crypto payment method cannot be used inside a recurring
 ///    subscription/trial.
-/// This does not replace the existing [MembershipScreen] (in_app_purchase
-/// flow) - it is a new entry point.
 class StripeSubscriptionScreen extends StatefulWidget {
   const StripeSubscriptionScreen({super.key});
 

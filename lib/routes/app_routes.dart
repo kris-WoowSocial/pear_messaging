@@ -12,8 +12,6 @@ import '../features/profile/profile_controller.dart';
 import '../features/qr_scanner/qr_scanner_screen.dart';
 import '../features/qr_scanner/qr_scanner_controller.dart';
 import '../features/notification_permission/notification_permission_screen.dart';
-import '../features/membership/membership_screen.dart';
-import '../features/membership/membership_controller.dart';
 import '../features/membership/stripe_subscription_screen.dart';
 import '../features/call/incoming_call_screen.dart';
 import '../features/call/outgoing_call_screen.dart';
@@ -118,13 +116,6 @@ class AppRoutes {
       page: () => const QRScannerScreen(),
       binding: BindingsBuilder(() {
         Get.put(QRScannerController());
-      }),
-    ),
-    GetPage(
-      name: membership,
-      page: () => const MembershipScreen(),
-      binding: BindingsBuilder(() {
-        Get.put(MembershipController());
       }),
     ),
     GetPage(

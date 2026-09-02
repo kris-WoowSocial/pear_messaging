@@ -607,6 +607,8 @@ class SocketService extends GetxService {
     String? fileName,
     int? fileSize,
     bool? isCompressed,
+    int? duration,
+    String? waveformData,
   }) async {
     if (!isConnected.value) {
       debugPrint('❌ Cannot send message: not connected');
@@ -643,14 +645,16 @@ class SocketService extends GetxService {
     final encryptedContent = EncryptionService.encryptMessage(content);
 
     // PRIVACY: Never send actual message content in the notification body.
-    // The server sends a generic "You have a new message" notification body to
+    // The server sends a generic "You have a new encrypted message" notification body to
     // FCM/APNs so no message content is ever visible to push servers or on
     // the lock screen.
-    String notificationBody = 'You have a new message';
+    String notificationBody = 'You have a new encrypted message';
     if (content.startsWith('MEDIA:') || content.startsWith('IMAGE:')) {
       notificationBody = '📷 Photo';
     } else if (content.startsWith('FILE:')) {
       notificationBody = '📎 Document';
+    } else if (content.startsWith('AUDIO:')) {
+      notificationBody = '🎤 Voice message';
     }
 
     final messageData = {
@@ -668,6 +672,8 @@ class SocketService extends GetxService {
       if (fileName != null) 'fileName': fileName,
       if (fileSize != null) 'fileSize': fileSize,
       if (isCompressed != null) 'compressed': isCompressed,
+      if (duration != null) 'duration': duration,
+      if (waveformData != null) 'waveformData': waveformData,
     };
 
     _socket?.emit('send_message', messageData);
@@ -697,6 +703,24 @@ class SocketService extends GetxService {
       'senderDeviceId': senderDeviceId,
     });
     debugPrint('👁️ Read ack sent for: $messageId from $senderDeviceId');
+  }
+
+  /// Send media download acknowledgment.
+  /// This tells the server the recipient has downloaded the multi-recipient media.
+  void sendMediaDownloadAck({
+    required String messageId,
+    required String mediaToken,
+  }) {
+    if (!isConnected.value) {
+      debugPrint('❌ Cannot send media download ack - socket not connected');
+      return;
+    }
+
+    _socket?.emit('media_download_ack', {
+      'messageId': messageId,
+      'mediaToken': mediaToken,
+    });
+    debugPrint('🎤 Media download ack sent for: $messageId');
   }
 
   /// Send a media-token message to another device.
@@ -750,6 +774,32 @@ class SocketService extends GetxService {
     );
   }
 
+  /// Send an audio-token message to another device.
+  Future<bool> sendAudioMessage({
+    required String messageId,
+    required String recipientDeviceId,
+    required String mediaToken,
+    required int duration,
+    String? waveformData,
+  }) async {
+    debugPrint('🎤 SocketService.sendAudioMessage token=$mediaToken duration=$duration');
+
+    if (!isConnected.value) {
+      debugPrint('❌ Cannot send audio message: not connected');
+      return false;
+    }
+
+    return sendMessage(
+      messageId: messageId,
+      recipientDeviceId: recipientDeviceId,
+      content: 'AUDIO:$mediaToken',
+      fileName: 'audio.m4a',
+      fileSize: duration,
+      duration: duration,
+      waveformData: waveformData,
+    );
+  }
+
   /// Send a message to a group.
   /// [encryptedPayload] is the encrypted message content.
   Future<bool> sendGroupMessage({
@@ -761,6 +811,8 @@ class SocketService extends GetxService {
     String? fileName,
     int? fileSize,
     bool? isCompressed,
+    int? duration,
+    String? waveformData,
   }) async {
     if (!isConnected.value) {
       debugPrint('❌ Cannot send group message: not connected');
@@ -778,6 +830,8 @@ class SocketService extends GetxService {
       if (fileName != null) 'fileName': fileName,
       if (fileSize != null) 'fileSize': fileSize,
       if (isCompressed != null) 'compressed': isCompressed,
+      if (duration != null) 'duration': duration,
+      if (waveformData != null) 'waveformData': waveformData,
     };
 
     _socket?.emit('group_send_message', payload);
@@ -820,6 +874,33 @@ class SocketService extends GetxService {
       fileName: fileName,
       fileSize: fileSize,
       isCompressed: isCompressed,
+    );
+  }
+
+  /// Send an audio-token message to a group.
+  Future<bool> sendGroupAudioMessage({
+    required String groupId,
+    required String messageId,
+    required String mediaToken,
+    required int duration,
+    String? waveformData,
+  }) async {
+    debugPrint('🎤 SocketService.sendGroupAudioMessage token=$mediaToken duration=$duration');
+
+    if (!isConnected.value) {
+      debugPrint('❌ Cannot send group audio message: not connected');
+      return false;
+    }
+
+    return sendGroupMessage(
+      groupId: groupId,
+      messageId: messageId,
+      encryptedPayload: 'AUDIO:$mediaToken',
+      messageType: 'audio',
+      fileName: 'audio.m4a',
+      fileSize: duration,
+      duration: duration,
+      waveformData: waveformData,
     );
   }
 

@@ -11,6 +11,8 @@ import '../../core/constants/app_colors.dart';
 import '../../core/constants/app_strings.dart';
 import '../../core/constants/app_sizes.dart';
 import '../../core/services/socket_service.dart';
+import '../../core/services/call_history_service.dart';
+import '../call/call_controller.dart';
 import '../../core/utils/device_utils.dart';
 import '../../core/widgets/empty_state.dart';
 import '../../routes/app_routes.dart';
@@ -368,6 +370,16 @@ class _SelfDestructSheetState extends State<_SelfDestructSheet> {
     try {
       debugPrint('🔥 Starting self-destruct sequence...');
 
+      if (Get.isRegistered<SocketService>()) {
+        Get.find<SocketService>().disconnect();
+      }
+      if (Get.isRegistered<CallController>()) {
+        Get.find<CallController>().endCall();
+      }
+      if (Get.isRegistered<CallHistoryService>()) {
+        await Get.find<CallHistoryService>().clearAll();
+      }
+
       // 1. Unregister FCM token from server so no more notifications are sent
       try {
         final prefs = await SharedPreferences.getInstance();
@@ -379,7 +391,8 @@ class _SelfDestructSheetState extends State<_SelfDestructSheet> {
           );
         }
       } catch (e) {
-        debugPrint('⚠️ Failed to unregister FCM token (continuing wipe): $e');
+        debugPrint('❌ Failed to delete the old identity from the server: $e');
+        rethrow;
       }
 
       // 2. Clear ALL Hive boxes (chats, messages, connection_requests, call_history, image_cache)

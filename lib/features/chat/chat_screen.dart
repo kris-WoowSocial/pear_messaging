@@ -20,6 +20,8 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:file_picker/file_picker.dart';
 import '../../core/services/encryption_service.dart';
 import '../../core/services/media_upload_service.dart';
+import 'package:social_media_recorder/audio_encoder_type.dart';
+import 'package:social_media_recorder/screen/social_media_recorder.dart';
 import '../../core/utils/string_utils.dart';
 import 'chat_settings_screen.dart';
 import '../groups/group_settings_screen.dart';
@@ -430,66 +432,8 @@ class ChatScreen extends GetView<ChatController> {
                             return const SizedBox.shrink();
                           }),
 
-                          // Message input row
-                          Row(
-                            textDirection: TextDirection.ltr,
-                            children: [
-                              Expanded(
-                                child: TextField(
-                                  controller: controller.messageController,
-                                  focusNode: controller.messageFocusNode,
-                                  onChanged: controller.onTyping,
-                                  maxLines: 7,
-                                  minLines: 1,
-                                  keyboardType: TextInputType.multiline,
-                                  textInputAction: TextInputAction.newline,
-                                  enableInteractiveSelection: true,
-                                  selectionControls:
-                                      MaterialTextSelectionControls(),
-                                  decoration: InputDecoration(
-                                    hintText: AppStrings.typeMessage,
-                                    filled: true,
-                                    fillColor: AppColors.background,
-                                    contentPadding: const EdgeInsets.symmetric(
-                                      horizontal: AppSizes.paddingM,
-                                      vertical: AppSizes.paddingS,
-                                    ),
-                                    border: OutlineInputBorder(
-                                      borderRadius: BorderRadius.circular(
-                                        AppSizes.radiusCircular,
-                                      ),
-                                      borderSide: BorderSide.none,
-                                    ),
-                                  ),
-                                ),
-                              ),
-                              const SizedBox(width: AppSizes.paddingS),
-                              // Attachment button
-                              CircleAvatar(
-                                backgroundColor: AppColors.warning,
-                                child: IconButton(
-                                  icon: const Icon(
-                                    Icons.attach_file,
-                                    color: AppColors.surfaceDark,
-                                  ),
-                                  onPressed: () =>
-                                      _showAttachmentOptions(context),
-                                ),
-                              ),
-                              const SizedBox(width: AppSizes.paddingS),
-
-                              CircleAvatar(
-                                backgroundColor: AppColors.primary,
-                                child: IconButton(
-                                  icon: const Icon(
-                                    Icons.send,
-                                    color: AppColors.textLight,
-                                  ),
-                                  onPressed: controller.sendMessage,
-                                ),
-                              ),
-                            ],
-                          ),
+                          // Message input / recording area
+                          _buildMessageInput(context),
                         ],
                       ),
                     ),
@@ -1283,7 +1227,88 @@ class ChatScreen extends GetView<ChatController> {
       );
     }
   }
+
+  /// Build the WhatsApp-style message input with the attachment and mic
+  /// buttons on the right. The attachment button hides while typing or
+  /// recording.
+  Widget _buildMessageInput(BuildContext context) {
+    return _MessageInput(
+      controller: controller,
+      onAttachmentTap: () => _showAttachmentOptions(context),
+      onAudioRecorded: _sendAudioRecording,
+    );
+  }
+
+  /// Sends a voice recording produced by [SocialMediaRecorder] through the
+  /// existing encrypted media upload pipeline.
+  Future<void> _sendAudioRecording(File soundFile, String time) async {
+    var durationMs = 0;
+    try {
+      final parts = time.split(':');
+      if (parts.length == 2) {
+        final minutes = int.tryParse(parts[0]) ?? 0;
+        final seconds = int.tryParse(parts[1]) ?? 0;
+        durationMs = ((minutes * 60) + seconds) * 1000;
+      }
+    } catch (_) {}
+
+    String? pendingMsgId;
+    try {
+      final bytes = await soundFile.readAsBytes();
+      if (bytes.isEmpty) return;
+
+      // Placeholder waveform data until a real waveform is wired in.
+      const waveform = '0.4,0.4,0.4,0.4,0.4';
+
+      pendingMsgId = await controller.createPendingAudioMessage(
+        duration: durationMs,
+        waveformData: waveform,
+        localBytes: bytes,
+      );
+      if (pendingMsgId == null) {
+        await soundFile.delete();
+        return;
+      }
+
+      final base64Audio = base64Encode(bytes);
+      final encryptedBlob = EncryptionService.encryptMessage(base64Audio);
+
+      final token = await MediaUploadService.uploadImage(
+        encryptedBlob,
+        onProgress: (progress) {
+          controller.uploadProgressMap[pendingMsgId]?.value = progress;
+        },
+      );
+
+      await controller.finalizeAudioMessage(
+        messageId: pendingMsgId,
+        token: token,
+        duration: durationMs,
+        waveformData: waveform,
+      );
+      debugPrint('✅ Audio sent via media server, token=$token');
+    } catch (e) {
+      debugPrint('❌ Error sending audio: $e');
+      if (pendingMsgId != null) {
+        controller.uploadProgressMap.remove(pendingMsgId);
+        controller.messages.removeWhere((msg) => msg.id == pendingMsgId);
+      }
+      Get.snackbar(
+        'Upload Failed',
+        'Failed to send voice message. Please try again.',
+        snackPosition: SnackPosition.BOTTOM,
+        backgroundColor: Colors.red.shade100,
+        colorText: Colors.red.shade800,
+        duration: const Duration(seconds: 4),
+      );
+    } finally {
+      if (await soundFile.exists()) {
+        await soundFile.delete();
+      }
+    }
+  }
 }
+
 
 /// Gzip-compresses [bytes] if doing so actually reduces the size.
 /// Runs in a background isolate via [compute] to avoid blocking the UI
@@ -1344,9 +1369,161 @@ Future<Uint8List> _compressImageBytes(String filePath) async {
       debugPrint('❌ Compression failed completely');
     }
 
-    return result ?? Uint8List(0);
+      return result ?? Uint8List(0);
   } catch (e) {
     debugPrint('❌ Compression error: $e');
     return Uint8List(0);
+  }
+}
+
+/// WhatsApp-style input row: text field on the left, attachment + mic buttons
+/// on the right. Attachment hides while typing or recording; send appears
+/// when there is text.
+class _MessageInput extends StatefulWidget {
+  final ChatController controller;
+  final VoidCallback onAttachmentTap;
+  final void Function(File soundFile, String time) onAudioRecorded;
+
+  const _MessageInput({
+    required this.controller,
+    required this.onAttachmentTap,
+    required this.onAudioRecorded,
+  });
+
+  @override
+  State<_MessageInput> createState() => _MessageInputState();
+}
+
+class _MessageInputState extends State<_MessageInput> {
+  bool _isRecording = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      clipBehavior: Clip.none,
+      children: [
+        TextField(
+          controller: widget.controller.messageController,
+          focusNode: widget.controller.messageFocusNode,
+          onChanged: widget.controller.onTyping,
+          maxLines: 7,
+          minLines: 1,
+          keyboardType: TextInputType.multiline,
+          textInputAction: TextInputAction.newline,
+          enableInteractiveSelection: true,
+          selectionControls: MaterialTextSelectionControls(),
+          decoration: InputDecoration(
+            hintText: AppStrings.typeMessage,
+            filled: true,
+            fillColor: AppColors.background,
+            contentPadding: const EdgeInsets.only(
+              left: AppSizes.paddingM,
+              right: 108,
+              top: AppSizes.paddingS,
+              bottom: AppSizes.paddingS,
+            ),
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(
+                AppSizes.radiusCircular,
+              ),
+              borderSide: BorderSide.none,
+            ),
+          ),
+        ),
+        Positioned(
+          right: 0,
+          top: 0,
+          bottom: 0,
+          child: Center(
+            child: Obx(() {
+              if (widget.controller.hasText.value) {
+                return CircleAvatar(
+                  backgroundColor: AppColors.primary,
+                  child: IconButton(
+                    icon: const Icon(
+                      Icons.send,
+                      color: AppColors.textLight,
+                    ),
+                    onPressed: widget.controller.sendMessage,
+                  ),
+                );
+              }
+
+              return Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (!_isRecording)
+                    GestureDetector(
+                      onTap: widget.onAttachmentTap,
+                      child: CircleAvatar(
+                        radius: 18,
+                        backgroundColor: AppColors.warning,
+                        child: const Icon(
+                          Icons.attach_file,
+                          color: AppColors.surfaceDark,
+                          size: 20,
+                        ),
+                      ),
+                    ),
+                  if (!_isRecording) const SizedBox(width: 4),
+                  SocialMediaRecorder(
+                    initRecordPackageWidth: 48,
+                    fullRecordPackageHeight: 48,
+                    radius: BorderRadius.circular(24),
+                    recordIcon: Container(
+                      width: 40,
+                      height: 40,
+                      decoration: const BoxDecoration(
+                        color: AppColors.primary,
+                        shape: BoxShape.circle,
+                      ),
+                      child: const Icon(
+                        Icons.mic,
+                        color: AppColors.textLight,
+                        size: 20,
+                      ),
+                    ),
+                    recordIconBackGroundColor: AppColors.primary,
+                    startRecording: () => setState(() => _isRecording = true),
+                    stopRecording: (_) => setState(() => _isRecording = false),
+                    sendRequestFunction: (soundFile, time) {
+                      setState(() => _isRecording = false);
+                      widget.onAudioRecorded(soundFile, time);
+                    },
+                    onPermissionDenied: () async {
+                      final status = await Permission.microphone.status;
+                      if (status.isPermanentlyDenied) {
+                        Get.snackbar(
+                          'Microphone Permission',
+                          'Please enable microphone access in app settings.',
+                          snackPosition: SnackPosition.BOTTOM,
+                          backgroundColor: Colors.red.shade100,
+                          colorText: Colors.red.shade800,
+                          mainButton: TextButton(
+                            onPressed: openAppSettings,
+                            child: const Text('Settings'),
+                          ),
+                        );
+                      } else {
+                        Get.snackbar(
+                          'Permission Required',
+                          'Microphone permission is needed to record voice messages.',
+                          snackPosition: SnackPosition.BOTTOM,
+                          backgroundColor: Colors.red.shade100,
+                          colorText: Colors.red.shade800,
+                        );
+                      }
+                    },
+                    encode: AudioEncoderType.AAC,
+                    slideToCancelText: ' Slide to cancel',
+                    cancelText: 'Cancel',
+                  ),
+                ],
+              );
+            }),
+          ),
+        ),
+      ],
+    );
   }
 }

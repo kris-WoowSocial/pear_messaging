@@ -4,6 +4,7 @@ import '../../core/constants/app_colors.dart';
 import '../../core/constants/app_sizes.dart';
 import '../../core/utils/string_utils.dart';
 import '../../storage/models/call_history_entry.dart';
+import '../call/call_controller.dart';
 import 'call_history_controller.dart';
 
 /// Call History Screen - Shows all call logs like WhatsApp
@@ -347,11 +348,25 @@ class CallHistoryScreen extends GetView<CallHistoryController> {
     return '$displayHour:$minute $period';
   }
 
-  void _initiateCall(String deviceId, String name) {
-    // Navigate to outgoing call screen
-    Get.toNamed(
-      '/call/outgoing',
-      arguments: {'recipientDeviceId': deviceId, 'recipientName': name},
-    );
+  void _initiateCall(String deviceId, String name) async {
+    if (deviceId.isEmpty) return;
+    try {
+      final callController = Get.find<CallController>();
+      // Actually start the WebRTC call session first (this is what
+      // OutgoingCallScreen reads its state from) — the outgoing call
+      // screen does not read Get.arguments, so navigating without
+      // starting the call first left it stuck/non-functional.
+      final success = await callController.startCall(deviceId);
+      if (success) {
+        Get.toNamed('/call/outgoing');
+      }
+    } catch (e) {
+      debugPrint('❌ Failed to start call from history: $e');
+      Get.snackbar(
+        'Error',
+        'Could not start call',
+        snackPosition: SnackPosition.BOTTOM,
+      );
+    }
   }
 }

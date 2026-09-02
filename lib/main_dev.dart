@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:audio_session/audio_session.dart';
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
@@ -30,7 +31,7 @@ import 'core/services/review_service.dart';
 import 'core/services/region_service.dart';
 import 'core/services/membership_service.dart';
 import 'core/services/notification_service.dart';
-import 'core/services/iap_service.dart';
+
 import 'core/services/stripe_subscription_service.dart';
 import 'core/services/report_service.dart';
 import 'core/services/api_service.dart';
@@ -226,6 +227,30 @@ Future<void> initializeCriticalServices() async {
 /// Initialize non-critical services in background after app launches
 void initializeNonCriticalServices() async {
   try {
+    // Configure the global audio session so voice messages play through the
+    // main speaker and mix correctly with other apps / calls.
+    final session = await AudioSession.instance;
+    await session.configure(
+      const AudioSessionConfiguration(
+        avAudioSessionCategory: AVAudioSessionCategory.playback,
+        avAudioSessionCategoryOptions:
+            AVAudioSessionCategoryOptions.defaultToSpeaker,
+        avAudioSessionMode: AVAudioSessionMode.defaultMode,
+        androidAudioAttributes: AndroidAudioAttributes(
+          contentType: AndroidAudioContentType.speech,
+          flags: AndroidAudioFlags.none,
+          usage: AndroidAudioUsage.media,
+        ),
+        androidAudioFocusGainType: AndroidAudioFocusGainType.gainTransientMayDuck,
+        androidWillPauseWhenDucked: true,
+      ),
+    );
+    debugPrint('🔊 Audio session configured');
+  } catch (e) {
+    debugPrint('⚠️ Audio session configuration failed: $e');
+  }
+
+  try {
     // Initialize Firebase FIRST - FCM depends on it!
     await _initializeFirebase();
     debugPrint('✅ Firebase initialized');
@@ -348,17 +373,7 @@ void initializeNonCriticalServices() async {
     }),
   );
 
-  // In-app purchase service
-  futures.add(
-    Get.putAsync(() => IAPService().init()).catchError((e) {
-      debugPrint('❌ IAPService initialization failed: $e');
-      debugPrint('⚠️ App will continue without in-app purchases');
-      return Get.put(IAPService());
-    }),
-  );
-
-  // New Stripe subscription service (7-day trial, additive - does not
-  // replace IAPService above)
+  // Stripe subscription service (7-day trial)
   futures.add(
     Get.putAsync(() => StripeSubscriptionService().init()).catchError((e) {
       debugPrint('❌ StripeSubscriptionService initialization failed: $e');

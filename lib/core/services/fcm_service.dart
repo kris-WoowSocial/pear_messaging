@@ -355,7 +355,7 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   // Show notification immediately
   try {
     var title = message.notification?.title ?? 'New Message';
-    final body = message.notification?.body ?? 'You have a new message';
+    final body = message.notification?.body ?? 'You have a new encrypted message';
     final payload = jsonEncode({
       'senderId': senderId,
       'chatId': chatId,
@@ -454,6 +454,9 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
           if (contentToStore.startsWith('FILE:')) {
             msgType = MessageType.file;
             debugPrint('📱 Background: Detected as file message');
+          } else if (contentToStore.startsWith('AUDIO:')) {
+            msgType = MessageType.audio;
+            debugPrint('📱 Background: Detected as audio message');
           } else if (contentToStore.startsWith('IMAGE:') ||
               contentToStore.startsWith('MEDIA:')) {
             msgType = MessageType.image;
@@ -1055,6 +1058,9 @@ class FCMService extends GetxService {
             if (contentToStore.startsWith('FILE:')) {
               msgType = MessageType.file;
               debugPrint('📱 Foreground: Detected as file message');
+            } else if (contentToStore.startsWith('AUDIO:')) {
+              msgType = MessageType.audio;
+              debugPrint('📱 Foreground: Detected as audio message');
             } else if (contentToStore.startsWith('IMAGE:') ||
                 contentToStore.startsWith('MEDIA:')) {
               msgType = MessageType.image;
@@ -1200,7 +1206,7 @@ class FCMService extends GetxService {
     if (!shouldSuppressNotification && senderId.isNotEmpty) {
       try {
         var title = message.notification?.title ?? 'New Message';
-        final body = message.notification?.body ?? 'You have a new message';
+        final body = message.notification?.body ?? 'You have a new encrypted message';
 
         // If title is a raw device ID (no username found), format it as friendly name
         if (title == senderId && senderId.length > 5) {

@@ -96,4 +96,6 @@ dependencies {
     implementation("com.github.bumptech.glide:glide:4.16.0")
     // Self-managed ConnectionService for incoming call UI over lock screen (Android 14+)
     implementation("androidx.core:core-telecom:1.0.0")
+    // NotificationCompat.CallStyle for WhatsApp-style incoming call notifications
+    implementation("androidx.core:core:1.13.1")
 }

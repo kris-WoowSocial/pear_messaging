@@ -112,6 +112,8 @@ class ReplyPreviewBar extends StatelessWidget {
         return replyTo.content;
       case MessageType.file:
         return '📄 File';
+      case MessageType.audio:
+        return '🎤 Voice message';
     }
   }
 }

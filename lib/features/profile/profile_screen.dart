@@ -3,7 +3,6 @@ import 'package:get/get.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../../core/constants/app_colors.dart';
-import '../../core/constants/app_strings.dart';
 import '../../core/constants/app_sizes.dart';
 import '../../core/constants/network_constants.dart';
 import '../../core/services/review_service.dart';
@@ -181,251 +180,150 @@ class ProfileScreen extends GetView<ProfileController> {
 
   @override
   Widget build(BuildContext context) {
+    final statusBarHeight = MediaQuery.of(context).padding.top;
+    final collapsedHeight = kToolbarHeight + statusBarHeight;
+    final expandedHeight = statusBarHeight + 190;
+
     return Scaffold(
       backgroundColor: AppColors.background,
-      appBar: AppBar(
-        title: Text(
-          AppStrings.setting,
-          style: TextStyle(color: AppColors.textPrimary),
-        ),
-        elevation: 0,
-        backgroundColor: AppColors.background,
-        foregroundColor: AppColors.textPrimary,
-      ),
-      body: SafeArea(
-        child: TweenAnimationBuilder<double>(
-          tween: Tween(begin: 0.0, end: 1.0),
-          duration: const Duration(milliseconds: 450),
-          curve: Curves.easeOutCubic,
-          builder: (context, value, child) {
-            return Opacity(
-              opacity: value,
-              child: Transform.translate(
-                offset: Offset(0, (1 - value) * 24),
-                child: child,
-              ),
-            );
-          },
-          child: ListView(
-            padding: const EdgeInsets.fromLTRB(
-              AppSizes.paddingM,
-              0,
-              AppSizes.paddingM,
-              AppSizes.paddingXL,
+      body: CustomScrollView(
+        physics: const BouncingScrollPhysics(),
+        slivers: [
+          SliverPersistentHeader(
+            pinned: true,
+            delegate: _ProfileHeaderDelegate(
+              expandedHeight: expandedHeight,
+              collapsedHeight: collapsedHeight,
+              statusBarHeight: statusBarHeight,
+              controller: controller,
+              onQrTap: () => _showQrCodeSheet(context),
+              nameEditorBuilder: _buildNameEditor,
             ),
-            children: [
-              _buildProfileHero(context),
-              const SizedBox(height: AppSizes.paddingL),
-              _buildQuickActionsRow(context),
-              const SizedBox(height: AppSizes.paddingL),
-              _buildMembershipCard(context),
-              const SizedBox(height: AppSizes.paddingM),
-              _buildSectionCard(
-                title: 'Security',
-                children: [
-                  Obx(
-                    () => _buildSwitchTile(
-                      icon: Icons.fingerprint,
-                      iconColor: AppColors.primaryDark,
-                      title: 'App Lock',
-                      subtitle: 'Require authentication to open app',
-                      value: controller.isAuthEnabled.value,
-                      onChanged: controller.toggleAuth,
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: AppSizes.paddingM),
-              _buildSectionCard(
-                title: 'Account',
-                children: [
-                  Obx(() {
-                    final influencer = controller.linkedInfluencer.value;
-                    final isLinked =
-                        influencer != null && influencer['status'] == 'active';
-                    return _buildActionTile(
-                      icon: isLinked ? Icons.check_circle : Icons.link,
-                      iconColor: isLinked ? AppColors.success : AppColors.info,
-                      title: isLinked
-                          ? 'Linked: ${influencer['name']}'
-                          : 'Link Influencer Account',
-                      subtitle: isLinked
-                          ? 'Code: ${influencer['referralCode']}'
-                          : 'Enter token from influencer dashboard',
-                      trailing: isLinked
-                          ? const Icon(Icons.check,
-                              size: 18, color: AppColors.success)
-                          : const Icon(Icons.arrow_forward_ios,
-                              size: 14, color: AppColors.textSecondary),
-                      onTap: isLinked
-                          ? null
-                          : () => _showLinkInfluencerDialog(context),
-                    );
-                  }),
-                  _divider(),
-                  _buildActionTile(
-                    icon: Icons.delete_sweep_outlined,
-                    iconColor: AppColors.warning,
-                    title: 'Clear Chat History',
-                    subtitle: 'Delete all conversations from this device',
-                    trailing: const Icon(Icons.arrow_forward_ios,
-                        size: 14, color: AppColors.textSecondary),
-                    onTap: controller.clearChatHistory,
-                  ),
-                ],
-              ),
-              const SizedBox(height: AppSizes.paddingM),
-              _buildSectionCard(
-                title: 'Legal & Support',
-                children: [
-                  _buildActionTile(
-                    icon: Icons.description_outlined,
-                    iconColor: AppColors.textPrimary,
-                    title: 'Terms & Privacy Policy',
-                    trailing: const Icon(Icons.open_in_new,
-                        size: 16, color: AppColors.textSecondary),
-                    onTap: _openTermsOfService,
-                  ),
-                  _divider(),
-                  _buildActionTile(
-                    icon: Icons.email_outlined,
-                    iconColor: AppColors.textPrimary,
-                    title: 'Contact Us',
-                    subtitle: 'Send us a message',
-                    trailing: const Icon(Icons.arrow_forward_ios,
-                        size: 14, color: AppColors.textSecondary),
-                    onTap: () => Get.to(() => const ContactUsScreen()),
-                  ),
-                  _divider(),
-                  _buildActionTile(
-                    icon: Icons.star_rate_rounded,
-                    iconColor: AppColors.warning,
-                    title: 'Rate Us',
-                    subtitle: 'Share your feedback',
-                    trailing: const Icon(Icons.arrow_forward_ios,
-                        size: 14, color: AppColors.textSecondary),
-                    onTap: () {
-                      final reviewService = Get.find<ReviewService>();
-                      reviewService.requestReview();
-                    },
-                  ),
-                ],
-              ),
-              const SizedBox(height: AppSizes.paddingL),
-           
-            ],
           ),
-        ),
-      ),
-    );
-  }
-
-  /// Hero profile header: avatar, name (tap to edit), device ID chip
-  Widget _buildProfileHero(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(AppSizes.paddingL),
-      decoration: BoxDecoration(
-        gradient: const LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [AppColors.primaryDark, AppColors.primary],
-        ),
-        borderRadius: BorderRadius.circular(AppSizes.radiusXL),
-        boxShadow: [
-          BoxShadow(
-            color: AppColors.primary.withValues(alpha: 0.3),
-            blurRadius: 16,
-            offset: const Offset(0, 8),
-          ),
-        ],
-      ),
-      child: Column(
-        children: [
-          Container(
-            width: 76,
-            height: 76,
-            decoration: BoxDecoration(
-              color: Colors.white,
-              shape: BoxShape.circle,
-              border: Border.all(color: Colors.white, width: 3),
-            ),
-            child: Center(
-              child: Obx(
-                () => Text(
-                  controller.userInitial,
-                  style: const TextStyle(
-                    fontSize: 30,
-                    fontWeight: FontWeight.bold,
-                    color: AppColors.primaryDark,
+          SliverToBoxAdapter(
+            child: TweenAnimationBuilder<double>(
+              tween: Tween(begin: 0.0, end: 1.0),
+              duration: const Duration(milliseconds: 450),
+              curve: Curves.easeOutCubic,
+              builder: (context, value, child) {
+                return Opacity(
+                  opacity: value,
+                  child: Transform.translate(
+                    offset: Offset(0, (1 - value) * 24),
+                    child: child,
                   ),
+                );
+              },
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(
+                  AppSizes.paddingM,
+                  AppSizes.paddingL,
+                  AppSizes.paddingM,
+                  AppSizes.paddingXL,
                 ),
-              ),
-            ),
-          ),
-          const SizedBox(height: AppSizes.paddingM),
-          Obx(
-            () => AnimatedSwitcher(
-              duration: const Duration(milliseconds: 220),
-              transitionBuilder: (child, animation) => FadeTransition(
-                opacity: animation,
-                child: SizeTransition(
-                  sizeFactor: animation,
-                  axis: Axis.horizontal,
-                  child: child,
-                ),
-              ),
-              child: controller.isEditingName.value
-                  ? _buildNameEditor()
-                  : GestureDetector(
-                      key: const ValueKey('name_display'),
-                      onTap: controller.startEditingName,
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Flexible(
-                            child: Text(
-                              controller.userName.value,
-                              style: const TextStyle(
-                                fontSize: AppSizes.fontXXL,
-                                fontWeight: FontWeight.bold,
-                              color: Colors.black,
-                              ),
-                              overflow: TextOverflow.ellipsis,
-                            ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    _buildQuickActionsRow(context),
+                    const SizedBox(height: AppSizes.paddingL),
+                    _buildMembershipCard(context),
+                    const SizedBox(height: AppSizes.paddingM),
+                    _buildSectionCard(
+                      title: 'Security',
+                      children: [
+                        Obx(
+                          () => _buildSwitchTile(
+                            icon: Icons.fingerprint,
+                            iconColor: AppColors.primaryDark,
+                            title: 'App Lock',
+                            subtitle: 'Require authentication to open app',
+                            value: controller.isAuthEnabled.value,
+                            onChanged: controller.toggleAuth,
                           ),
-                          const SizedBox(width: 6),
-                        const Icon(Icons.edit, size: 16, color: Colors.black54),
-                        ],
-                      ),
+                        ),
+                      ],
                     ),
-            ),
-          ),
-          const SizedBox(height: AppSizes.paddingS),
-          GestureDetector(
-            onTap: () => _showQrCodeSheet(context),
-            child: Container(
-              padding: const EdgeInsets.symmetric(
-                horizontal: AppSizes.paddingM,
-                vertical: 6,
-              ),
-              decoration: BoxDecoration(
-                color: Colors.white.withValues(alpha: 0.18),
-                borderRadius: BorderRadius.circular(AppSizes.radiusCircular),
-              ),
-              child: const Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(Icons.qr_code_2, size: 16, color: Colors.black),
-                  SizedBox(width: 6),
-                  Text(
-                    'Show my QR code',
-                    style: TextStyle(
-                      fontSize: AppSizes.fontS,
-                      color: Colors.black,
-                      fontWeight: FontWeight.w600,
+                    const SizedBox(height: AppSizes.paddingM),
+                    _buildSectionCard(
+                      title: 'Account',
+                      children: [
+                        Obx(() {
+                          final influencer = controller.linkedInfluencer.value;
+                          final isLinked = influencer != null &&
+                              influencer['status'] == 'active';
+                          return _buildActionTile(
+                            icon: isLinked ? Icons.check_circle : Icons.link,
+                            iconColor:
+                                isLinked ? AppColors.success : AppColors.info,
+                            title: isLinked
+                                ? 'Linked: ${influencer['name']}'
+                                : 'Link Influencer Account',
+                            subtitle: isLinked
+                                ? 'Code: ${influencer['referralCode']}'
+                                : 'Enter token from influencer dashboard',
+                            trailing: isLinked
+                                ? const Icon(Icons.check,
+                                    size: 18, color: AppColors.success)
+                                : const Icon(Icons.arrow_forward_ios,
+                                    size: 14, color: AppColors.textSecondary),
+                            onTap: isLinked
+                                ? null
+                                : () => _showLinkInfluencerDialog(context),
+                          );
+                        }),
+                        _divider(),
+                        _buildActionTile(
+                          icon: Icons.delete_sweep_outlined,
+                          iconColor: AppColors.warning,
+                          title: 'Clear Chat History',
+                          subtitle: 'Delete all conversations from this device',
+                          trailing: const Icon(Icons.arrow_forward_ios,
+                              size: 14, color: AppColors.textSecondary),
+                          onTap: controller.clearChatHistory,
+                        ),
+                      ],
                     ),
-                  ),
-                ],
+                    const SizedBox(height: AppSizes.paddingM),
+                    _buildSectionCard(
+                      title: 'Legal & Support',
+                      children: [
+                        _buildActionTile(
+                          icon: Icons.description_outlined,
+                          iconColor: AppColors.textPrimary,
+                          title: 'Terms & Privacy Policy',
+                          trailing: const Icon(Icons.open_in_new,
+                              size: 16, color: AppColors.textSecondary),
+                          onTap: _openTermsOfService,
+                        ),
+                        _divider(),
+                        _buildActionTile(
+                          icon: Icons.email_outlined,
+                          iconColor: AppColors.textPrimary,
+                          title: 'Contact Us',
+                          subtitle: 'Send us a message',
+                          trailing: const Icon(Icons.arrow_forward_ios,
+                              size: 14, color: AppColors.textSecondary),
+                          onTap: () => Get.to(() => const ContactUsScreen()),
+                        ),
+                        _divider(),
+                        _buildActionTile(
+                          icon: Icons.star_rate_rounded,
+                          iconColor: AppColors.warning,
+                          title: 'Rate Us',
+                          subtitle: 'Share your feedback',
+                          trailing: const Icon(Icons.arrow_forward_ios,
+                              size: 14, color: AppColors.textSecondary),
+                          onTap: () {
+                            final reviewService = Get.find<ReviewService>();
+                            reviewService.requestReview();
+                          },
+                        ),
+                      ],
+                    ),
+                                        const SizedBox(height: AppSizes.paddingXL),
+
+                  ],
+                ),
               ),
             ),
           ),
@@ -804,4 +702,218 @@ class ProfileScreen extends GetView<ProfileController> {
       ),
     );
   }
+}
+
+double _lerp(double a, double b, double t) => a + (b - a) * t;
+
+/// Collapsing WhatsApp-style profile header: the avatar shrinks and slides
+/// next to the back button while the username moves into the title row as
+/// the sheet is scrolled up.
+class _ProfileHeaderDelegate extends SliverPersistentHeaderDelegate {
+  _ProfileHeaderDelegate({
+    required this.expandedHeight,
+    required this.collapsedHeight,
+    required this.statusBarHeight,
+    required this.controller,
+    required this.onQrTap,
+    required this.nameEditorBuilder,
+  });
+
+  final double expandedHeight;
+  final double collapsedHeight;
+  final double statusBarHeight;
+  final ProfileController controller;
+  final VoidCallback onQrTap;
+  final Widget Function() nameEditorBuilder;
+
+  static const double _avatarExpandedSize = 72.0;
+  static const double _avatarCollapsedSize = 34.0;
+  static const double _leadingSlot = 52.0;
+
+  @override
+  double get minExtent => collapsedHeight;
+
+  @override
+  double get maxExtent => expandedHeight;
+
+  @override
+  Widget build(
+      BuildContext context, double shrinkOffset, bool overlapsContent) {
+    final maxShrink = maxExtent - minExtent;
+    final t = maxShrink > 0 ? (shrinkOffset / maxShrink).clamp(0.0, 1.0) : 0.0;
+    final width = MediaQuery.of(context).size.width;
+
+    // Toolbar row lives below the status bar; center collapsed elements
+    // within that row (not the full collapsed height) so they line up
+    // vertically with the back button.
+    final toolbarCenterY = statusBarHeight + kToolbarHeight / 2;
+
+    final avatarSize = _lerp(_avatarExpandedSize, _avatarCollapsedSize, t);
+    final avatarLeftExpanded = (width - _avatarExpandedSize) / 2;
+    final avatarLeft = _lerp(avatarLeftExpanded, _leadingSlot, t);
+    final avatarTopExpanded = statusBarHeight + 14.0;
+    final avatarTopCollapsed = toolbarCenterY - _avatarCollapsedSize / 2;
+    final avatarTop = _lerp(avatarTopExpanded, avatarTopCollapsed, t);
+
+    final nameFontSize = _lerp(AppSizes.fontXXL, AppSizes.fontL, t);
+    final nameTopExpanded = avatarTopExpanded + _avatarExpandedSize + 10.0;
+    final nameTopCollapsed = toolbarCenterY - (nameFontSize * 1.25) / 2;
+    final nameTop = _lerp(nameTopExpanded, nameTopCollapsed, t);
+    final nameLeftCollapsed = _leadingSlot + _avatarCollapsedSize + 12.0;
+
+    // Fades out the edit hint + QR chip quickly as collapse begins.
+    final secondaryOpacity = (1 - t * 2.5).clamp(0.0, 1.0);
+    final showSecondary = secondaryOpacity > 0.01;
+    final showEditor = controller.isEditingName.value && t < 0.3;
+
+    return Container(
+      height: expandedHeight - shrinkOffset < collapsedHeight
+          ? collapsedHeight
+          : expandedHeight - shrinkOffset,
+      decoration: const BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [AppColors.primaryDark, AppColors.primary],
+        ),
+      ),
+      child: Stack(
+        clipBehavior: Clip.none,
+        children: [
+          if (Navigator.canPop(context))
+            Positioned(
+              left: 4,
+              top: statusBarHeight,
+              height: kToolbarHeight,
+              child: Center(
+                child: IconButton(
+                  icon: const Icon(Icons.arrow_back, color: Colors.white),
+                  onPressed: () => Navigator.of(context).maybePop(),
+                ),
+              ),
+            ),
+          Positioned(
+            left: avatarLeft,
+            top: avatarTop,
+            child: Obx(
+              () => Container(
+                width: avatarSize,
+                height: avatarSize,
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  shape: BoxShape.circle,
+                  border:
+                      Border.all(color: Colors.white, width: _lerp(3, 2, t)),
+                ),
+                child: Center(
+                  child: Text(
+                    controller.userInitial,
+                    style: TextStyle(
+                      fontSize: _lerp(28, 15, t),
+                      fontWeight: FontWeight.bold,
+                      color: AppColors.primaryDark,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+          Positioned(
+            left: _lerp(0, nameLeftCollapsed, t),
+            right: _lerp(0, _leadingSlot, t),
+            top: nameTop,
+            child: Obx(() {
+              if (showEditor) {
+                return Align(
+                  alignment: Alignment.center,
+                  child: nameEditorBuilder(),
+                );
+              }
+              return Align(
+                alignment: Alignment.lerp(
+                  Alignment.center,
+                  Alignment.centerLeft,
+                  t,
+                )!,
+                child: GestureDetector(
+                  onTap: t < 0.3 ? controller.startEditingName : null,
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Flexible(
+                        child: Text(
+                          controller.userName.value,
+                          style: TextStyle(
+                            fontSize: nameFontSize,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.black,
+                          ),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      if (showSecondary) ...[
+                        const SizedBox(width: 6),
+                        Opacity(
+                          opacity: secondaryOpacity,
+                          child: const Icon(Icons.edit,
+                              size: 16, color: Colors.black87),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+              );
+            }),
+          ),
+          if (showSecondary)
+            Positioned(
+              left: 0,
+              right: 0,
+              top: nameTopExpanded + 38,
+              child: IgnorePointer(
+                ignoring: secondaryOpacity < 0.4,
+                child: Opacity(
+                  opacity: secondaryOpacity,
+                  child: Center(
+                    child: GestureDetector(
+                      onTap: onQrTap,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: AppSizes.paddingM,
+                          vertical: 6,
+                        ),
+                        decoration: BoxDecoration(
+                          color: Colors.white.withValues(alpha: 0.18),
+                          borderRadius:
+                              BorderRadius.circular(AppSizes.radiusCircular),
+                        ),
+                        child: const Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.qr_code_2,
+                                size: 16, color: Colors.black),
+                            SizedBox(width: 6),
+                            Text(
+                              'Show my QR code',
+                              style: TextStyle(
+                                fontSize: AppSizes.fontS,
+                                color: Colors.black,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  bool shouldRebuild(covariant _ProfileHeaderDelegate oldDelegate) => true;
 }
