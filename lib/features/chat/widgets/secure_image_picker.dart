@@ -5,7 +5,9 @@ import 'package:image_picker/image_picker.dart';
 import 'package:pear_messaging/core/services/media_service.dart';
 import 'package:pear_messaging/core/services/secure_image_encryption.dart';
 import 'package:pear_messaging/core/services/image_download_service.dart';
+import 'package:pear_messaging/core/constants/app_colors.dart';
 import 'package:get/get.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 /// Image picker widget with secure handling
 ///
@@ -288,6 +290,51 @@ class _SecureImageViewerState extends State<SecureImageViewer> {
   /// Download image to device gallery
   Future<void> _downloadImage() async {
     if (_imageData == null) return;
+
+    final prefs = await SharedPreferences.getInstance();
+    final hasSeenWarning = prefs.getBool('has_seen_download_warning') ?? false;
+
+    if (!hasSeenWarning) {
+      final confirmed = await Get.dialog<bool>(
+        AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          title: Row(
+            children: [
+              Icon(Icons.warning_amber_rounded, color: Colors.orange, size: 28),
+              const SizedBox(width: 12),
+              const Text('Download Warning'),
+            ],
+          ),
+          content: const Text(
+            'All photos, calls, and data are securely encrypted inside Vant. You can share them within the app, and they cannot be accessed by other apps.\n\nHowever, downloaded photos are saved to your device and are no longer protected by Vant\'s encryption. Other apps on your phone (such as your photo gallery or various AI services) will be able to access them.\n\nWe strongly advise against downloading sensitive images.\n\nThis is a one-time warning.',
+            style: TextStyle(fontSize: 14),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Get.back(result: false),
+              style: TextButton.styleFrom(
+                foregroundColor: AppColors.primary,
+                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+              ),
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: () => Get.back(result: true),
+              style: TextButton.styleFrom(
+                foregroundColor: Colors.grey.shade600,
+                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+              ),
+              child: const Text('Download Anyway'),
+            ),
+          ],
+        ),
+        barrierDismissible: true,
+      );
+
+      if (confirmed != true) return;
+
+      await prefs.setBool('has_seen_download_warning', true);
+    }
 
     try {
       // Show loading indicator
