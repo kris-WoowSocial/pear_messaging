@@ -236,7 +236,7 @@
             android:name=".CallForegroundService"
             android:enabled="true"
             android:exported="false"
-            android:foregroundServiceType="shortService|microphone" />
+            android:foregroundServiceType="shortService|microphone|phoneCall" />
 
         <!-- Boot receiver for Samsung devices to restart services after device restart -->
         <receiver

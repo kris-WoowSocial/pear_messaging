@@ -7,6 +7,10 @@ class SplashScreen extends GetView<SplashController> {
 
   @override
   Widget build(BuildContext context) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      controller.showInitialNameSetup();
+    });
+
     return Scaffold(
       backgroundColor: Colors.black,
       body: SafeArea(

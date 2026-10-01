@@ -1,4 +1,4 @@
-library social_media_recorder;
+library;
 
 import 'package:flutter/material.dart';
 import 'package:social_media_recorder/provider/sound_record_notifier.dart';
@@ -11,8 +11,8 @@ class LockRecord extends StatefulWidget {
   const LockRecord({
     this.lockIcon,
     required this.soundRecorderState,
-    Key? key,
-  }) : super(key: key);
+    super.key,
+  });
 
   @override
   _LockRecordState createState() => _LockRecordState();

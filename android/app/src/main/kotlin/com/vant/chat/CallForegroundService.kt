@@ -211,9 +211,10 @@ class CallForegroundService : Service() {
                     this,
                     ONGOING_NOTIFICATION_ID,
                     notification,
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE or
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL
                 )
-                Log.d(TAG, "Started ongoing foreground with MICROPHONE type")
+                Log.d(TAG, "Started ongoing foreground with MICROPHONE and PHONE_CALL types")
             } else {
                 startForeground(ONGOING_NOTIFICATION_ID, notification)
                 Log.d(TAG, "Started ongoing foreground (pre-API 34)")
@@ -250,6 +251,28 @@ class CallForegroundService : Service() {
         )
 
         val callType = if (ongoingIsVideo) "Video call" else "Voice call"
+        val endCallIntent = Intent(this, MainActivity::class.java).apply {
+            action = "com.vant.chat.END_CALL"
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra("call_id", ongoingCallId)
+        }
+        val endCallPendingIntent = PendingIntent.getActivity(
+            this, 1, endCallIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val caller = androidx.core.app.Person.Builder()
+            .setName(ongoingCallerName)
+            .setIcon(
+                androidx.core.graphics.drawable.IconCompat.createWithResource(
+                    this,
+                    R.drawable.ic_call_notification
+                )
+            )
+            .build()
+        val callStyle = NotificationCompat.CallStyle.forOngoingCall(
+            caller,
+            endCallPendingIntent
+        )
 
         return NotificationCompat.Builder(this, ONGOING_CHANNEL_ID)
             .setContentTitle(ongoingCallerName)
@@ -258,6 +281,7 @@ class CallForegroundService : Service() {
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)
             .setCategory(NotificationCompat.CATEGORY_CALL)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setStyle(callStyle)
             .setContentIntent(openPendingIntent)
             .setOngoing(true)
             .setAutoCancel(false)

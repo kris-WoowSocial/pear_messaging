@@ -11,26 +11,35 @@ class ActiveCallScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final controller = Get.find<CallController>();
 
-    return Scaffold(
-      backgroundColor: Colors.black,
-      body: Obx(() {
-        // Dim screen when near ear (proximity sensor)
-        final isDimmed =
-            controller.isNearEar.value && !controller.isSpeakerOn.value;
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) {
+        // Intercept the Android back button and minimize the call instead of
+        // leaving the app — the call keeps running behind the CallBanner.
+        if (didPop) return;
+        controller.minimizeCallScreen(context);
+      },
+      child: Scaffold(
+        backgroundColor: Colors.black,
+        body: Obx(() {
+          // Dim screen when near ear (proximity sensor)
+          final isDimmed =
+              controller.isNearEar.value && !controller.isSpeakerOn.value;
 
-        return AnimatedOpacity(
-          opacity: isDimmed ? 0.1 : 1.0,
-          duration: const Duration(milliseconds: 300),
-          child: IgnorePointer(
-            ignoring: isDimmed,
-            child: _buildCallUI(controller),
-          ),
-        );
-      }),
+          return AnimatedOpacity(
+            opacity: isDimmed ? 0.1 : 1.0,
+            duration: const Duration(milliseconds: 300),
+            child: IgnorePointer(
+              ignoring: isDimmed,
+              child: _buildCallUI(controller, context),
+            ),
+          );
+        }),
+      ),
     );
   }
 
-  Widget _buildCallUI(CallController controller) {
+  Widget _buildCallUI(CallController controller, BuildContext context) {
     return SafeArea(
       child: Column(
         children: [
@@ -110,11 +119,20 @@ class ActiveCallScreen extends StatelessWidget {
           Expanded(
             flex: 1,
             child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 48),
+              padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 24),
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  // First row: Mute and Speaker (Obx for reactive updates)
+                  // Minimize button - keeps the call running behind the
+                  // CallBanner so the user can continue using the app
+                  _buildControlButton(
+                    icon: Icons.close_fullscreen,
+                    label: 'Minimize',
+                    isActive: false,
+                    onTap: () => controller.minimizeCallScreen(context),
+                  ),
+                  const SizedBox(height: 24),
+                  // Second row: Mute and Speaker (Obx for reactive updates)
                   Obx(
                     () => Row(
                       mainAxisAlignment: MainAxisAlignment.spaceEvenly,
@@ -136,8 +154,8 @@ class ActiveCallScreen extends StatelessWidget {
                       ],
                     ),
                   ),
-                  const SizedBox(height: 48),
-                  // Second row: End call
+                  const SizedBox(height: 32),
+                  // Third row: End call
                   _buildEndCallButton(controller),
                 ],
               ),

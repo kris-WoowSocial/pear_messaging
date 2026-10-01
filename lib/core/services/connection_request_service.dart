@@ -205,6 +205,7 @@ class ConnectionRequestService extends GetxService {
     final success = await _socketService.sendConnectionRequest(
       targetDeviceId,
       messageContent: messageContent,
+      senderName: _storageService.getDisplayName(myDeviceId),
     );
 
     if (success) {
@@ -330,11 +331,10 @@ class ConnectionRequestService extends GetxService {
       return;
     }
 
-    // Use @user_ format - no name fetching for privacy
-    final senderName = StringUtils.generateFriendlyName(senderDeviceId);
-    debugPrint(
-      '🔍 DEBUG: Using @user_ format for connection request: $senderDeviceId -> $senderName',
-    );
+    final receivedSenderName = data['senderName']?.toString().trim();
+    final senderName = receivedSenderName?.isNotEmpty == true
+        ? receivedSenderName!
+        : StringUtils.generateFriendlyName(senderDeviceId);
 
     // Create connection request entity with message content and sender name
     final request = ConnectionRequestEntity(
@@ -372,7 +372,9 @@ class ConnectionRequestService extends GetxService {
 
   /// Show connection request dialog
   void showConnectionRequestDialog(ConnectionRequestEntity request) {
-    final senderName = StringUtils.generateFriendlyName(request.senderDeviceId);
+    final senderName = request.senderName?.trim().isNotEmpty == true
+        ? request.senderName!.trim()
+        : StringUtils.generateFriendlyName(request.senderDeviceId);
 
     Get.dialog(
       Dialog(
@@ -498,7 +500,15 @@ class ConnectionRequestService extends GetxService {
     );
 
     // Create chat entity for the accepted connection
-    final senderName = _storageService.getDisplayName(senderDeviceId);
+    final request = pendingRequests.firstWhereOrNull(
+          (request) => request.id == requestId,
+        ) ??
+        _storageService.getPendingConnectionRequests().firstWhereOrNull(
+              (request) => request.id == requestId,
+            );
+    final senderName = request?.senderName?.trim().isNotEmpty == true
+        ? request!.senderName!.trim()
+        : _storageService.getDisplayName(senderDeviceId);
     final myDeviceId = _storageService.deviceId!;
 
     // Create default acceptance message
@@ -720,8 +730,7 @@ class ConnectionRequestService extends GetxService {
       if (existingChat != null) {
         // Preserve the real message if the chat already has one; otherwise show the
         // default acceptance text until the socket message arrives and overwrites it.
-        final lastMessage =
-            (existingChat.lastMessage != null &&
+        final lastMessage = (existingChat.lastMessage != null &&
                 existingChat.lastMessage!.isNotEmpty &&
                 existingChat.lastMessage !=
                     'Connection accepted - start chatting!')

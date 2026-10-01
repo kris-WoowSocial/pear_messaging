@@ -1,4 +1,4 @@
-library social_media_recorder;
+library;
 
 import 'dart:io';
 
@@ -110,8 +110,8 @@ class SocialMediaRecorder extends StatefulWidget {
     this.encode = AudioEncoderType.AAC,
     this.cancelTextBackGroundColor,
     this.radius,
-    Key? key,
-  }) : super(key: key);
+    super.key,
+  });
 
   @override
   _SocialMediaRecorderState createState() => _SocialMediaRecorderState();

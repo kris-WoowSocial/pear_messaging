@@ -29,6 +29,6 @@ class NetworkConstants {
 
   // Branch.io URLs
   static const String branchApiUrl = 'https://api2.branch.io/v1/url';
-  static const String branchWebsiteUrl = 'https://pearmessaging.com';
-  static const String branchIconUrl = 'https://pearmessaging.com/icon.png';
+  static const String branchWebsiteUrl = 'https://vant.chat';
+  static const String branchIconUrl = 'https://vant.chat/icon.png';
 }

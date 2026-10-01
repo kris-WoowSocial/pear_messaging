@@ -1,4 +1,4 @@
-library social_media_recorder;
+library;
 
 import 'package:animated_text_kit/animated_text_kit.dart';
 import 'package:flutter/material.dart';
@@ -20,14 +20,14 @@ class ShowMicWithText extends StatelessWidget {
     required this.backGroundColor,
     required this.initRecordPackageWidth,
     required this.fullRecordPackageHeight,
-    Key? key,
+    super.key,
     required this.shouldShowText,
     required this.soundRecorderState,
     required this.slideToCancelTextStyle,
     required this.slideToCancelText,
     required this.recordIcon,
     required this.counterBackGroundColor,
-  }) : super(key: key);
+  });
 
   final colorizeColors = [
     Colors.black,

@@ -53,106 +53,115 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
       controller.resolveDisplayNamePublic(callerId);
     }
 
-    return Scaffold(
-      backgroundColor: Colors.black,
-      body: SafeArea(
-        child: Column(
-          children: [
-            // Top section - Caller info
-            Expanded(
-              flex: 2,
-              child: Center(
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    // Avatar with pulse animation
-                    AnimatedBuilder(
-                      animation: _pulseAnimation,
-                      builder: (context, child) {
-                        return Transform.scale(
-                          scale: _pulseAnimation.value,
-                          child: Container(
-                            width: 120,
-                            height: 120,
-                            decoration: BoxDecoration(
-                              shape: BoxShape.circle,
-                              color: Colors.grey[800],
-                              border: Border.all(
-                                color: Colors.white.withOpacity(0.3),
-                                width: 2,
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) {
+        // Intercept the Android back button and minimize instead of leaving
+        // the app — the incoming call keeps ringing via the notification.
+        if (didPop) return;
+        controller.minimizeCallScreen(context);
+      },
+      child: Scaffold(
+        backgroundColor: Colors.black,
+        body: SafeArea(
+          child: Column(
+            children: [
+              // Top section - Caller info
+              Expanded(
+                flex: 2,
+                child: Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      // Avatar with pulse animation
+                      AnimatedBuilder(
+                        animation: _pulseAnimation,
+                        builder: (context, child) {
+                          return Transform.scale(
+                            scale: _pulseAnimation.value,
+                            child: Container(
+                              width: 120,
+                              height: 120,
+                              decoration: BoxDecoration(
+                                shape: BoxShape.circle,
+                                color: Colors.grey[800],
+                                border: Border.all(
+                                  color: Colors.white.withOpacity(0.3),
+                                  width: 2,
+                                ),
+                              ),
+                              child: const Icon(
+                                Icons.person,
+                                size: 60,
+                                color: Colors.white,
                               ),
                             ),
-                            child: const Icon(
-                              Icons.person,
-                              size: 60,
-                              color: Colors.white,
-                            ),
-                          ),
-                        );
-                      },
-                    ),
-                    const SizedBox(height: 32),
-                    // Caller name
-                    Obx(
-                      () => Text(
-                        controller.remoteDisplayName.value.isNotEmpty
-                            ? controller.remoteDisplayName.value
-                            : (callerId.isNotEmpty
+                          );
+                        },
+                      ),
+                      const SizedBox(height: 32),
+                      // Caller name
+                      Obx(
+                        () => Text(
+                          controller.remoteDisplayName.value.isNotEmpty
+                              ? controller.remoteDisplayName.value
+                              : (callerId.isNotEmpty
                                   ? '@user_${callerId.substring(callerId.length >= 5 ? callerId.length - 5 : 0)}'
                                   : 'Unknown'),
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 28,
-                          fontWeight: FontWeight.bold,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 28,
+                            fontWeight: FontWeight.bold,
+                          ),
                         ),
                       ),
-                    ),
-                    const SizedBox(height: 8),
-                    // Call status
-                    const Text(
-                      'Incoming call...',
-                      style: TextStyle(color: Colors.white70, fontSize: 16),
-                    ),
-                  ],
+                      const SizedBox(height: 8),
+                      // Call status
+                      const Text(
+                        'Incoming call...',
+                        style: TextStyle(color: Colors.white70, fontSize: 16),
+                      ),
+                    ],
+                  ),
                 ),
               ),
-            ),
-            // Bottom section - Action buttons
-            Expanded(
-              flex: 1,
-              child: Padding(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 48,
-                  vertical: 32,
-                ),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                  children: [
-                    // Decline button
-                    _buildActionButton(
-                      icon: Icons.call_end,
-                      color: Colors.red,
-                      label: 'Decline',
-                      onTap: () {
-                        _declineCall(callData);
-                      },
-                    ),
-                    // Accept button
-                    _buildActionButton(
-                      icon: Icons.call,
-                      color: Colors.green,
-                      label: _isAccepting ? 'Connecting...' : 'Accept',
-                      onTap: _isAccepting
-                          ? () {}
-                          : () {
-                              _acceptCall(callData);
-                            },
-                    ),
-                  ],
+              // Bottom section - Action buttons
+              Expanded(
+                flex: 1,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 48,
+                    vertical: 32,
+                  ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                    children: [
+                      // Decline button
+                      _buildActionButton(
+                        icon: Icons.call_end,
+                        color: Colors.red,
+                        label: 'Decline',
+                        onTap: () {
+                          _declineCall(callData);
+                        },
+                      ),
+                      // Accept button
+                      _buildActionButton(
+                        icon: Icons.call,
+                        color: Colors.green,
+                        label: _isAccepting ? 'Connecting...' : 'Accept',
+                        onTap: _isAccepting
+                            ? () {}
+                            : () {
+                                _acceptCall(callData);
+                              },
+                      ),
+                    ],
+                  ),
                 ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );

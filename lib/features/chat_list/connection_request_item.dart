@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import '../../core/constants/app_colors.dart';
 import '../../core/services/connection_request_service.dart';
-import '../../core/utils/string_utils.dart';
 import '../../storage/models/connection_request_entity.dart';
 import '../../storage/models/message_entity.dart';
 
@@ -28,12 +27,9 @@ class _ConnectionRequestItemState extends State<ConnectionRequestItem> {
 
   @override
   Widget build(BuildContext context) {
-    // Always use @user_ format - no name fetching or display names
-    final senderName =
-        StringUtils.generateFriendlyName(widget.request.senderDeviceId);
-
-    debugPrint(
-        '🔍 DEBUG ConnectionRequestItem: Using @user_ format for ${widget.request.senderDeviceId} -> $senderName');
+    final senderName = widget.request.senderName?.trim().isNotEmpty == true
+        ? widget.request.senderName!.trim()
+        : 'Unknown User';
 
     // Format the message content for display
     String displayMessage = '';

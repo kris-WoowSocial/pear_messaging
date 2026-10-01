@@ -21,7 +21,7 @@ import 'chat_list_item.dart';
 import 'connection_request_item.dart';
 
 class ChatListScreen extends GetView<ChatListController> {
-  ChatListScreen({super.key});
+  const ChatListScreen({super.key});
 
   @override
   Widget build(BuildContext context) {
