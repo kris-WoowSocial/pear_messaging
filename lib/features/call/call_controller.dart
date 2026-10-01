@@ -62,6 +62,7 @@ class CallController extends GetxController {
   final RxString currentCallId = ''.obs;
   final RxBool isCaller = false.obs;
   final RxString callerDisplayName = ''.obs;
+  final RxBool isCallMinimized = false.obs;
 
   // Proximity sensor state - managed by ProximityService
   final RxBool isNearEar = false.obs;
@@ -162,19 +163,18 @@ class CallController extends GetxController {
   /// Listen for native broadcasts when the app is in foreground
   void _setupNativeCallEventListener() {
     try {
-      _callEventSubscription = _callEventsChannel
-          .receiveBroadcastStream()
-          .listen(
-            (dynamic event) {
-              if (event is Map) {
-                debugPrint('📞 Native call event received: $event');
-                _handleNativeShowFlutterCall(event.cast<String, dynamic>());
-              }
-            },
-            onError: (dynamic error) {
-              debugPrint('⚠️ Native call event stream error: $error');
-            },
-          );
+      _callEventSubscription =
+          _callEventsChannel.receiveBroadcastStream().listen(
+        (dynamic event) {
+          if (event is Map) {
+            debugPrint('📞 Native call event received: $event');
+            _handleNativeShowFlutterCall(event.cast<String, dynamic>());
+          }
+        },
+        onError: (dynamic error) {
+          debugPrint('⚠️ Native call event stream error: $error');
+        },
+      );
     } catch (e) {
       debugPrint('⚠️ Failed to set up native call event listener: $e');
     }
@@ -220,7 +220,7 @@ class CallController extends GetxController {
     final callId = data['call_id'] as String?;
     final answeredFromBackground = data['answered_from_background'] == 'true';
     final fromNative = data['from_native'] == 'true';
-    
+
     if (callId == null || callId.isEmpty) return;
 
     // Prevent duplicate handling from both the pending-intent path and the
@@ -236,7 +236,8 @@ class CallController extends GetxController {
 
     // CRITICAL: Initialize audio mode before connecting to call
     // This prevents the 60-second speaker delay when accepting from native screen
-    debugPrint('📞 Answer from native screen: $fromNative, initializing audio mode');
+    debugPrint(
+        '📞 Answer from native screen: $fromNative, initializing audio mode');
     await _initializeAudioMode();
 
     _setCallScreenVisible(true);
@@ -251,7 +252,8 @@ class CallController extends GetxController {
 
     // Store flag that this call was answered from background
     if (answeredFromBackground) {
-      debugPrint('📞 Call answered from background - will restore speaker state after connection');
+      debugPrint(
+          '📞 Call answered from background - will restore speaker state after connection');
       _answeredFromBackground = true;
     }
 
@@ -521,9 +523,11 @@ class CallController extends GetxController {
           final roomId = call.arguments['roomId'] as String?;
           final avatarUrl = call.arguments['avatarUrl'] as String?;
           final isVideo = call.arguments['isVideo'] as bool? ?? false;
-          final answeredFromBackground = call.arguments['answeredFromBackground'] as bool? ?? false;
+          final answeredFromBackground =
+              call.arguments['answeredFromBackground'] as bool? ?? false;
 
-          debugPrint('📞 Native call action: $action for call $callId, answeredFromBackground: $answeredFromBackground');
+          debugPrint(
+              '📞 Native call action: $action for call $callId, answeredFromBackground: $answeredFromBackground');
 
           if (action == 'show_incoming_call') {
             // App was launched/killed and service woke it up to show full-screen call UI
@@ -551,7 +555,9 @@ class CallController extends GetxController {
 
           if (action == 'open_ongoing_call') {
             debugPrint('📞 Notification tap: open ongoing call screen');
-            if (isConnected && callId != null && callId.isNotEmpty &&
+            if (isConnected &&
+                callId != null &&
+                callId.isNotEmpty &&
                 currentCallId.value == callId) {
               if (Get.currentRoute != '/call/active') {
                 Get.offAllNamed('/call/active');
@@ -568,7 +574,8 @@ class CallController extends GetxController {
               'room_id': roomId ?? '',
               'avatar_url': avatarUrl ?? '',
               'is_video': isVideo ? 'true' : 'false',
-              'answered_from_background': answeredFromBackground ? 'true' : 'false',
+              'answered_from_background':
+                  answeredFromBackground ? 'true' : 'false',
               'from_native': 'true',
             });
           } else if (action == 'decline') {
@@ -711,7 +718,8 @@ class CallController extends GetxController {
   ) async {
     if (callId == null || callId.isEmpty) return;
     if (_lastHandledNativeCallId == callId) {
-      debugPrint('📞 CallKit accept for $callId already handled, skipping duplicate');
+      debugPrint(
+          '📞 CallKit accept for $callId already handled, skipping duplicate');
       return;
     }
     _lastHandledNativeCallId = callId;
@@ -750,20 +758,17 @@ class CallController extends GetxController {
     // answer path: persist the auto-accept, request a resync, pre-populate the
     // active call info, and navigate to the active call screen so the user sees
     // the call UI immediately while the SDP offer arrives.
-    final callerId = extra?['callerId'] as String? ??
-        extra?['caller_id'] as String? ??
-        '';
+    final callerId =
+        extra?['callerId'] as String? ?? extra?['caller_id'] as String? ?? '';
     final callerName = extra?['callerName'] as String? ??
         extra?['caller_name'] as String? ??
         'Incoming Call';
-    final roomId = extra?['roomId'] as String? ??
-        extra?['room_id'] as String? ??
-        '';
-    final avatarUrl = extra?['avatarUrl'] as String? ??
-        extra?['avatar_url'] as String? ??
-        '';
-    final isVideo = (extra?['isVideo'] as bool?) ??
-        (extra?['is_video'] == true);
+    final roomId =
+        extra?['roomId'] as String? ?? extra?['room_id'] as String? ?? '';
+    final avatarUrl =
+        extra?['avatarUrl'] as String? ?? extra?['avatar_url'] as String? ?? '';
+    final isVideo =
+        (extra?['isVideo'] as bool?) ?? (extra?['is_video'] == true);
 
     debugPrint(
       '📞 CallKit accept: no cached SDP, setting pending auto-accept and requesting resync',
@@ -802,7 +807,8 @@ class CallController extends GetxController {
   }
 
   Future<void> _watchForPendingAcceptedCall() async {
-    if (_isCheckingPendingAutoAccept || _pendingAutoAcceptCallId != null) return;
+    if (_isCheckingPendingAutoAccept || _pendingAutoAcceptCallId != null)
+      return;
 
     final prefs = await SharedPreferences.getInstance();
     await prefs.reload();
@@ -840,7 +846,6 @@ class CallController extends GetxController {
         await prefs
             .reload(); // Force fresh read from disk - bypasses stale cache
         final pendingCallId = prefs.getString('pendingAcceptedCallId');
-       
 
         if (pendingCallId != null && pendingCallId.isNotEmpty) {
           debugPrint('📞 Found pending accepted call: $pendingCallId');
@@ -877,7 +882,7 @@ class CallController extends GetxController {
             // Clear auto-accept flag since we can't proceed
             clearPendingAutoAccept();
           }
-        } 
+        }
         // else {
         //   debugPrint(
         //     '📞 No pending accepted call found in storage (retry $retryCount)',
@@ -1186,6 +1191,27 @@ class CallController extends GetxController {
     _resetCallState();
   }
 
+  /// Minimize the call screen so the user can keep using the app while the
+  /// call continues. The persistent call banner stays visible at the top and
+  /// tapping it returns to the full-screen call UI.
+  void minimizeCallScreen(BuildContext context) {
+    isCallMinimized.value = true;
+    if (Navigator.of(context).canPop()) {
+      Get.back();
+    } else {
+      // Call screen is the only route (e.g. opened from a notification or a
+      // cold start) — land on the chat list instead of exiting the app.
+      Get.offAllNamed('/chat-list');
+    }
+  }
+
+  void restoreCallScreen() {
+    isCallMinimized.value = false;
+    final route =
+        isCaller.value && isConnecting ? '/call/outgoing' : '/call/active';
+    Get.toNamed(route);
+  }
+
   /// Toggle mute
   void toggleMute() {
     _webrtcService.toggleMute();
@@ -1305,6 +1331,7 @@ class CallController extends GetxController {
   /// Handle call rejected from socket
   void _handleCallRejected(Map<String, dynamic> data) {
     debugPrint('📞 Call rejected: $data');
+    final wasMinimized = isCallMinimized.value;
 
     // Stop ringtone
     _ringtoneService.stopRingtone();
@@ -1319,8 +1346,8 @@ class CallController extends GetxController {
 
     _resetCallState();
 
-    // Navigate back to dismiss the dialing screen
-    if (Get.currentRoute != '/chat' && Get.currentRoute != '/') {
+    // Navigate back only when the full-screen dialing UI is still visible.
+    if (!wasMinimized && Get.currentRoute == '/call/outgoing') {
       Get.back();
     }
 
@@ -1335,6 +1362,7 @@ class CallController extends GetxController {
   /// Handle call terminated from socket
   void _handleCallTerminated(Map<String, dynamic> data) {
     final callId = data['callId'] as String?;
+    final wasMinimized = isCallMinimized.value;
     debugPrint('📞 Call terminated: $data');
 
     // Only process if this is the current call (ignore if we have a different active call)
@@ -1379,7 +1407,8 @@ class CallController extends GetxController {
     // Navigate to chat list to dismiss the incoming/dialing/active call screen
     // Using offAllNamed ensures proper cleanup when app was launched from notification
     final currentRoute = Get.currentRoute;
-    if (currentRoute != '/chat-list' &&
+    if (!wasMinimized &&
+        currentRoute != '/chat-list' &&
         currentRoute != '/main' &&
         currentRoute != '/') {
       Get.offAllNamed('/chat-list');
@@ -1471,7 +1500,7 @@ class CallController extends GetxController {
   }
 
   /// Handle call state change from WebRTC
-  void _handleCallStateChange(String state)async {
+  void _handleCallStateChange(String state) async {
     debugPrint('📞 Call state changed: $state');
 
     switch (state) {
@@ -1488,16 +1517,17 @@ class CallController extends GetxController {
         _ringtoneService.stopRingtone();
         callState.value = CallState.connected;
         _wasConnected = true;
-        
+
         // Restore speaker state if call was answered from background
         if (_answeredFromBackground) {
-          debugPrint('📞 Call connected after background answer - restoring speaker state');
+          debugPrint(
+              '📞 Call connected after background answer - restoring speaker state');
           // Ensure speaker state is properly configured after connection
           final currentSpeakerState = _webrtcService.isSpeakerOn;
           await _webrtcService.setSpeaker(currentSpeakerState);
           _answeredFromBackground = false; // Reset flag
         }
-        
+
         // Start duration update timer to sync with WebRTC service
         _startDurationUpdateTimer();
         // Start proximity sensor for screen off during call
@@ -1536,17 +1566,20 @@ class CallController extends GetxController {
           );
         }
         // Navigate caller to active call screen (callee navigates from incoming screen)
-        if (isCaller.value) {
+        if (isCaller.value && !isCallMinimized.value) {
           Get.offNamed('/call/active');
         }
         break;
       case 'ended':
+        final wasMinimized = isCallMinimized.value;
         _ringtoneService.stopRingtone();
         callState.value = CallState.ended;
+        isCallMinimized.value = false;
         _stopDurationUpdateTimer();
         // Make sure we leave the call screen so the app doesn't get stuck
         // (e.g. after a cold-start accept from a notification)
-        if (Get.currentRoute != '/chat-list' &&
+        if (!wasMinimized &&
+            Get.currentRoute != '/chat-list' &&
             Get.currentRoute != '/main' &&
             Get.currentRoute != '/') {
           Get.offAllNamed('/chat-list');
@@ -1558,12 +1591,14 @@ class CallController extends GetxController {
   /// Handle call ended from WebRTC
   void _handleCallEnded(String callId) {
     debugPrint('📞 Call ended: $callId');
+    final wasMinimized = isCallMinimized.value;
     // Note: _logCallHistory should already be called by endCall() or _handleCallTerminated()
     // This handler is a fallback for WebRTC-level disconnections
     _resetCallState();
 
     // Ensure we leave the active call screen so the UI doesn't get stuck
-    if (Get.currentRoute != '/chat-list' &&
+    if (!wasMinimized &&
+        Get.currentRoute != '/chat-list' &&
         Get.currentRoute != '/main' &&
         Get.currentRoute != '/') {
       Get.offAllNamed('/chat-list');
@@ -1604,14 +1639,14 @@ class CallController extends GetxController {
     // Accept the call with the resent SDP offer
     _webrtcService
         .acceptCall(
-          callId: callId,
-          callerDeviceId: callerId,
-          calleeDeviceId: _storageService.deviceId!,
-          sdpOffer: sdpOffer,
-        )
+      callId: callId,
+      callerDeviceId: callerId,
+      calleeDeviceId: _storageService.deviceId!,
+      sdpOffer: sdpOffer,
+    )
         .then((_) {
-          debugPrint('📞 WebRTC accept completed after resync');
-        });
+      debugPrint('📞 WebRTC accept completed after resync');
+    });
   }
 
   /// Start call duration update timer
@@ -1699,6 +1734,7 @@ class CallController extends GetxController {
     final callId = currentCallId.value;
     unawaited(_teardownAndroidCall(callId));
     callState.value = CallState.idle;
+    isCallMinimized.value = false;
     isMuted.value = false;
     isSpeakerOn.value = false;
     callDuration.value = '00:00';
@@ -1798,9 +1834,8 @@ class CallController extends GetxController {
           ? remoteDisplayName.value
           : StringUtils.generateFriendlyName(remoteDeviceId.value),
       remoteAvatarUrl: null, // TODO: Get from storage if available
-      direction: isCaller.value
-          ? CallDirection.outgoing
-          : CallDirection.incoming,
+      direction:
+          isCaller.value ? CallDirection.outgoing : CallDirection.incoming,
       status: status,
       timestamp: _callStartTime!,
       durationSeconds: _wasConnected ? _durationSeconds : 0,

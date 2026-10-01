@@ -9,6 +9,7 @@ import '../../core/services/local_auth_service.dart';
 import '../../core/services/local_storage_service.dart';
 import '../../core/services/invitation_storage_service.dart';
 import '../../core/services/review_service.dart';
+import '../../core/services/username_sync_service.dart';
 import '../../core/utils/device_utils.dart';
 import '../../routes/app_routes.dart';
 import '../../storage/models/connection_request_entity.dart';
@@ -21,11 +22,237 @@ class SplashController extends GetxController {
   // Observable for first launch state
   final RxBool isFirstLaunch = false.obs;
   final RxBool isLoading = true.obs;
+  bool _isNameSetupOpen = false;
 
   @override
   void onInit() {
     super.onInit();
     _checkFirstLaunch();
+  }
+
+  Future<void> showInitialNameSetup() async {
+    if (_isNameSetupOpen) return;
+    _isNameSetupOpen = true;
+
+    final prefs = await SharedPreferences.getInstance();
+    if (prefs.getBool('initial_name_setup_completed') ?? false) {
+      _isNameSetupOpen = false;
+      return;
+    }
+
+    final existingName = _storageService.getUserName()?.trim();
+    if (existingName?.isNotEmpty == true) {
+      await prefs.setBool('initial_name_setup_completed', true);
+      _isNameSetupOpen = false;
+      return;
+    }
+
+    final nameController = TextEditingController();
+    String? errorText;
+    bool isSaving = false;
+
+    await Get.bottomSheet<void>(
+      PopScope(
+        canPop: false,
+        child: StatefulBuilder(
+          builder: (context, setState) {
+            final mediaQuery = MediaQuery.of(context);
+            final keyboardHeight = mediaQuery.viewInsets.bottom;
+            final sheetHeight = keyboardHeight > 0
+                ? mediaQuery.size.height -
+                    keyboardHeight -
+                    mediaQuery.padding.top -
+                    8
+                : mediaQuery.size.height * 0.5;
+
+            return AnimatedContainer(
+              duration: const Duration(milliseconds: 200),
+              curve: Curves.easeOut,
+              height: sheetHeight,
+              decoration: const BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+              ),
+              child: SafeArea(
+                top: false,
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(24, 12, 24, 16),
+                  child: LayoutBuilder(
+                    builder: (context, constraints) {
+                      return SingleChildScrollView(
+                        keyboardDismissBehavior:
+                            ScrollViewKeyboardDismissBehavior.onDrag,
+                        child: ConstrainedBox(
+                          constraints: BoxConstraints(
+                            minHeight: constraints.maxHeight,
+                          ),
+                          child: IntrinsicHeight(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Center(
+                                  child: Container(
+                                    width: 42,
+                                    height: 4,
+                                    decoration: BoxDecoration(
+                                      color: Colors.grey.shade300,
+                                      borderRadius: BorderRadius.circular(2),
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(height: 28),
+                                const Text(
+                                  'What should people call you?',
+                                  style: TextStyle(
+                                    fontSize: 24,
+                                    fontWeight: FontWeight.bold,
+                                    color: Colors.black87,
+                                  ),
+                                ),
+                                const SizedBox(height: 10),
+                                const Text(
+                                  'Your name will be included when you invite friends and shown on connection requests.',
+                                  style: TextStyle(
+                                    fontSize: 15,
+                                    height: 1.4,
+                                    color: Colors.black54,
+                                  ),
+                                ),
+                                const SizedBox(height: 24),
+                                TextField(
+                                  controller: nameController,
+                                  autofocus: true,
+                                  textCapitalization: TextCapitalization.words,
+                                  textInputAction: TextInputAction.done,
+                                  maxLength: 30,
+                                  enabled: !isSaving,
+                                  decoration: InputDecoration(
+                                    labelText: 'Your name',
+                                    hintText: 'Enter your name',
+                                    errorText: errorText,
+                                    prefixIcon:
+                                        const Icon(Icons.person_outline),
+                                    border: OutlineInputBorder(
+                                      borderRadius: BorderRadius.circular(14),
+                                    ),
+                                  ),
+                                  onSubmitted: isSaving
+                                      ? null
+                                      : (_) => _saveInitialName(
+                                            nameController: nameController,
+                                            prefs: prefs,
+                                            setState: setState,
+                                            setError: (value) =>
+                                                errorText = value,
+                                            setSaving: (value) =>
+                                                isSaving = value,
+                                          ),
+                                ),
+                                const Spacer(),
+                                SizedBox(
+                                  width: double.infinity,
+                                  height: 52,
+                                  child: ElevatedButton(
+                                    onPressed: isSaving
+                                        ? null
+                                        : () => _saveInitialName(
+                                              nameController: nameController,
+                                              prefs: prefs,
+                                              setState: setState,
+                                              setError: (value) =>
+                                                  errorText = value,
+                                              setSaving: (value) =>
+                                                  isSaving = value,
+                                            ),
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor: const Color(0xFFB9D58C),
+                                      foregroundColor: Colors.black87,
+                                      shape: RoundedRectangleBorder(
+                                        borderRadius: BorderRadius.circular(14),
+                                      ),
+                                    ),
+                                    child: isSaving
+                                        ? const SizedBox(
+                                            width: 22,
+                                            height: 22,
+                                            child: CircularProgressIndicator(
+                                              strokeWidth: 2,
+                                              color: Colors.black54,
+                                            ),
+                                          )
+                                        : const Text(
+                                            'Continue',
+                                            style: TextStyle(
+                                              fontSize: 16,
+                                              fontWeight: FontWeight.w700,
+                                            ),
+                                          ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ),
+            );
+          },
+        ),
+      ),
+      isDismissible: false,
+      enableDrag: false,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+    );
+
+    nameController.dispose();
+    _isNameSetupOpen = false;
+  }
+
+  Future<void> _saveInitialName({
+    required TextEditingController nameController,
+    required SharedPreferences prefs,
+    required StateSetter setState,
+    required ValueChanged<String?> setError,
+    required ValueChanged<bool> setSaving,
+  }) async {
+    final name = nameController.text.trim();
+    if (name.isEmpty) {
+      setState(() => setError('Please enter your name'));
+      return;
+    }
+
+    setState(() {
+      setError(null);
+      setSaving(true);
+    });
+
+    try {
+      await _storageService.setUserName(name);
+      await prefs.setBool('initial_name_setup_completed', true);
+
+      try {
+        if (Get.isRegistered<UsernameSyncService>()) {
+          final deviceId = _storageService.deviceId;
+          if (deviceId != null && deviceId.isNotEmpty) {
+            await Get.find<UsernameSyncService>().syncUsername(deviceId, name);
+          }
+        }
+      } catch (e) {
+        debugPrint('⚠️ Initial name saved locally but could not sync: $e');
+      }
+
+      Get.back();
+    } catch (e) {
+      debugPrint('❌ Error saving initial name: $e');
+      setState(() {
+        setSaving(false);
+        setError('Could not save your name. Please try again.');
+      });
+    }
   }
 
   /// Check if this is the first launch of the app
@@ -356,8 +583,8 @@ class SplashController extends GetxController {
           }
 
           // Enhanced validation: Check if connection request already exists
-          final existingRequests = _storageService
-              .getPendingConnectionRequests();
+          final existingRequests =
+              _storageService.getPendingConnectionRequests();
           final hasExistingRequest = existingRequests.any(
             (request) =>
                 request.senderDeviceId == deviceId ||

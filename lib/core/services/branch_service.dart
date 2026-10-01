@@ -131,7 +131,10 @@ class BranchService extends GetxService {
           return; // Don't clear - let splash controller process it
         }
 
-        _handleDeepLink(pendingInvitation['deviceId']!);
+        _handleDeepLink(
+          pendingInvitation['deviceId']!,
+          inviterName: pendingInvitation['userName'],
+        );
 
         // Clear the pending invitation after processing
         invitationService.clearPendingInvitation();
@@ -191,7 +194,10 @@ class BranchService extends GetxService {
           }
 
           // Navigate to chat
-          _handleDeepLink(pendingInvitation['deviceId']!);
+          _handleDeepLink(
+            pendingInvitation['deviceId']!,
+            inviterName: pendingInvitation['userName'],
+          );
           invitationService.clearPendingInvitation();
           timer.cancel();
           return;
@@ -230,14 +236,16 @@ class BranchService extends GetxService {
         final api = ApiService.to;
         final influencerData = await api.getInfluencerByDeviceId(deviceId);
         if (influencerData != null) {
-          final influencer = influencerData['influencer'] as Map<String, dynamic>;
+          final influencer =
+              influencerData['influencer'] as Map<String, dynamic>;
           if (influencer['status'] == 'active') {
             influencerCode = influencer['referralCode'] as String?;
             debugPrint('🔗 Device linked to influencer $influencerCode');
           }
         }
       } catch (e) {
-        debugPrint('⚠️ Could not fetch linked influencer, falling back to plain share: $e');
+        debugPrint(
+            '⚠️ Could not fetch linked influencer, falling back to plain share: $e');
       }
 
       // Create Branch Content Metadata with rich data
@@ -322,6 +330,7 @@ class BranchService extends GetxService {
       // Add device_id as control parameter for backup extraction
       lp.addControlParam('device_id', deviceId);
       lp.addControlParam('chat_device_id', deviceId);
+      lp.addControlParam('user_name', friendlyName);
       if (influencerCode != null && influencerCode.isNotEmpty) {
         lp.addControlParam('referral_code', influencerCode);
       }
@@ -349,7 +358,8 @@ class BranchService extends GetxService {
         );
 
         // Try REST API fallback
-        final fallbackUrl = await _generateLinkViaAPI(deviceId, friendlyName, influencerCode: influencerCode);
+        final fallbackUrl = await _generateLinkViaAPI(deviceId, friendlyName,
+            influencerCode: influencerCode);
         if (fallbackUrl != null) {
           return fallbackUrl;
         }
@@ -398,8 +408,7 @@ class BranchService extends GetxService {
         '\$ios_passive_deepview': 'false',
         '\$ios_scheme': 'vantchat',
         '\$ios_package': 'com.vant.chatting',
-        '\$android_url':
-            '${NetworkConstants.playStoreUrl}?id=com.vant.chat',
+        '\$android_url': '${NetworkConstants.playStoreUrl}?id=com.vant.chat',
         '\$android_package': 'com.vant.chat',
         '\$desktop_url': NetworkConstants.branchWebsiteUrl,
         '\$fallback_url': NetworkConstants.branchWebsiteUrl,
@@ -412,7 +421,10 @@ class BranchService extends GetxService {
           .post(
             Uri.parse(NetworkConstants.branchApiUrl),
             headers: {'Content-Type': 'application/json'},
-            body: jsonEncode({'branch_key': 'key_live_duxqKkJhod2Xdn2FEQ0Aujgjvxhu3F0E', 'data': data}),
+            body: jsonEncode({
+              'branch_key': 'key_live_duxqKkJhod2Xdn2FEQ0Aujgjvxhu3F0E',
+              'data': data
+            }),
           )
           .timeout(const Duration(seconds: 10));
 
@@ -452,7 +464,7 @@ class BranchService extends GetxService {
       } catch (e) {
         // Fallback to custom scheme if Branch.io fails
         debugPrint('⚠️ Branch.io failed, using custom scheme: $e');
-        link = 'vantchat://chat?device_id=$deviceId';
+        link = generateCustomSchemeLink(deviceId);
       }
 
       final message = '''Hi! Let's chat on Vant Chat🔒
@@ -484,7 +496,11 @@ Experience total privacy with military-grade encryption and a direct, peer-to-pe
   /// Generate custom scheme link for direct app opening (fallback)
   String generateCustomSchemeLink(String deviceId) {
     final userName = _storageService.getDisplayName(deviceId);
-    return 'vantchat://chat?device_id=$deviceId&user_name=$userName';
+    return Uri(
+      scheme: 'vantchat',
+      host: 'chat',
+      queryParameters: {'device_id': deviceId, 'user_name': userName},
+    ).toString();
   }
 
   /// Process deep link data and extract device_id
@@ -493,6 +509,12 @@ Experience total privacy with military-grade encryption and a direct, peer-to-pe
     required bool isColdStart,
   }) async {
     String? deviceId;
+    String? userName = data['user_name']?.toString();
+    final deepLinkCustomData = data['custom_data'];
+    if ((userName == null || userName.trim().isEmpty) &&
+        deepLinkCustomData is Map) {
+      userName = deepLinkCustomData['user_name']?.toString();
+    }
 
     // Try direct keys first
     if (data.containsKey('device_id')) {
@@ -622,7 +644,11 @@ Experience total privacy with military-grade encryption and a direct, peer-to-pe
         await Future.delayed(const Duration(milliseconds: 1000));
       }
 
-      _handleDeepLink(deviceId, isColdStart: isColdStart);
+      _handleDeepLink(
+        deviceId,
+        inviterName: userName,
+        isColdStart: isColdStart,
+      );
     } else {
       debugPrint('⚠️ No device_id found in deep link data');
       debugPrint('🔗 Available keys: ${data.keys.toList()}');
@@ -630,10 +656,17 @@ Experience total privacy with military-grade encryption and a direct, peer-to-pe
   }
 
   /// Handle incoming deep link
-  void _handleDeepLink(String deviceId, {bool isColdStart = false}) async {
+  void _handleDeepLink(
+    String deviceId, {
+    String? inviterName,
+    bool isColdStart = false,
+  }) async {
     debugPrint(
       '🔗 Handling deep link for device: $deviceId (coldStart: $isColdStart)',
     );
+    final linkUserName = inviterName?.trim().isNotEmpty == true
+        ? inviterName!.trim()
+        : _storageService.getDisplayName(deviceId);
 
     // Check for global duplicate navigation across all services
     final now = DateTime.now();
@@ -680,10 +713,9 @@ Experience total privacy with military-grade encryption and a direct, peer-to-pe
       // Store the deep link data for splash controller to handle
       try {
         final invitationService = Get.find<InvitationStorageService>();
-        final userName = _storageService.getDisplayName(deviceId);
         await invitationService.storePendingInvitation(
           deviceId: deviceId,
-          userName: userName,
+          userName: linkUserName,
         );
         debugPrint(
           '💾 Cold start: Stored pending invitation for splash controller',
@@ -755,7 +787,7 @@ Experience total privacy with military-grade encryption and a direct, peer-to-pe
         );
       } else if (hasExistingRequest) {
         // Connection request already exists - navigate to chat list and reload requests
-        userName = _storageService.getDisplayName(deviceId);
+        userName = linkUserName;
         isNewChat = true;
         debugPrint(
             '📱 Connection request already exists for: $userName, navigating to chat list');
@@ -780,7 +812,7 @@ Experience total privacy with military-grade encryption and a direct, peer-to-pe
         );
       } else {
         // New contact - create connection request and navigate to chat list
-        userName = _storageService.getDisplayName(deviceId);
+        userName = linkUserName;
         isNewChat = true;
         debugPrint('📱 Creating connection request for: $userName');
 
@@ -793,6 +825,7 @@ Experience total privacy with military-grade encryption and a direct, peer-to-pe
             status: ConnectionRequestStatus.pending,
             messageContent: null,
             messageType: MessageType.text,
+            senderName: userName,
           );
 
           await _storageService.saveConnectionRequest(connectionRequest);

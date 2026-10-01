@@ -1,4 +1,4 @@
-library social_media_recorder;
+library;
 
 import 'package:flutter/material.dart';
 import 'package:social_media_recorder/provider/sound_record_notifier.dart';
@@ -20,7 +20,7 @@ class SoundRecorderWhenLockedDesign extends StatelessWidget {
   final Widget? sendButtonIcon;
 
   const SoundRecorderWhenLockedDesign({
-    Key? key,
+    super.key,
     required this.fullRecordPackageHeight,
     required this.sendButtonIcon,
     required this.soundRecordNotifier,
@@ -33,7 +33,7 @@ class SoundRecorderWhenLockedDesign extends StatelessWidget {
     required this.recordIconWhenLockBackGroundColor,
     required this.counterBackGroundColor,
     required this.cancelTextBackGroundColor,
-  }) : super(key: key);
+  });
 
   @override
   Widget build(BuildContext context) {

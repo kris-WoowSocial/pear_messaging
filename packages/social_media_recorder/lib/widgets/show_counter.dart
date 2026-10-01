@@ -1,4 +1,4 @@
-library social_media_recorder;
+library;
 
 import 'package:flutter/material.dart';
 import 'package:social_media_recorder/provider/sound_record_notifier.dart';
@@ -13,10 +13,10 @@ class ShowCounter extends StatelessWidget {
   const ShowCounter({
     required this.soundRecorderState,
     required this.fullRecordPackageHeight,
-    Key? key,
+    super.key,
     this.counterTextStyle,
     required this.counterBackGroundColor,
-  }) : super(key: key);
+  });
 
   @override
   Widget build(BuildContext context) {

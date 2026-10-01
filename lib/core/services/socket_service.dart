@@ -782,7 +782,8 @@ class SocketService extends GetxService {
     required int duration,
     String? waveformData,
   }) async {
-    debugPrint('🎤 SocketService.sendAudioMessage token=$mediaToken duration=$duration');
+    debugPrint(
+        '🎤 SocketService.sendAudioMessage token=$mediaToken duration=$duration');
 
     if (!isConnected.value) {
       debugPrint('❌ Cannot send audio message: not connected');
@@ -885,7 +886,8 @@ class SocketService extends GetxService {
     required int duration,
     String? waveformData,
   }) async {
-    debugPrint('🎤 SocketService.sendGroupAudioMessage token=$mediaToken duration=$duration');
+    debugPrint(
+        '🎤 SocketService.sendGroupAudioMessage token=$mediaToken duration=$duration');
 
     if (!isConnected.value) {
       debugPrint('❌ Cannot send group audio message: not connected');
@@ -1099,6 +1101,7 @@ class SocketService extends GetxService {
   Future<bool> sendConnectionRequest(
     String targetDeviceId, {
     String? messageContent,
+    String? senderName,
   }) async {
     if (!isConnected.value) {
       debugPrint('❌ Cannot send connection request: not connected');
@@ -1119,6 +1122,8 @@ class SocketService extends GetxService {
       'targetDeviceId': targetDeviceId,
       'senderDeviceId': _deviceId,
       'timestamp': timestamp,
+      if (senderName != null && senderName.trim().isNotEmpty)
+        'senderName': senderName.trim(),
     };
 
     // Add encrypted message content if provided
