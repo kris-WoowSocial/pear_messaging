@@ -617,39 +617,3 @@ Future<void> requestMicrophonePermission() async {
     debugPrint('⚠️ Error requesting microphone permission: $e');
   }
 }
-
-/// Handle cold-start after user accepted call from background/killed state
-/// This checks SharedPreferences for pendingAcceptedCallId set by CallKitService
-/// and triggers call_resync to get the SDP offer from server
-Future<void> _handlePendingAcceptedCall() async {
-  try {
-    final prefs = await SharedPreferences.getInstance();
-    final pendingCallId = prefs.getString('pendingAcceptedCallId');
-    if (pendingCallId == null || pendingCallId.isEmpty) return;
-
-    // Clear immediately to prevent re-processing on next launch
-    await prefs.remove('pendingAcceptedCallId');
-    debugPrint('📞 Cold start: pendingAcceptedCallId = $pendingCallId');
-
-    // Wait for socket to be connected and registered
-    final socketService = Get.find<SocketService>();
-    int attempts = 0;
-    while (!socketService.isConnected.value && attempts < 30) {
-      await Future.delayed(const Duration(milliseconds: 200));
-      attempts++;
-    }
-
-    if (!socketService.isConnected.value) {
-      debugPrint('📞 Cold start resync: socket connection timeout');
-      return;
-    }
-
-    // Set auto-accept flag and emit resync to get SDP offer
-    final callController = Get.find<CallController>();
-    await callController.setPendingAutoAccept(pendingCallId);
-    socketService.socket?.emit('call_resync', {'callId': pendingCallId});
-    debugPrint('📞 Cold start: emitted call_resync for $pendingCallId');
-  } catch (e) {
-    debugPrint('📞 Error handling pending accepted call: $e');
-  }
-}

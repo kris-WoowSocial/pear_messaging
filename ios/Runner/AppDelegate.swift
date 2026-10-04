@@ -16,6 +16,9 @@ import CommonCrypto
   // PushKit registry for VoIP pushes (required for CallKit on locked iOS)
   var pushRegistry: PKPushRegistry?
   private var isAppForeground = false
+  private var isInCall = false
+  private var callStateChannel: FlutterMethodChannel?
+  private var audioSessionObserversRegistered = false
 
   override func application(
     _ application: UIApplication,
@@ -42,7 +45,13 @@ import CommonCrypto
     application.registerForRemoteNotifications()
     
     GeneratedPluginRegistrant.register(with: self)
-    
+
+    // Register method channel so Flutter can tell native when a Vant call is active
+    setupCallStateChannel()
+
+    // Watch audio-session interruptions so external calls don't silently kill Vant audio
+    setupAudioSessionObservers()
+
     // Register for VoIP pushes so CallKit can appear on locked screen
     setupPushKit()
     
@@ -495,5 +504,96 @@ import CommonCrypto
         print("📱 CallKit: server \(action) HTTP \(httpResponse.statusCode)")
       }
     }.resume()
+  }
+
+  // MARK: - Call-state sync from Flutter
+
+  private func setupCallStateChannel() {
+    guard let controller = window?.rootViewController as? FlutterViewController else { return }
+
+    callStateChannel = FlutterMethodChannel(
+      name: "com.pear.messaging/call",
+      binaryMessenger: controller.binaryMessenger
+    )
+
+    callStateChannel?.setMethodCallHandler { [weak self] (call, result) in
+      switch call.method {
+      case "setInCall":
+        if let args = call.arguments as? [String: Any],
+           let inCall = args["inCall"] as? Bool {
+          self?.isInCall = inCall
+          UserDefaults.standard.set(inCall, forKey: "vant_in_active_call")
+          print("📱 Call state synced: inCall=\(inCall)")
+        }
+        result(nil)
+      default:
+        result(FlutterMethodNotImplemented)
+      }
+    }
+  }
+
+  // MARK: - Audio session interruption / route-change recovery
+
+  private func setupAudioSessionObservers() {
+    guard !audioSessionObserversRegistered else { return }
+    audioSessionObserversRegistered = true
+
+    NotificationCenter.default.addObserver(
+      self,
+      selector: #selector(handleAudioSessionInterruption),
+      name: AVAudioSession.interruptionNotification,
+      object: nil
+    )
+    NotificationCenter.default.addObserver(
+      self,
+      selector: #selector(handleAudioSessionRouteChange),
+      name: AVAudioSession.routeChangeNotification,
+      object: nil
+    )
+  }
+
+  @objc private func handleAudioSessionInterruption(_ notification: Notification) {
+    guard let userInfo = notification.userInfo,
+          let typeValue = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
+          let type = AVAudioSession.InterruptionType(rawValue: typeValue) else { return }
+
+    switch type {
+    case .began:
+      print("🔊 Audio session interruption began (inCall=\(isInCall))")
+    case .ended:
+      guard isInCall else { return }
+      if let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt {
+        let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
+        if options.contains(.shouldResume) {
+          do {
+            try AVAudioSession.sharedInstance().setActive(true)
+            print("🔊 Resumed audio session after interruption")
+          } catch {
+            print("⚠️ Failed to resume audio session: \(error)")
+          }
+        }
+      }
+    default:
+      break
+    }
+  }
+
+  @objc private func handleAudioSessionRouteChange(_ notification: Notification) {
+    guard isInCall,
+          let userInfo = notification.userInfo,
+          let reasonValue = userInfo[AVAudioSessionRouteChangeReasonKey] as? UInt,
+          let reason = AVAudioSession.RouteChangeReason(rawValue: reasonValue) else { return }
+
+    print("🔊 Audio route changed: \(reason.rawValue) (inCall=\(isInCall))")
+
+    // After an external call hangs up, the system often routes audio back to
+    // the built-in receiver. Re-activate the session so WebRTC can recover.
+    if reason == .categoryChange || reason == .override || reason == .wakeFromSleep {
+      do {
+        try AVAudioSession.sharedInstance().setActive(true)
+      } catch {
+        print("⚠️ Failed to re-activate audio session after route change: \(error)")
+      }
+    }
   }
 }

@@ -45,6 +45,11 @@ class VantConnectionService : ConnectionService() {
             setInitializing()
             setRinging()
             connectionProperties = Connection.PROPERTY_SELF_MANAGED
+            // Hold support is declared on the Connection (not the PhoneAccount —
+            // PhoneAccount capabilities use different bit values and mixing them
+            // makes registerPhoneAccount throw SecurityException).
+            connectionCapabilities = Connection.CAPABILITY_HOLD or
+                Connection.CAPABILITY_SUPPORT_HOLD
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 setAudioModeIsVoip(true)
             }
@@ -83,6 +88,8 @@ class VantConnectionService : ConnectionService() {
         val connection = VantConnection(applicationContext).apply {
             setCallerDisplayName(calleeName, TelecomManager.PRESENTATION_ALLOWED)
             connectionProperties = Connection.PROPERTY_SELF_MANAGED
+            connectionCapabilities = Connection.CAPABILITY_HOLD or
+                Connection.CAPABILITY_SUPPORT_HOLD
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 setAudioModeIsVoip(true)
             }

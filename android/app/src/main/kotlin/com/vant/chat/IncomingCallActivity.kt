@@ -91,9 +91,11 @@ class IncomingCallActivity : AppCompatActivity() {
         if (avatarUrl.isNotEmpty()) {
             Glide.with(this)
                 .load(avatarUrl)
-                .placeholder(R.drawable.ic_call_notification)
+                .placeholder(R.drawable.vant_logo)
                 .circleCrop()
                 .into(ivAvatar)
+        } else {
+            ivAvatar.setImageResource(R.drawable.vant_logo)
         }
 
         btnAnswer.setOnClickListener { answerCall() }

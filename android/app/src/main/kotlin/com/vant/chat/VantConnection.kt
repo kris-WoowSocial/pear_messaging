@@ -113,6 +113,25 @@ class VantConnection(private val context: Context) : Connection() {
         return false
     }
 
+    override fun onHold() {
+        Log.d(TAG, "onHold called by Telecom — external call took over")
+        // Keep the VoIP connection alive while the system handles another call.
+        super.onHold()
+        // Notify Flutter so it can mute WebRTC audio and show "call on hold" UI
+        context.sendBroadcast(Intent("com.vant.chat.CALL_HELD"))
+    }
+
+    override fun onUnhold() {
+        Log.d(TAG, "onUnhold called by Telecom — external call ended")
+        super.onUnhold()
+        setActive()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            setAudioModeIsVoip(true)
+        }
+        // Notify Flutter so it can unmute WebRTC audio and resume the call UI
+        context.sendBroadcast(Intent("com.vant.chat.CALL_UNHELD"))
+    }
+
     override fun onReject() {
         Log.d(TAG, "onReject called")
         setDisconnected(DisconnectCause(DisconnectCause.REJECTED))

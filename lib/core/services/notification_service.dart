@@ -34,10 +34,10 @@ class NotificationService {
     // iOS initialization
     const DarwinInitializationSettings iosSettings =
         DarwinInitializationSettings(
-          requestAlertPermission: true,
-          requestBadgePermission: true,
-          requestSoundPermission: true,
-        );
+      requestAlertPermission: true,
+      requestBadgePermission: true,
+      requestSoundPermission: true,
+    );
 
     // Combined initialization settings
     const InitializationSettings initSettings = InitializationSettings(
@@ -67,44 +67,43 @@ class NotificationService {
     // Sound/vibration disabled here — RingtoneService handles audio; notification is for UI only
     final AndroidNotificationChannel incomingCallChannel =
         AndroidNotificationChannel(
-          'incoming_call_channel',
-          'Incoming Calls',
-          description: 'High priority notifications for incoming calls',
-          importance: Importance.max,
-          playSound: false,
-          enableVibration: false,
-          showBadge: true,
-          enableLights: true,
-        );
+      'incoming_call_channel',
+      'Incoming Calls',
+      description: 'High priority notifications for incoming calls',
+      importance: Importance.max,
+      playSound: false,
+      enableVibration: false,
+      showBadge: true,
+      enableLights: true,
+    );
 
     // Ongoing call channel - sticky notification shown while connected
     const AndroidNotificationChannel ongoingCallChannel =
         AndroidNotificationChannel(
-          'ongoing_call_channel',
-          'Ongoing Calls',
-          description: 'Shown while a call is in progress',
-          importance: Importance.max,
-          playSound: false,
-          enableVibration: false,
-          showBadge: false,
-        );
+      'ongoing_call_channel',
+      'Ongoing Calls',
+      description: 'Shown while a call is in progress',
+      importance: Importance.max,
+      playSound: false,
+      enableVibration: false,
+      showBadge: false,
+    );
 
     // Missed call channel
     const AndroidNotificationChannel missedCallChannel =
         AndroidNotificationChannel(
-          'missed_call_channel',
-          'Missed Calls',
-          description: 'Notifications for missed calls',
-          importance: Importance.high,
-          playSound: true,
-          enableVibration: true,
-        );
+      'missed_call_channel',
+      'Missed Calls',
+      description: 'Notifications for missed calls',
+      importance: Importance.high,
+      playSound: true,
+      enableVibration: true,
+    );
 
     // Create channels
-    final androidPlugin = _notificationsPlugin
-        .resolvePlatformSpecificImplementation<
-          AndroidFlutterLocalNotificationsPlugin
-        >();
+    final androidPlugin =
+        _notificationsPlugin.resolvePlatformSpecificImplementation<
+            AndroidFlutterLocalNotificationsPlugin>();
 
     await androidPlugin?.createNotificationChannel(incomingCallChannel);
     await androidPlugin?.createNotificationChannel(ongoingCallChannel);
@@ -127,46 +126,45 @@ class NotificationService {
       // Android notification details with full-screen intent
       final AndroidNotificationDetails androidDetails =
           AndroidNotificationDetails(
-            'incoming_call_channel',
-            'Incoming Calls',
-            channelDescription:
-                'High priority notifications for incoming calls',
-            icon: '@drawable/ic_stat_ic_notification',
-            importance: Importance.max,
-            priority: Priority.max,
-            // CallStyle-style high-priority call notification. Full-screen lock UI
-            // on Android 12+ is handled by the native Telecom/ConnectionService path.
-            category: AndroidNotificationCategory.call,
-            visibility: NotificationVisibility.public, // Show on lock screen
-            ongoing: false,
-            autoCancel: true,
-            showWhen: true,
-            playSound: false,
-            enableVibration: false,
-            enableLights: true,
-            color: const Color(0xFF0955FA),
-            styleInformation: const BigTextStyleInformation(
-              'Incoming voice call',
-              contentTitle: 'Tap to answer',
-              summaryText: 'Vant Chat',
-            ),
-            actions: [
-              // Accept action - green button
-              const AndroidNotificationAction(
-                'accept',
-                'Accept',
-                showsUserInterface: true,
-                cancelNotification: true,
-              ),
-              // Reject action - red button
-              const AndroidNotificationAction(
-                'reject',
-                'Reject',
-                showsUserInterface: true,
-                cancelNotification: true,
-              ),
-            ],
-          );
+        'incoming_call_channel',
+        'Incoming Calls',
+        channelDescription: 'High priority notifications for incoming calls',
+        icon: '@drawable/ic_stat_ic_notification',
+        importance: Importance.max,
+        priority: Priority.max,
+        // CallStyle-style high-priority call notification. Full-screen lock UI
+        // on Android 12+ is handled by the native Telecom/ConnectionService path.
+        category: AndroidNotificationCategory.call,
+        visibility: NotificationVisibility.public, // Show on lock screen
+        ongoing: false,
+        autoCancel: true,
+        showWhen: true,
+        playSound: false,
+        enableVibration: false,
+        enableLights: true,
+        color: const Color(0xFF0955FA),
+        styleInformation: const BigTextStyleInformation(
+          'Incoming voice call',
+          contentTitle: 'Tap to answer',
+          summaryText: 'Vant Chat',
+        ),
+        actions: [
+          // Accept action - green button
+          const AndroidNotificationAction(
+            'accept',
+            'Accept',
+            showsUserInterface: true,
+            cancelNotification: true,
+          ),
+          // Reject action - red button
+          const AndroidNotificationAction(
+            'reject',
+            'Reject',
+            showsUserInterface: true,
+            cancelNotification: true,
+          ),
+        ],
+      );
 
       // iOS notification details
       const DarwinNotificationDetails iosDetails = DarwinNotificationDetails(
@@ -209,23 +207,23 @@ class NotificationService {
 
     final AndroidNotificationDetails androidDetails =
         AndroidNotificationDetails(
-          'missed_call_channel',
-          'Missed Calls',
-          channelDescription: 'Notifications for missed calls',
-          icon: '@drawable/ic_stat_ic_notification',
-          importance: Importance.high,
-          priority: Priority.high,
-          playSound: true,
-          enableVibration: true,
-          actions: [
-            const AndroidNotificationAction(
-              'callback',
-              'Call back',
-              showsUserInterface: true,
-              cancelNotification: true,
-            ),
-          ],
-        );
+      'missed_call_channel',
+      'Missed Calls',
+      channelDescription: 'Notifications for missed calls',
+      icon: '@drawable/ic_stat_ic_notification',
+      importance: Importance.high,
+      priority: Priority.high,
+      playSound: true,
+      enableVibration: true,
+      actions: [
+        const AndroidNotificationAction(
+          'callback',
+          'Call back',
+          showsUserInterface: true,
+          cancelNotification: true,
+        ),
+      ],
+    );
 
     const DarwinNotificationDetails iosDetails = DarwinNotificationDetails(
       presentAlert: true,
@@ -259,35 +257,35 @@ class NotificationService {
     try {
       final AndroidNotificationDetails androidDetails =
           AndroidNotificationDetails(
-            'ongoing_call_channel',
-            'Ongoing Calls',
-            channelDescription: 'Shown while a call is in progress',
-            icon: '@drawable/ic_call_notification',
-            importance: Importance.max,
-            priority: Priority.high,
-            category: AndroidNotificationCategory.call,
-            ongoing: true,
-            autoCancel: false,
-            showWhen: false,
-            playSound: false,
-            enableVibration: false,
-            enableLights: false,
-            color: const Color(0xFF0955FA),
-            actions: [
-              const AndroidNotificationAction(
-                'return_to_call',
-                'Return to call',
-                showsUserInterface: true,
-                cancelNotification: false,
-              ),
-              const AndroidNotificationAction(
-                'end_call',
-                'End call',
-                showsUserInterface: false,
-                cancelNotification: true,
-              ),
-            ],
-          );
+        'ongoing_call_channel',
+        'Ongoing Calls',
+        channelDescription: 'Shown while a call is in progress',
+        icon: '@drawable/ic_call_notification',
+        importance: Importance.max,
+        priority: Priority.high,
+        category: AndroidNotificationCategory.call,
+        ongoing: true,
+        autoCancel: false,
+        showWhen: false,
+        playSound: false,
+        enableVibration: false,
+        enableLights: false,
+        color: const Color(0xFF0955FA),
+        actions: [
+          const AndroidNotificationAction(
+            'return_to_call',
+            'Return to call',
+            showsUserInterface: true,
+            cancelNotification: false,
+          ),
+          const AndroidNotificationAction(
+            'end_call',
+            'End call',
+            showsUserInterface: false,
+            cancelNotification: true,
+          ),
+        ],
+      );
 
       const DarwinNotificationDetails iosDetails = DarwinNotificationDetails(
         presentAlert: false,

@@ -17,9 +17,6 @@ class RingtoneService {
   );
 
   bool _isPlaying = false;
-  bool _isOutgoing = false;
-  Timer? _ringTimer;
-  int _ringCount = 0;
   AudioPlayer? _ringbackPlayer;
 
   /// Play incoming call ringtone
@@ -33,7 +30,6 @@ class RingtoneService {
 
     try {
       _isPlaying = true;
-      _ringCount = 0;
 
       debugPrint(
         '🔔 RingtoneService: Playing incoming ringtone (system default)',
@@ -50,8 +46,6 @@ class RingtoneService {
   /// Play ringtone in a loop
   void _playRingtoneLoop() {
     if (!_isPlaying) return;
-
-    _ringCount++;
 
     // Play system ringtone
     FlutterRingtonePlayer().play(
@@ -80,75 +74,43 @@ class RingtoneService {
     }
     try {
       _isPlaying = true;
-      _isOutgoing = true;
-      _ringCount = 0;
       debugPrint(
-        '🔔 RingtoneService: Playing outgoing ringback through earpiece',
+        '🔔 RingtoneService: Playing outgoing ringback',
       );
-      await _startRingbackPlayer();
+
+      if (Platform.isAndroid) {
+        // Use native ToneGenerator — plays TONE_SUP_RINGTONE on STREAM_VOICE_CALL
+        // which routes through the current communication audio path (earpiece
+        // when speaker off, speaker when on). Same mechanism WhatsApp uses.
+        await _audioChannel.invokeMethod('playRingback');
+      } else {
+        // iOS: use AudioPlayer with ringback.wav through the call audio session
+        await _startRingbackPlayer();
+      }
     } catch (e) {
       debugPrint('❌ RingtoneService: Error playing outgoing tone: $e');
       _isPlaying = false;
-      _isOutgoing = false;
     }
   }
 
-  /// Start ringback via AudioPlayer routed through earpiece.
-  /// On Android: set MODE_IN_COMMUNICATION via native channel FIRST so the
-  /// AudioPlayer's MediaPlayer inherits the correct audio mode and routes to earpiece.
+  /// Start ringback via AudioPlayer routed through earpiece (iOS fallback).
   Future<void> _startRingbackPlayer() async {
-    // Set earpiece routing BEFORE creating AudioPlayer (critical on Android)
-    if (Platform.isAndroid) {
-      try {
-        await _audioChannel.invokeMethod('setSpeakerphoneOn', {'on': false});
-        debugPrint(
-          '🔔 RingtoneService: Audio mode set to earpiece before ringback',
-        );
-      } catch (e) {
-        debugPrint('⚠️ RingtoneService: Could not set audio mode: $e');
-      }
-    }
-
     await _ringbackPlayer?.dispose();
     _ringbackPlayer = AudioPlayer();
 
-    if (Platform.isAndroid) {
-      await _ringbackPlayer!.setAudioContext(
-        AudioContext(
-          android: AudioContextAndroid(
-            isSpeakerphoneOn: false,
-            stayAwake: false,
-            contentType: AndroidContentType.speech,
-            usageType: AndroidUsageType.voiceCommunication,
-            audioFocus: AndroidAudioFocus.none,
-          ),
+    await _ringbackPlayer!.setAudioContext(
+      AudioContext(
+        iOS: AudioContextIOS(
+          category: AVAudioSessionCategory.playAndRecord,
+          options: {},
         ),
-      );
-    } else {
-      await _ringbackPlayer!.setAudioContext(
-        AudioContext(
-          iOS: AudioContextIOS(
-            category: AVAudioSessionCategory.playAndRecord,
-            options: {},
-          ),
-        ),
-      );
-    }
+      ),
+    );
 
     await _ringbackPlayer!.setVolume(0.8);
     await _ringbackPlayer!.setReleaseMode(ReleaseMode.loop);
     await _ringbackPlayer!.play(AssetSource('audio/ringback.wav'));
-    debugPrint('🔔 RingtoneService: Ringback player started');
-
-    // Auto-stop after 2 minutes max
-    _ringTimer = Timer(const Duration(seconds: 120), () {
-      if (_isPlaying && _isOutgoing) {
-        debugPrint(
-          '🔔 RingtoneService: Max ringback duration reached, stopping',
-        );
-        stopRingtone();
-      }
-    });
+    debugPrint('🔔 RingtoneService: Ringback player started (iOS)');
   }
 
   /// Play outgoing call tone (single beep)
@@ -172,12 +134,17 @@ class RingtoneService {
     debugPrint('🔔 RingtoneService: Stopping ringtone');
 
     _isPlaying = false;
-    _isOutgoing = false;
-    _ringTimer?.cancel();
-    _ringTimer = null;
-    _ringCount = 0;
 
-    // Stop audioplayers ringback
+    // Stop native ringback on Android
+    if (Platform.isAndroid) {
+      try {
+        await _audioChannel.invokeMethod('stopRingback');
+      } catch (e) {
+        debugPrint('⚠️ RingtoneService: Could not stop native ringback: $e');
+      }
+    }
+
+    // Stop audioplayers ringback (iOS fallback)
     await _ringbackPlayer?.stop();
     await _ringbackPlayer?.dispose();
     _ringbackPlayer = null;

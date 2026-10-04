@@ -16,7 +16,6 @@ import android.media.AudioManager
 import android.media.ToneGenerator
 import android.provider.Settings
 import android.view.WindowManager
-import android.Manifest
 import io.flutter.embedding.android.FlutterFragmentActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -39,7 +38,7 @@ class MainActivity : FlutterFragmentActivity() {
     private var ringbackHandler: Handler? = null
     private var ringbackRunnable: Runnable? = null
     private var callAudioFocusRequest: AudioFocusRequest? = null
-    
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -211,6 +210,16 @@ class MainActivity : FlutterFragmentActivity() {
                     
                     result.success(true)
                 }
+                "setInCall" -> {
+                    val inCall = call.argument<Boolean>("inCall") ?: false
+                    val callId = call.argument<String>("callId") ?: ""
+                    val prefs = getSharedPreferences("vant_chat_prefs", Context.MODE_PRIVATE)
+                    prefs.edit()
+                        .putBoolean("vant_in_active_call", inCall)
+                        .putString("vant_active_call_id", callId)
+                        .apply()
+                    result.success(null)
+                }
                 else -> {
                     result.notImplemented()
                 }
@@ -277,6 +286,30 @@ class MainActivity : FlutterFragmentActivity() {
                     pendingCallAction = null
                     pendingCallData = null
                 }
+                "canUseFullScreenIntent" -> {
+                    val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                    result.success(notificationManager.canUseFullScreenIntent())
+                }
+                "openFullScreenIntentSettings" -> {
+                    try {
+                        val settingsIntent = if (Build.VERSION.SDK_INT >= 34) {
+                            Intent(
+                                Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT,
+                                Uri.parse("package:$packageName")
+                            )
+                        } else {
+                            Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                                data = Uri.parse("package:$packageName")
+                            }
+                        }
+                        settingsIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        startActivity(settingsIntent)
+                        result.success(true)
+                    } catch (e: Exception) {
+                        println("Error opening full-screen intent settings: $e")
+                        result.success(false)
+                    }
+                }
                 else -> {
                     result.notImplemented()
                 }
@@ -304,7 +337,7 @@ class MainActivity : FlutterFragmentActivity() {
             }
         }
         
-        // Event channel: native -> Flutter for foreground incoming call broadcasts
+        // Event channel: native -> Flutter for foreground call broadcasts
         EventChannel(flutterEngine.dartExecutor.binaryMessenger, EVENT_CHANNEL)
             .setStreamHandler(object : EventChannel.StreamHandler {
                 private var receiver: android.content.BroadcastReceiver? = null
@@ -312,26 +345,36 @@ class MainActivity : FlutterFragmentActivity() {
                 override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
                     receiver = object : android.content.BroadcastReceiver() {
                         override fun onReceive(context: Context?, intent: Intent?) {
-                            if (intent?.action == "com.vant.chat.SHOW_FLUTTER_CALL") {
-                                val data = hashMapOf<String, String>()
-                                intent.extras?.keySet()?.forEach { key ->
-                                    data[key] = intent.getStringExtra(key) ?: ""
+                            when (intent?.action) {
+                                "com.vant.chat.SHOW_FLUTTER_CALL" -> {
+                                    val data = hashMapOf<String, String>()
+                                    intent.extras?.keySet()?.forEach { key ->
+                                        data[key] = intent.getStringExtra(key) ?: ""
+                                    }
+                                    events?.success(data)
                                 }
-                                events?.success(data)
+                                "com.vant.chat.CALL_HELD" -> {
+                                    events?.success(hashMapOf("type" to "call_held"))
+                                }
+                                "com.vant.chat.CALL_UNHELD" -> {
+                                    events?.success(hashMapOf("type" to "call_unheld"))
+                                }
                             }
                         }
+                    }
+                    val filter = android.content.IntentFilter().apply {
+                        addAction("com.vant.chat.SHOW_FLUTTER_CALL")
+                        addAction("com.vant.chat.CALL_HELD")
+                        addAction("com.vant.chat.CALL_UNHELD")
                     }
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                         registerReceiver(
                             receiver,
-                            android.content.IntentFilter("com.vant.chat.SHOW_FLUTTER_CALL"),
+                            filter,
                             android.content.Context.RECEIVER_NOT_EXPORTED
                         )
                     } else {
-                        registerReceiver(
-                            receiver,
-                            android.content.IntentFilter("com.vant.chat.SHOW_FLUTTER_CALL")
-                        )
+                        registerReceiver(receiver, filter)
                     }
                 }
 

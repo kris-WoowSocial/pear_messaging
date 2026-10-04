@@ -373,6 +373,8 @@ object VantCallManager {
             putExtra("caller_name", callerName)
             putExtra("caller_id", callerId)
             putExtra("is_video", isVideo)
+            putExtra("from_native", true)
+            putExtra("answered_from_background", true)
         }
         val answerPendingIntent = PendingIntent.getActivity(
             context, 1, answerIntent,
@@ -415,6 +417,7 @@ object VantCallManager {
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setStyle(callStyle)
             .setContentIntent(fullScreenPendingIntent)
+            .setFullScreenIntent(fullScreenPendingIntent, true)
             .setOngoing(true)
             .setAutoCancel(false)
             .setSilent(true)
@@ -451,10 +454,19 @@ object VantCallManager {
     }
 
     /**
-     * Shows the incoming call UI.
-     * First tries to launch the full-screen IncomingCallActivity.
-     * If the activity cannot be launched, falls back to a heads-up notification
-     * with answer/decline actions and a full-screen intent.
+     * Shows the incoming call UI — same mechanism WhatsApp uses.
+     *
+     * The incoming-call alert is posted via NotificationManager.notify() with a
+     * full-screen intent. This is the ONLY reliable path: direct startActivity()
+     * from a background context is silently blocked (no exception), and
+     * full-screen intents attached to foreground-service notifications do not
+     * fire on several OEM builds (Transsion/XOS, some Xiaomi).
+     *
+     * We still try the direct activity launch as a fast path — when it works
+     * (Telecom's launch exemption) the UI appears a beat earlier. The
+     * notify()-posted alert fires the same activity via the OS whenever the
+     * direct launch was blocked.
+     *
      * Ringtone and vibration are handled by CallForegroundService.
      */
     fun presentIncomingCall(
@@ -462,11 +474,10 @@ object VantCallManager {
         roomId: String, avatarUrl: String, isVideo: Boolean
     ) {
         startRinging(context, callerName, callerId, callId, roomId, avatarUrl, isVideo)
-        val launched = launchIncomingCallActivity(context, callerName, callerId, callId, roomId, avatarUrl, isVideo)
-        if (!launched) {
-            Log.w(TAG, "IncomingCallActivity could not be launched, showing fallback notification")
-            showCallNotification(context, callerName, callerId, callId, roomId, avatarUrl, isVideo)
-        }
+        // Always post the alert via notify(): this is what actually triggers the
+        // system full-screen intent path. The direct launch below is best-effort.
+        showCallNotification(context, callerName, callerId, callId, roomId, avatarUrl, isVideo)
+        launchIncomingCallActivity(context, callerName, callerId, callId, roomId, avatarUrl, isVideo)
     }
 
     fun cancelNotification(context: Context) {

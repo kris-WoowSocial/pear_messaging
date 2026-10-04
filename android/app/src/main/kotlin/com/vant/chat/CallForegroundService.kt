@@ -301,11 +301,10 @@ class CallForegroundService : Service() {
         avatarUrl: String,
         isVideo: Boolean
     ): Notification {
-        // This is the foreground service's required notification.
-        // It must be visible, but it is intentionally silent and has no actions.
-        // The actual incoming-call UI is the IncomingCallActivity; if that cannot
-        // be launched, VantCallManager.showCallNotification() posts a rich fallback
-        // notification with answer/decline actions and a full-screen intent.
+        // Foreground-service notification that doubles as the incoming-call UI
+        // trigger: the full-screen intent launches IncomingCallActivity over the
+        // lock screen, and the CallStyle actions let the user answer/decline from
+        // the heads-up notification if the full-screen UI can't appear.
         val contentIntent = Intent(this, IncomingCallActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
             putExtra("caller_name", callerName)
@@ -321,6 +320,45 @@ class CallForegroundService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
+        // Answer/decline actions so the call can be handled directly from the
+        // notification (heads-up fallback when the full-screen UI can't show).
+        val answerIntent = Intent(this, MainActivity::class.java).apply {
+            action = "com.vant.chat.ANSWER_CALL"
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra("call_id", callId)
+            putExtra("room_id", roomId)
+            putExtra("caller_name", callerName)
+            putExtra("caller_id", callerId)
+            putExtra("is_video", isVideo)
+            putExtra("from_native", true)
+            putExtra("answered_from_background", true)
+        }
+        val answerPendingIntent = PendingIntent.getActivity(
+            this, 1, answerIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val declineIntent = Intent(this, MainActivity::class.java).apply {
+            action = "com.vant.chat.DECLINE_CALL"
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra("call_id", callId)
+            putExtra("caller_id", callerId)
+        }
+        val declinePendingIntent = PendingIntent.getActivity(
+            this, 2, declineIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val caller = androidx.core.app.Person.Builder()
+            .setName(callerName)
+            .setIcon(
+                androidx.core.graphics.drawable.IconCompat.createWithResource(
+                    this,
+                    R.drawable.ic_call_notification
+                )
+            )
+            .build()
+
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle(if (isVideo) "Incoming video call" else "Incoming call")
             .setContentText(callerName)
@@ -328,7 +366,18 @@ class CallForegroundService : Service() {
             .setPriority(NotificationCompat.PRIORITY_MAX)
             .setCategory(NotificationCompat.CATEGORY_CALL)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setStyle(
+                NotificationCompat.CallStyle.forIncomingCall(
+                    caller,
+                    declinePendingIntent,
+                    answerPendingIntent
+                )
+            )
             .setContentIntent(contentPendingIntent)
+            // The full-screen intent is what actually launches IncomingCallActivity
+            // over the lock screen. Direct startActivity() from a background
+            // service is silently blocked by the OS.
+            .setFullScreenIntent(contentPendingIntent, true)
             .setOngoing(true)
             .setAutoCancel(false)
             .setSilent(true)

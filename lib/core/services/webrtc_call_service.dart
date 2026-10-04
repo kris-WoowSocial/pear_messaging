@@ -456,6 +456,17 @@ class WebRTCCallService {
     }
   }
 
+  /// Set mute state explicitly (e.g. when Telecom holds/unholds the call)
+  void setMuted(bool muted) {
+    if (_localStream != null && _isMuted != muted) {
+      _isMuted = muted;
+      _localStream!.getAudioTracks().forEach((track) {
+        track.enabled = !muted;
+      });
+      debugPrint('📞 Mute set to: $muted');
+    }
+  }
+
   /// Toggle speaker
   Future<void> toggleSpeaker() async {
     final newState = !_isSpeakerOn;

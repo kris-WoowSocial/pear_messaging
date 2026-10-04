@@ -114,20 +114,31 @@ class CallController extends GetxController {
 
     // If the socket reconnects while we have a pending auto-accept (e.g. cold-start
     // accept where the first resync request failed), send the resync again.
+    // Same for a caller whose socket dropped mid-dial: the server preserves the
+    // unanswered session for ~45s, so a resync re-links the fresh socket to the
+    // call and re-delivers CALL_ACCEPTED if the callee already answered.
     ever(_socketService.isRegistered, (registered) {
-      if (registered && _pendingAutoAcceptCallId != null) {
+      if (!registered) return;
+      if (_pendingAutoAcceptCallId != null) {
         final callId = _pendingAutoAcceptCallId!;
         debugPrint(
           '📞 Socket reconnected with pending auto-accept, requesting resync for $callId',
         );
         _socketService.requestCallResync(callId: callId);
+      } else if (isCaller.value &&
+          currentCallId.value.isNotEmpty &&
+          !isConnected) {
+        debugPrint(
+          '📞 Socket reconnected while dialing, requesting resync for ${currentCallId.value}',
+        );
+        _socketService.requestCallResync(callId: currentCallId.value);
       }
     });
 
     _setupCallKitListener();
     _setupNotificationActionListener();
     _setupNativeCallEventListener();
-    _checkPendingCallAction();
+    _checkFullScreenIntentPermission();
     debugPrint(
       '📞 CallController setup complete, checking pending auto-accept',
     );
@@ -136,6 +147,16 @@ class CallController extends GetxController {
       const Duration(seconds: 1),
       (_) => _watchForPendingAcceptedCall(),
     );
+  }
+
+  @override
+  void onReady() {
+    super.onReady();
+    // Runs after the first frame — the GetMaterialApp navigator exists here.
+    // If this ran in onInit (which fires before runApp on cold start),
+    // Get.offNamed to /call/active could execute before the navigator exists
+    // and the incoming-call accept would silently land on the chat list.
+    _checkPendingCallAction();
   }
 
   /// Check for any pending call action stored by MainActivity when the app was killed
@@ -168,7 +189,15 @@ class CallController extends GetxController {
         (dynamic event) {
           if (event is Map) {
             debugPrint('📞 Native call event received: $event');
-            _handleNativeShowFlutterCall(event.cast<String, dynamic>());
+            final data = event.cast<String, dynamic>();
+            final type = data['type'] as String?;
+            if (type == 'call_held') {
+              _handleCallHeld();
+            } else if (type == 'call_unheld') {
+              _handleCallUnheld();
+            } else {
+              _handleNativeShowFlutterCall(data);
+            }
           }
         },
         onError: (dynamic error) {
@@ -178,6 +207,70 @@ class CallController extends GetxController {
     } catch (e) {
       debugPrint('⚠️ Failed to set up native call event listener: $e');
     }
+  }
+
+  /// On Android 14+, USE_FULL_SCREEN_INTENT is auto-granted only for calling
+  /// apps installed from Play Store. Sideloaded builds and some OEMs (Infinix,
+  /// Xiaomi) deny it, which means incoming calls only show a heads-up
+  /// notification instead of the full-screen call UI. Prompt the user once to
+  /// enable it — same thing WhatsApp does on restricted builds.
+  Future<void> _checkFullScreenIntentPermission() async {
+    if (!Platform.isAndroid) return;
+    try {
+      final granted = await _incomingCallChannel.invokeMethod<bool>(
+        'canUseFullScreenIntent',
+      );
+      if (granted == true) return;
+
+      final prefs = await SharedPreferences.getInstance();
+      if (prefs.getBool('fsi_prompt_shown') == true) return;
+      await prefs.setBool('fsi_prompt_shown', true);
+
+      debugPrint(
+          '⚠️ Full-screen intent denied — prompting user to enable it');
+      Get.dialog(
+        AlertDialog(
+          title: const Text('Enable Full-Screen Calls'),
+          content: const Text(
+            'To show incoming calls on the lock screen like WhatsApp, '
+            'please enable "Full screen notifications" for Vant.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Get.back(),
+              child: const Text('Later'),
+            ),
+            TextButton(
+              onPressed: () {
+                Get.back();
+                _incomingCallChannel.invokeMethod(
+                  'openFullScreenIntentSettings',
+                );
+              },
+              child: const Text('Open Settings'),
+            ),
+          ],
+        ),
+        barrierDismissible: false,
+      );
+    } catch (e) {
+      debugPrint('⚠️ Failed to check full-screen intent permission: $e');
+    }
+  }
+
+  /// Called when Telecom puts the Vant call on hold (e.g. user answered a
+  /// regular phone call or WhatsApp call while on a Vant call).
+  void _handleCallHeld() {
+    debugPrint('📞 Vant call held by Telecom (external call answered)');
+    _webrtcService.setMuted(true);
+    // Keep the call state as connected — the Telecom connection is on hold,
+    // not ended. The call UI continues to show; audio is just muted.
+  }
+
+  /// Called when Telecom resumes the Vant call after the external call ends.
+  void _handleCallUnheld() {
+    debugPrint('📞 Vant call unheld by Telecom (external call ended)');
+    _webrtcService.setMuted(false);
   }
 
   void _handleNativeShowFlutterCall(Map<String, dynamic> data) {
@@ -206,6 +299,20 @@ class CallController extends GetxController {
     Get.toNamed('/call/incoming', arguments: callData);
   }
 
+  /// Notify native layers whether a Vant call is active.
+  /// Used so incoming calls from other apps don't accidentally replace or kill
+  /// the current call.
+  Future<void> _setNativeInCall(bool inCall) async {
+    try {
+      await _callChannel.invokeMethod('setInCall', {
+        'inCall': inCall,
+        'callId': currentCallId.value,
+      });
+    } catch (e) {
+      debugPrint('⚠️ Failed to sync in-call state to native: $e');
+    }
+  }
+
   Future<void> _setCallScreenVisible(bool visible) async {
     try {
       await _incomingCallChannel.invokeMethod('setCallScreenVisible', {
@@ -224,14 +331,37 @@ class CallController extends GetxController {
     if (callId == null || callId.isEmpty) return;
 
     // Prevent duplicate handling from both the pending-intent path and the
-    // CALL_CHANNEL onCallAction path firing on cold start.
-    if (_lastHandledNativeCallId == callId) {
+    // CALL_CHANNEL onCallAction path firing on cold start — but only treat it
+    // as handled when the call is actually being handled (screen shown or
+    // connected). A first attempt can run before runApp() on cold start, where
+    // Get.offNamed has no navigator and silently no-ops; we must allow the
+    // retry from getPendingCallAction (fired onReady) to proceed.
+    if (_lastHandledNativeCallId == callId &&
+        (isInCall || Get.currentRoute == '/call/active')) {
       debugPrint(
         '📞 Native answer for $callId already handled, skipping duplicate',
       );
       return;
     }
     _lastHandledNativeCallId = callId;
+
+    currentCallId.value = callId;
+    remoteDeviceId.value = data['caller_id'] ?? '';
+    isCaller.value = false;
+    remoteDisplayName.value = data['caller_name'] ?? 'Incoming Call';
+
+    final callData = {
+      'callId': callId,
+      'callerId': data['caller_id'] ?? '',
+      'callerName': data['caller_name'] ?? 'Incoming Call',
+      'sdpOffer': null,
+      'roomId': data['room_id'] ?? '',
+      'avatarUrl': data['avatar_url'] ?? '',
+      'isVideo': data['is_video'] == 'true',
+    };
+    if (Get.currentRoute != '/call/active') {
+      Get.offNamed('/call/active', arguments: callData);
+    }
     await setPendingAutoAccept(callId);
 
     // CRITICAL: Initialize audio mode before connecting to call
@@ -262,14 +392,12 @@ class CallController extends GetxController {
     await _socketService.reconnectForCallResync();
     final socketReady = await _waitForSocketConnection();
     if (!socketReady) {
-      debugPrint('❌ Cannot accept from native UI: socket not connected');
-      _resetCallState();
-      Get.snackbar(
-        'Call Failed',
-        'Could not connect to the server. Please try again.',
-        snackPosition: SnackPosition.BOTTOM,
-        duration: const Duration(seconds: 4),
-      );
+      // Cold-start registration (auth + device register) can exceed the wait.
+      // Keep the pending auto-accept: the ever(isRegistered) listener will
+      // request the resync automatically when the socket finishes registering.
+      // The active call screen stays up showing the connecting state.
+      debugPrint(
+          '⚠️ Socket not registered yet — resync will retry on registration');
       return;
     }
 
@@ -288,24 +416,6 @@ class CallController extends GetxController {
       _latestIncomingCallData = null;
       _socketService.requestCallResync(callId: callId);
 
-      // Pre-populate active call info so the user sees the caller immediately.
-      currentCallId.value = callId;
-      remoteDeviceId.value = data['caller_id'] ?? '';
-      isCaller.value = false;
-      remoteDisplayName.value = data['caller_name'] ?? 'Incoming Call';
-
-      final callData = {
-        'callId': callId,
-        'callerId': data['caller_id'] ?? '',
-        'callerName': data['caller_name'] ?? 'Incoming Call',
-        'sdpOffer': null,
-        'roomId': data['room_id'] ?? '',
-        'avatarUrl': data['avatar_url'] ?? '',
-        'isVideo': data['is_video'] == 'true',
-      };
-      // Skip the incoming call screen and go straight to the active call UI.
-      // The resync will arrive shortly and complete the connection there.
-      Get.offNamed('/call/active', arguments: callData);
     }
   }
 
@@ -313,7 +423,12 @@ class CallController extends GetxController {
     final callId = data['call_id'] as String?;
     if (callId == null || callId.isEmpty) return;
 
-    if (_lastHandledNativeCallId == callId) {
+    // Same dedup semantics as _handleNativeAnswer: only skip when this call is
+    // already over. Decline is idempotent — retrying after a failed first
+    // attempt just emits the rejection again.
+    if (_lastHandledNativeCallId == callId &&
+        !isInCall &&
+        currentCallId.value != callId) {
       debugPrint(
         '📞 Native decline for $callId already handled, skipping duplicate',
       );
@@ -807,8 +922,9 @@ class CallController extends GetxController {
   }
 
   Future<void> _watchForPendingAcceptedCall() async {
-    if (_isCheckingPendingAutoAccept || _pendingAutoAcceptCallId != null)
+    if (_isCheckingPendingAutoAccept || _pendingAutoAcceptCallId != null) {
       return;
+    }
 
     final prefs = await SharedPreferences.getInstance();
     await prefs.reload();
@@ -1002,15 +1118,18 @@ class CallController extends GetxController {
         callerDeviceId: callerDeviceId,
       );
 
-      if (success && Platform.isAndroid) {
-        unawaited(
-          _callChannel.invokeMethod<bool>('reportOutgoingTelecomCall', {
-            'calleeId': calleeDeviceId,
-            'calleeName': remoteDisplayName.value.isNotEmpty
-                ? remoteDisplayName.value
-                : StringUtils.generateFriendlyName(calleeDeviceId),
-          }),
-        );
+      if (success) {
+        unawaited(_setNativeInCall(true));
+        if (Platform.isAndroid) {
+          unawaited(
+            _callChannel.invokeMethod<bool>('reportOutgoingTelecomCall', {
+              'calleeId': calleeDeviceId,
+              'calleeName': remoteDisplayName.value.isNotEmpty
+                  ? remoteDisplayName.value
+                  : StringUtils.generateFriendlyName(calleeDeviceId),
+            }),
+          );
+        }
       }
 
       if (!success) {
@@ -1096,6 +1215,7 @@ class CallController extends GetxController {
       // CRITICAL: Initialize audio mode before accepting call
       // This ensures MODE_IN_COMMUNICATION is set before WebRTC takes over
       await _initializeAudioMode();
+      unawaited(_setNativeInCall(true));
 
       // Accept WebRTC call - this will trigger onLocalDescription callback with answer
       final success = await _webrtcService.acceptCall(
@@ -1517,6 +1637,7 @@ class CallController extends GetxController {
         _ringtoneService.stopRingtone();
         callState.value = CallState.connected;
         _wasConnected = true;
+        unawaited(_setNativeInCall(true));
 
         // Restore speaker state if call was answered from background
         if (_answeredFromBackground) {
@@ -1618,35 +1739,12 @@ class CallController extends GetxController {
 
     debugPrint('📞 Call resync received for $callId from $callerId');
 
-    // Store call info
-    currentCallId.value = callId;
-    remoteDeviceId.value = callerId;
-    isCaller.value = false;
-    _resolveDisplayName(callerId);
-
     // Cancel incoming call notification if it exists
     NotificationService().cancelNotification(callId.hashCode);
 
-    // Stop the native ringing service before WebRTC starts.
-    // This is critical: if the ringtone is still playing when getUserMedia
-    // is called, WebRTC creates its AudioTrack under MODE_RINGTONE and
-    // speaker routing becomes non-functional.
-    _stopNativeIncomingCall();
-
-    // CRITICAL: Initialize audio mode before accepting call
-    unawaited(_initializeAudioMode());
-
-    // Accept the call with the resent SDP offer
-    _webrtcService
-        .acceptCall(
-      callId: callId,
-      callerDeviceId: callerId,
-      calleeDeviceId: _storageService.deviceId!,
-      sdpOffer: sdpOffer,
-    )
-        .then((_) {
-      debugPrint('📞 WebRTC accept completed after resync');
-    });
+    // Delegate to the full accept-resync path so permission checks, audio
+    // mode, native in-call state, and error handling are all applied.
+    _acceptIncomingCallResync(data);
   }
 
   /// Start call duration update timer
@@ -1733,6 +1831,7 @@ class CallController extends GetxController {
   void _resetCallState() {
     final callId = currentCallId.value;
     unawaited(_teardownAndroidCall(callId));
+    unawaited(_setNativeInCall(false));
     callState.value = CallState.idle;
     isCallMinimized.value = false;
     isMuted.value = false;
@@ -1890,6 +1989,11 @@ class CallController extends GetxController {
     debugPrint('📞 Incoming call received: $data');
     final incomingCallId = data['callId'] as String?;
 
+    if (incomingCallId == null || incomingCallId.isEmpty) {
+      debugPrint('❌ Incoming call received with no callId, ignoring');
+      return;
+    }
+
     // Ignore if we're already in an active call with the same call ID
     // This prevents duplicate incoming call screens after successful resync accept
     if (currentCallId.value == incomingCallId && isInCall) {
@@ -1918,15 +2022,13 @@ class CallController extends GetxController {
       return;
     }
 
-    // Normal flow - show incoming call screen with ringtone
+    // Store the call data so accept paths (notification action, resync)
+    // always have the SDP offer available.
     _latestIncomingCallData = data;
-    _ringtoneService.playIncomingRingtone();
 
     // Mark this callId as handled so FCMService dedup guard skips it if FCM
     // arrives shortly after (server sends both socket + FCM in parallel)
-    if (incomingCallId != null && incomingCallId.isNotEmpty) {
-      FCMService.setLastShownCallId(incomingCallId);
-    }
+    FCMService.setLastShownCallId(incomingCallId);
 
     final screenLocked = await _isScreenLocked();
     final appInBackground = await _isAppInBackground();
@@ -1934,14 +2036,17 @@ class CallController extends GetxController {
     if (appInBackground || screenLocked) {
       // The native FCM service will show the full-screen IncomingCallActivity
       // when the app is in the background, killed, or when the device is locked.
-      // Do not show the Flutter UI here to avoid duplicate screens.
+      // Do not ring or show the Flutter UI here — the native
+      // CallForegroundService owns the ringtone and call UI to avoid
+      // double ringtone and duplicate screens.
       debugPrint(
         '📞 App in background/locked — native FCM service will show call UI',
       );
       return;
     }
 
-    // Foreground and unlocked: show the Flutter incoming call screen.
+    // Foreground and unlocked: ring and show the Flutter incoming call screen.
+    _ringtoneService.playIncomingRingtone();
     _setCallScreenVisible(true);
     Get.toNamed('/call/incoming', arguments: data);
   }
@@ -2076,6 +2181,7 @@ class CallController extends GetxController {
 
       // CRITICAL: Initialize audio mode before accepting call
       await _initializeAudioMode();
+      unawaited(_setNativeInCall(true));
 
       // Accept WebRTC call directly (no ringing state)
       final success = await _webrtcService.acceptCall(
