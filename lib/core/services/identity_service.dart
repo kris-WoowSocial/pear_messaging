@@ -249,11 +249,30 @@ class IdentityService extends GetxService {
   Uint8List? get identityBundle =>
       _bundleBytes == null ? null : Uint8List.fromList(_bundleBytes!);
 
-  /// Internal accessors for crypto subsystems (call signaling, message
-  /// encryption). The KeyPair objects stay in-process — never serialize or
-  /// transmit them.
-  KeyPair? get internalX25519KeyPair => _x25519KeyPair;
-  KeyPair? get internalEd25519KeyPair => _ed25519KeyPair;
+  /// Operations for crypto subsystems — the KeyPair objects never leave
+  /// this service. Both throw [IdentityUnavailableException] when keys are
+  /// absent (unreadable/degraded storage) instead of a null crash.
+  Future<SecretKey> x25519SharedSecret(List<int> peerPublicKey) async {
+    final kp = _x25519KeyPair;
+    if (kp == null) {
+      throw const IdentityUnavailableException();
+    }
+    return _x25519.sharedSecretKey(
+      keyPair: kp,
+      remotePublicKey:
+          SimplePublicKey(peerPublicKey, type: KeyPairType.x25519),
+    );
+  }
+
+  /// Ed25519-sign a payload with the identity key.
+  Future<Uint8List> signBytes(List<int> message) async {
+    final kp = _ed25519KeyPair;
+    if (kp == null) {
+      throw const IdentityUnavailableException();
+    }
+    final sig = await _ed25519.sign(message, keyPair: kp);
+    return Uint8List.fromList(sig.bytes);
+  }
 
   /// Parse a peer bundle: [version][x25519 pub][ed25519 pub].
   /// Returns null on malformed input — callers must handle, never throw.
@@ -417,4 +436,12 @@ class IdentityService extends GetxService {
         'requiresNewDeviceId': requiresNewDeviceId.value,
         'bundleVersion': bundleVersion,
       };
+}
+
+/// Thrown when identity operations are invoked with no usable keys
+/// (unreadable or degraded secure storage). Callers must fail closed.
+class IdentityUnavailableException implements Exception {
+  const IdentityUnavailableException();
+  @override
+  String toString() => 'IdentityUnavailableException: keys unavailable';
 }

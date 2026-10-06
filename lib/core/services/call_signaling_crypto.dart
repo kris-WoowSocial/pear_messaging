@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:cryptography/cryptography.dart';
+import 'package:flutter/foundation.dart' show visibleForTesting;
 
 import 'identity_service.dart';
 
@@ -20,30 +21,42 @@ import 'identity_service.dart';
 /// The callee's ephemeral is generated AT ANSWER TIME — a killed app can
 /// still decrypt the offer with only its pinned identity key.
 ///
-/// Signed fingerprints bind the media to the verified identities:
+/// Signed fingerprints bind media to verified identities:
 ///   caller: sign("vant-call-fp" | callId | idA | idB | ephA | fps(offer))
 ///   callee: sign(... | ephB | fps(answer) | sha256(callerSig))
 /// covering EVERY a=fingerprint line in canonical order, verified against
 /// the exact SDP string handed to setRemoteDescription.
 ///
-/// All message fields are length-prefixed (4-byte BE) — concatenated
+/// All framed fields are length-prefixed (4-byte BE) — concatenated
 /// variable-length fields are ambiguous without them.
+///
+/// Private key material NEVER enters this module: DH and signing are
+/// injected as operations ([dh], [sign]) so IdentityService's key pairs
+/// stay inside IdentityService.
+typedef DhOperation = Future<SecretKey> Function(List<int> peerX25519Pub);
+typedef SignOperation = Future<Uint8List> Function(List<int> message);
 typedef PeerBundleResolver = String? Function(String peerDeviceId);
 
+class CallSignalingCryptoException implements Exception {
+  final String message;
+  const CallSignalingCryptoException(this.message);
+  @override
+  String toString() => 'CallSignalingCryptoException: $message';
+}
+
 class CallSignalingCrypto {
-  /// Constructor-injected so the module is testable without GetX or Hive.
-  /// [identity] supplies our private key pairs (never serialized out);
-  /// [myDeviceId] is our bound device id; [resolvePeerBundle] returns the
-  /// pinned bundle for a peer (or null when unpinned).
   CallSignalingCrypto({
-    required IdentityService identity,
+    required DhOperation dh,
+    required SignOperation sign,
     required String myDeviceId,
     required PeerBundleResolver resolvePeerBundle,
-  })  : _identity = identity,
+  })  : _dh0 = dh,
+        _sign = sign,
         _myDeviceId = myDeviceId,
         _resolvePeerBundle = resolvePeerBundle;
 
-  final IdentityService _identity;
+  final DhOperation _dh0;
+  final SignOperation _sign;
   final String _myDeviceId;
   final PeerBundleResolver _resolvePeerBundle;
 
@@ -71,13 +84,34 @@ class CallSignalingCrypto {
   String? _callId;
   bool _amCaller = false;
 
-  // Per-direction counters + replay windows.
-  int _sendCounter = 0;
-  int _recvMaxCounter = -1;
-  int _recvWindow = 0; // bitmap of the last 64 counters
+  // Per-direction counters + replay window (receivers: one per direction).
+  final Map<String, int> _sendCounters = {'a2b': 0, 'b2a': 0};
+  final Map<String, _ReplayWindow> _recvWindows = {
+    'a2b': _ReplayWindow(),
+    'b2a': _ReplayWindow(),
+  };
+
+  /// Test-only view of send counters (counter-cap test).
+  @visibleForTesting
+  Map<String, int> get sendCountersForTest => _sendCounters;
+
+  /// Test-only: extract derived key bytes for fixed-vector verification.
+  /// 'offer' | 'kAB' | 'kBA'. Never ship calls to this in production paths.
+  @visibleForTesting
+  Future<Uint8List> debugKeyBytes(String which) async {
+    final k = which == 'offer'
+        ? _offerKey
+        : which == 'kAB'
+            ? _kAB
+            : _kBA;
+    if (k == null) {
+      throw const CallSignalingCryptoException('key_not_ready');
+    }
+    return Uint8List.fromList(await k.extractBytes());
+  }
 
   /// Decrypt errors observed mid-call — a stray bad candidate shouldn't
-  /// kill a good call; repeated failures end it (caller enforces threshold).
+  /// kill a good call; repeated failures end it (caller enforces).
   int decryptFailures = 0;
   static const int decryptFailureThreshold = 8;
 
@@ -104,34 +138,46 @@ class CallSignalingCrypto {
   /// (sorted). Multi-section SDP MUST present identical fingerprints across
   /// sections — differing values are a downgrade/MITM shape.
   static List<Uint8List> extractDtlsFingerprints(String sdp) {
-    final fps = <String>[];
+    final fps = <String>{};
     for (final line in sdp.split(RegExp(r'\r?\n'))) {
       final l = line.trim();
       if (l.startsWith('a=fingerprint:')) {
         fps.add(l.substring('a=fingerprint:'.length).trim());
       }
     }
-    final unique = fps.toSet().toList()..sort();
-    if (unique.length > 1) {
-      // Differing fingerprints across media sections — refuse to canonicalize.
-      throw const FormatException('SDP fingerprints differ across sections');
+    if (fps.length > 1) {
+      throw const CallSignalingCryptoException(
+          'sdp_fingerprint_mismatch');
     }
-    return unique.map((f) => Uint8List.fromList(utf8.encode(f))).toList();
+    return fps.map((f) => Uint8List.fromList(utf8.encode(f))).toList();
   }
 
   // ---------------------------------------------------------------------------
   // DH + KDF helpers
   // ---------------------------------------------------------------------------
 
-  Future<SecretKey> _dh(KeyPair local, List<int> remotePub) async {
+  /// X25519 DH via the injected operation (identity keypairs stay inside
+  /// IdentityService); rejects all-zero outputs (low-order points).
+  Future<SecretKey> _dhWithPub(List<int> remotePub) async {
+    final secret = await _dh0(remotePub);
+    final bytes = await secret.extractBytes();
+    if (bytes.every((b) => b == 0)) {
+      throw const CallSignalingCryptoException('all_zero_dh');
+    }
+    return secret;
+  }
+
+  /// Ephemeral×peer DH — the ephemeral key pair is local, so it uses the
+  /// library directly (it is OUR ephemeral, never leaves the object).
+  Future<SecretKey> _dhEph(List<int> remotePub) async {
     final secret = await _x25519.sharedSecretKey(
-      keyPair: local,
-      remotePublicKey: SimplePublicKey(remotePub, type: KeyPairType.x25519),
+      keyPair: _ephLocal!,
+      remotePublicKey:
+          SimplePublicKey(remotePub, type: KeyPairType.x25519),
     );
     final bytes = await secret.extractBytes();
-    // Reject all-zero DH output (low-order point / failed agreement).
     if (bytes.every((b) => b == 0)) {
-      throw const FormatException('all-zero DH output rejected');
+      throw const CallSignalingCryptoException('all_zero_dh');
     }
     return secret;
   }
@@ -157,35 +203,43 @@ class CallSignalingCrypto {
   // Caller side
   // ---------------------------------------------------------------------------
 
+  List<Uint8List>? _lastOfferFps;
+  Uint8List? _lastCallerSig;
+
   /// Caller begin: generate ephA, derive offerKey, sign the offer fp.
-  /// Returns fields for call_initiate: eph, fp (caller signature).
-  /// [dtlsFps] = canonical fingerprints extracted from the OFFER SDP.
+  /// [offerDtlsFps] = canonical fingerprints extracted from the OFFER SDP —
+  /// extracted by the caller from the exact string handed to WebRTC.
   Future<({Uint8List eph, Uint8List fp})> beginOffer({
     required String callId,
     required String myId,
     required String peerId,
     required String peerBundleB64,
     required List<Uint8List> offerDtlsFps,
+    @visibleForTesting List<int>? ephSeed,
   }) async {
     _callId = callId;
     _amCaller = true;
-    _ephLocal = await _x25519.newKeyPair();
+    _ephLocal = ephSeed != null
+        ? await _x25519.newKeyPairFromSeed(Uint8List.fromList(ephSeed))
+        : await _x25519.newKeyPair();
     _ephLocalPub = Uint8List.fromList(
         (await _ephLocal!.extract() as SimpleKeyPairData).publicKey.bytes);
 
     final peer = IdentityService.parseBundle(peerBundleB64);
-    if (peer == null) throw const FormatException('invalid peer bundle');
+    if (peer == null) {
+      throw const CallSignalingCryptoException('invalid_peer_bundle');
+    }
 
     // offerKey = HKDF(DH(IKa,IKb) ‖ DH(EKa,IKb))
-    final myX25519 = _identity.internalX25519KeyPair!;
-    final dhId = await _dh(myX25519, peer.x25519Pub);
-    final dhEphId = await _dh(_ephLocal!, peer.x25519Pub);
+    final dhId = await _dhWithPub(peer.x25519Pub);
+    final dhEphId = await _dhEph(peer.x25519Pub);
     _offerKey = await _hkdfConcat(
       [dhId, dhEphId],
       salt: callId,
       info: infoOffer,
     );
 
+    _lastOfferFps = offerDtlsFps;
     final fp = await _signCallerFp(
       callId: callId,
       idA: myId,
@@ -193,12 +247,18 @@ class CallSignalingCrypto {
       ephA: _ephLocalPub!,
       offerFps: offerDtlsFps,
     );
+    _lastCallerSig = fp;
     return (eph: _ephLocalPub!, fp: fp);
   }
 
   /// Encrypt the offer payload (caller only, pre-answer).
-  Future<Map<String, String>> encryptOffer(String sdp) =>
-      _encryptWith(_offerKey!, 'call_initiate', 'a2b', sdp);
+  Future<Map<String, String>> encryptOffer(String sdp) {
+    final key = _offerKey;
+    if (key == null) {
+      throw const CallSignalingCryptoException('no_offer_key');
+    }
+    return _encryptWith(key, 'call_initiate', 'a2b', sdp);
+  }
 
   /// Caller completes the handshake when the callee's answer arrives:
   /// verifies the callee signature covering ephB + answer fps + caller sig,
@@ -207,28 +267,35 @@ class CallSignalingCrypto {
     required String peerId,
     required String peerBundleB64,
     required Uint8List ephB,
-    required Uint8List callerSig, // the fp we sent
     required Uint8List calleeSig,
     required List<Uint8List> answerDtlsFps,
   }) async {
+    final callerSig = _lastCallerSig;
+    final offerFps = _lastOfferFps;
+    if (callerSig == null || offerFps == null) {
+      throw const CallSignalingCryptoException('no_pending_offer');
+    }
     final peer = IdentityService.parseBundle(peerBundleB64);
-    if (peer == null) throw const FormatException('invalid peer bundle');
+    if (peer == null) {
+      throw const CallSignalingCryptoException('invalid_peer_bundle');
+    }
 
     final ok = await _verifyCalleeFp(
       callId: _callId!,
-      idA: _storageDeviceId(),
+      idA: _myDeviceId,
       idB: peerId,
       ephA: _ephLocalPub!,
       ephB: ephB,
-      offerFps: _lastOfferFps,
+      offerFps: offerFps,
       answerFps: answerDtlsFps,
       callerSig: callerSig,
       calleeSig: calleeSig,
-      peerEd25519Pub: peer.ed25519Pub,
+      peerEd25519Pub: peer.ed25519Pub, // pinned key — NOT the message's key
     );
     if (!ok) throw const CallSignalingCryptoException('crypto_failed');
 
-    await _deriveSessionKeys(peer.x25519Pub, ephB);
+    _ephPeerPub = ephB;
+    await _deriveSessionKeys(peer.x25519Pub);
   }
 
   // ---------------------------------------------------------------------------
@@ -239,7 +306,6 @@ class CallSignalingCrypto {
   /// only — no callee ephemeral needed, so cold-start answers work).
   Future<String> decryptOffer({
     required String callId,
-    required String myId,
     required String callerId,
     required Uint8List ephA,
     required Map<String, String> encrypted,
@@ -247,18 +313,20 @@ class CallSignalingCrypto {
     _callId = callId;
     _amCaller = false;
     _ephPeerPub = ephA;
-    final myX25519 = _identity.internalX25519KeyPair!;
-    final dhId = await _dh(myX25519, _peerX25519FromPin(callerId));
-    final dhIdEph = await _dh(myX25519, ephA);
+    final dhId = await _dhWithPub(_peerX25519FromPin(callerId));
+    final dhIdEph = await _dhWithPub(ephA);
     final offerKey = await _hkdfConcat(
       [dhId, dhIdEph],
       salt: callId,
       info: infoOffer,
     );
-    return _decryptWith(offerKey, 'call_initiate', 'a2b', encrypted);
+    return _decryptWith(
+        offerKey, 'call_initiate', 'a2b', _recvWindows['a2b']!, encrypted);
   }
 
   /// Callee at ANSWER time: generate ephB, derive session keys, sign fp.
+  /// [offerDtlsFps]/[answerDtlsFps] come from the EXACT SDP strings handed
+  /// to setRemoteDescription.
   Future<({Uint8List eph, Uint8List fp})> beginAnswer({
     required String peerId,
     required String peerBundleB64,
@@ -269,19 +337,22 @@ class CallSignalingCrypto {
     _ephLocal = await _x25519.newKeyPair();
     _ephLocalPub = Uint8List.fromList(
         (await _ephLocal!.extract() as SimpleKeyPairData).publicKey.bytes);
-    final peer = IdentityService.parseBundle(peerBundleB64)!;
+    final peer = IdentityService.parseBundle(peerBundleB64);
+    if (peer == null) {
+      throw const CallSignalingCryptoException('invalid_peer_bundle');
+    }
 
     final fp = await _signCalleeFp(
       callId: _callId!,
       idA: peerId, // caller
-      idB: _storageDeviceId(),
+      idB: _myDeviceId,
       ephA: _ephPeerPub!,
       ephB: _ephLocalPub!,
       offerFps: offerDtlsFps,
       answerFps: answerDtlsFps,
       callerSig: callerSig,
     );
-    await _deriveSessionKeys(peer.x25519Pub, null);
+    await _deriveSessionKeys(peer.x25519Pub);
     return (eph: _ephLocalPub!, fp: fp);
   }
 
@@ -289,23 +360,20 @@ class CallSignalingCrypto {
   /// identical bytes:
   ///   DH1 = DH(IKa, IKb)  DH2 = DH(EKa, IKb)
   ///   DH3 = DH(IKa, EKb)  DH4 = DH(EKa, EKb)
-  /// [_amCaller] is set by beginOffer/decryptOffer.
-  Future<void> _deriveSessionKeys(
-      List<int> peerX25519Pub, Uint8List? ephB) async {
-    final myX = _identity.internalX25519KeyPair!;
-    final peerEph = ephB ?? _ephPeerPub!;
+  Future<void> _deriveSessionKeys(List<int> peerX25519Pub) async {
+    final peerEph = _ephPeerPub!;
 
     final SecretKey dh1, dh2, dh3, dh4;
     if (_amCaller) {
-      dh1 = await _dh(myX, peerX25519Pub);       // IKa × IKb
-      dh2 = await _dh(_ephLocal!, peerX25519Pub); // EKa × IKb
-      dh3 = await _dh(myX, peerEph);             // IKa × EKb
-      dh4 = await _dh(_ephLocal!, peerEph);      // EKa × EKb
+      dh1 = await _dhWithPub(peerX25519Pub); // IKa × IKb
+      dh2 = await _dhEph(peerX25519Pub);     // EKa × IKb
+      dh3 = await _dhWithPub(peerEph);       // IKa × EKb
+      dh4 = await _dhEph(peerEph);           // EKa × EKb
     } else {
-      dh1 = await _dh(myX, peerX25519Pub);       // IKb × IKa
-      dh2 = await _dh(myX, peerEph);             // IKb × EKa
-      dh3 = await _dh(_ephLocal!, peerX25519Pub); // EKb × IKa
-      dh4 = await _dh(_ephLocal!, peerEph);      // EKb × EKa
+      dh1 = await _dhWithPub(peerX25519Pub); // IKb × IKa
+      dh2 = await _dhWithPub(peerEph);       // IKb × EKa
+      dh3 = await _dhEph(peerX25519Pub);     // EKb × IKa
+      dh4 = await _dhEph(peerEph);           // EKb × EKa
     }
     final session = await _hkdfConcat(
       [dh1, dh2, dh3, dh4],
@@ -327,12 +395,11 @@ class CallSignalingCrypto {
       utf8.encode(_callId!),
       utf8.encode(direction),
       utf8.encode(event),
-      [
-        (counter >> 24) & 0xff,
-        (counter >> 16) & 0xff,
-        (counter >> 8) & 0xff,
-        counter & 0xff,
-      ],
+      Uint8List(4)
+        ..[0] = (counter >> 24) & 0xff
+        ..[1] = (counter >> 16) & 0xff
+        ..[2] = (counter >> 8) & 0xff
+        ..[3] = counter & 0xff,
     ]);
   }
 
@@ -343,17 +410,18 @@ class CallSignalingCrypto {
   }) {
     final key = direction == 'a2b' ? _kAB : _kBA;
     if (key == null) {
-      throw const CallSignalingCryptoException('session keys not ready');
+      throw const CallSignalingCryptoException('session_keys_not_ready');
     }
     return _encryptWith(key, event, direction, plaintext);
   }
 
   Future<Map<String, String>> _encryptWith(
       SecretKey key, String event, String direction, String plaintext) async {
-    if (_sendCounter >= maxCounter) {
-      throw const CallSignalingCryptoException('counter exhausted');
+    final counter = _sendCounters[direction]!;
+    if (counter >= maxCounter) {
+      throw const CallSignalingCryptoException('counter_exhausted');
     }
-    final counter = _sendCounter++;
+    _sendCounters[direction] = counter + 1;
     final nonce = _randomNonce();
     final box = await _gcm.encrypt(
       utf8.encode(plaintext),
@@ -375,65 +443,53 @@ class CallSignalingCrypto {
   }) async {
     final key = direction == 'a2b' ? _kAB : _kBA;
     if (key == null) {
-      throw const CallSignalingCryptoException('session keys not ready');
+      throw const CallSignalingCryptoException('session_keys_not_ready');
     }
     try {
-      return await _decryptWith(key, event, direction, encrypted);
+      return await _decryptWith(
+          key, event, direction, _recvWindows[direction]!, encrypted);
     } on SecretBoxAuthenticationError {
       decryptFailures++;
       if (decryptFailures >= decryptFailureThreshold) {
         throw const CallSignalingCryptoException('crypto_failed');
       }
       rethrow;
+    } on RangeError {
+      // Malformed record (too short for GCM tag) — counts as a failed
+      // candidate, same threshold.
+      decryptFailures++;
+      if (decryptFailures >= decryptFailureThreshold) {
+        throw const CallSignalingCryptoException('crypto_failed');
+      }
+      throw const CallSignalingCryptoException('malformed_record');
     }
   }
 
+  /// Order matters: AUTHENTICATE first, then update the replay window —
+  /// otherwise a forged record could poison the window.
   Future<String> _decryptWith(
     SecretKey key,
     String event,
     String direction,
+    _ReplayWindow window,
     Map<String, String> encrypted,
   ) async {
     final n = base64Decode(encrypted['n']!);
     final c = base64Decode(encrypted['c']!);
     final counter = int.parse(encrypted['k']!);
-    _checkReplay(counter);
     final clear = await _gcm.decrypt(
       SecretBox(c.sublist(0, c.length - 16),
           nonce: n, mac: Mac(c.sublist(c.length - 16))),
       secretKey: key,
       aad: _aad(event, direction, counter),
     );
+    window.accept(counter); // throws only on replay AFTER auth succeeded
     return utf8.decode(clear);
-  }
-
-  /// Sliding 64-bit replay window over the receive counter.
-  void _checkReplay(int counter) {
-    if (counter < 0 || counter > maxCounter) {
-      throw const CallSignalingCryptoException('counter out of range');
-    }
-    if (counter <= _recvMaxCounter - replayWindowBits) {
-      throw const CallSignalingCryptoException('replayed message');
-    }
-    if (counter <= _recvMaxCounter) {
-      final shift = _recvMaxCounter - counter;
-      if ((_recvWindow >> shift) & 1 == 1) {
-        throw const CallSignalingCryptoException('replayed message');
-      }
-      _recvWindow |= (1 << shift);
-    } else {
-      final shift = counter - _recvMaxCounter;
-      _recvWindow = (_recvWindow << shift) | 1;
-      _recvMaxCounter = counter;
-    }
   }
 
   // ---------------------------------------------------------------------------
   // Fingerprint signatures — public values only, length-prefixed
   // ---------------------------------------------------------------------------
-
-  List<Uint8List>? _lastOfferFps;
-  String _storageDeviceId() => _myDeviceId;
 
   Future<Uint8List> _signCallerFp({
     required String callId,
@@ -442,7 +498,6 @@ class CallSignalingCrypto {
     required Uint8List ephA,
     required List<Uint8List> offerFps,
   }) async {
-    _lastOfferFps = offerFps;
     final material = _frame([
       utf8.encode(fpDomain),
       utf8.encode(callId),
@@ -451,11 +506,7 @@ class CallSignalingCrypto {
       ephA,
       ...offerFps,
     ]);
-    final sig = await _ed25519.sign(
-      material,
-      keyPair: _identity.internalEd25519KeyPair!,
-    );
-    return Uint8List.fromList(sig.bytes);
+    return _sign(material);
   }
 
   Future<Uint8List> _signCalleeFp({
@@ -468,8 +519,7 @@ class CallSignalingCrypto {
     required List<Uint8List> answerFps,
     required Uint8List callerSig,
   }) async {
-    final callerSigHash =
-        await Sha256().hash(callerSig);
+    final callerSigHash = await Sha256().hash(callerSig);
     final material = _frame([
       utf8.encode(fpDomain),
       utf8.encode(callId),
@@ -481,11 +531,7 @@ class CallSignalingCrypto {
       ...answerFps,
       Uint8List.fromList(callerSigHash.bytes),
     ]);
-    final sig = await _ed25519.sign(
-      material,
-      keyPair: _identity.internalEd25519KeyPair!,
-    );
-    return Uint8List.fromList(sig.bytes);
+    return _sign(material);
   }
 
   Future<bool> _verifyCalleeFp({
@@ -494,13 +540,12 @@ class CallSignalingCrypto {
     required String idB,
     required Uint8List ephA,
     required Uint8List ephB,
-    required List<Uint8List>? offerFps,
+    required List<Uint8List> offerFps,
     required List<Uint8List> answerFps,
     required Uint8List callerSig,
     required Uint8List calleeSig,
     required List<int> peerEd25519Pub,
   }) async {
-    if (offerFps == null) return false;
     final callerSigHash = await Sha256().hash(callerSig);
     final material = _frame([
       utf8.encode(fpDomain),
@@ -517,13 +562,15 @@ class CallSignalingCrypto {
       material,
       signature: Signature(
         calleeSig,
-        publicKey: SimplePublicKey(peerEd25519Pub, type: KeyPairType.ed25519),
+        publicKey:
+            SimplePublicKey(peerEd25519Pub, type: KeyPairType.ed25519),
       ),
     );
   }
 
-  /// Verify the caller's signature (callee side) — binds ephA and the offer
-  /// fingerprint to the pinned Ed25519 key.
+  /// Verify the caller's signature (callee side) — binds ephA and the
+  /// offer fingerprints to the PINNED Ed25519 key, never a message-supplied
+  /// key.
   Future<bool> verifyCallerFp({
     required String callId,
     required String idA,
@@ -555,7 +602,7 @@ class CallSignalingCrypto {
     final pin = _resolvePeerBundle(peerId);
     final parsed = pin != null ? IdentityService.parseBundle(pin) : null;
     if (parsed == null) {
-      throw const CallSignalingCryptoException('no pinned peer bundle');
+      throw const CallSignalingCryptoException('no_pinned_peer_bundle');
     }
     return parsed.x25519Pub;
   }
@@ -574,17 +621,40 @@ class CallSignalingCrypto {
     _ephLocalPub = null;
     _ephPeerPub = null;
     _callId = null;
-    _sendCounter = 0;
-    _recvMaxCounter = -1;
-    _recvWindow = 0;
+    _amCaller = false;
+    _sendCounters['a2b'] = 0;
+    _sendCounters['b2a'] = 0;
+    _recvWindows['a2b'] = _ReplayWindow();
+    _recvWindows['b2a'] = _ReplayWindow();
     decryptFailures = 0;
     _lastOfferFps = null;
+    _lastCallerSig = null;
   }
 }
 
-class CallSignalingCryptoException implements Exception {
-  final String message;
-  const CallSignalingCryptoException(this.message);
-  @override
-  String toString() => 'CallSignalingCryptoException: $message';
+/// Sliding 64-bit replay window. [accept] throws on replay; called only
+/// after successful AEAD authentication.
+class _ReplayWindow {
+  int maxCounter = -1;
+  int window = 0;
+
+  void accept(int counter) {
+    if (counter < 0) {
+      throw const CallSignalingCryptoException('counter_out_of_range');
+    }
+    if (counter <= maxCounter - CallSignalingCrypto.replayWindowBits) {
+      throw const CallSignalingCryptoException('replayed');
+    }
+    if (counter <= maxCounter) {
+      final shift = maxCounter - counter;
+      if ((window >> shift) & 1 == 1) {
+        throw const CallSignalingCryptoException('replayed');
+      }
+      window |= (1 << shift);
+    } else {
+      final shift = counter - maxCounter;
+      window = (window << shift) | 1;
+      maxCounter = counter;
+    }
+  }
 }
