@@ -120,8 +120,17 @@ class CallSignalingCrypto {
     return Uint8List.fromList(await k.extractBytes());
   }
 
+  /// Threat model note: a compromised relay can inject 8 garbage
+  /// candidates to force crypto_failed — but the relay can drop the call
+  /// outright anyway, so this is DoS parity, not a new capability.
+  /// UI guidance on crypto_failed: "connection security check failed" +
+  /// retry — never accuse the contact of being compromised.
+  ///
   /// Decrypt errors observed mid-call — a stray bad candidate shouldn't
   /// kill a good call; repeated failures end it (caller enforces).
+  /// Only AUTH failures and malformed records count — replays of an
+  /// already-accepted counter (Socket.IO redelivery, pre-ICE-restart
+  /// stragglers) are dropped silently and never counted.
   int decryptFailures = 0;
   static const int decryptFailureThreshold = 8;
 

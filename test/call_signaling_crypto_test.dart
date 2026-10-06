@@ -376,6 +376,29 @@ void main() {
       });
     });
 
+    test('20 duplicate records do NOT push toward crypto_failed', () async {
+      final (caller, callee, _, __) = await _handshake();
+      final m = await caller.encryptMessage(
+          direction: 'a2b', event: 'ice_candidate', plaintext: 'dup');
+      await callee.decryptMessage(
+          direction: 'a2b', event: 'ice_candidate', encrypted: m);
+      for (var i = 0; i < 20; i++) {
+        try {
+          await callee.decryptMessage(
+              direction: 'a2b', event: 'ice_candidate', encrypted: m);
+        } catch (_) {}
+      }
+      // Call still healthy — a fresh message decrypts fine.
+      final fresh = await caller.encryptMessage(
+          direction: 'a2b', event: 'ice_candidate', plaintext: 'fresh');
+      expect(
+        await callee.decryptMessage(
+            direction: 'a2b', event: 'ice_candidate', encrypted: fresh),
+        'fresh',
+      );
+      expect(callee.decryptFailures, 0); // replays never counted
+    });
+
     test('crypto_failed is sticky — no decrypts accepted after', () async {
       final (caller, callee, _, __) = await _handshake();
       // force the threshold
