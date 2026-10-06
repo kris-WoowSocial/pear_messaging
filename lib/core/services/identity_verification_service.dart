@@ -94,7 +94,7 @@ class IdentityVerificationService extends GetxService {
     return myBundle;
   }
 
-  /// QR text to display: vant-verify?v=1&id=<id>&b=<bundle>&s=<secret>
+  /// QR text to display: `vant-verify?v=1&id=ID&b=BUNDLE&s=SECRET`
   String? qrPayload() {
     final myId = _storage.deviceId;
     final bundle = _identity.identityBundleBase64;

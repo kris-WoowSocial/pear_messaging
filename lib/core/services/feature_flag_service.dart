@@ -48,6 +48,14 @@ class FeatureFlagService extends GetxService {
     return this;
   }
 
+  /// Fetch fresh flags now (called on app resume — faster than the 1h floor).
+  Future<void> refresh() async {
+    try {
+      await _rc?.fetchAndActivate();
+      _apply();
+    } catch (_) {} // network/config hiccup → keep current flags
+  }
+
   void _apply() {
     verificationUi.value = _rc!.getBool(kVerificationUi);
     encryptedSignaling.value = _rc!.getBool(kEncryptedSignaling);

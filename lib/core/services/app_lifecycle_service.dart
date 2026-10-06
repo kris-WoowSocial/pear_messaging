@@ -1,6 +1,7 @@
 import 'dart:io' show Platform;
 import 'package:flutter/widgets.dart';
 import 'package:get/get.dart';
+import 'feature_flag_service.dart';
 import 'socket_service.dart';
 import 'local_storage_service.dart';
 import 'webrtc_call_service.dart';
@@ -59,6 +60,13 @@ class AppLifecycleService extends GetxService with WidgetsBindingObserver {
 
   /// Handle app resumed (foreground) - reconnect socket on iOS and restore audio state
   void _handleAppResumed() async {
+    // Refresh feature flags — the 1h fetch interval is the floor, resume
+    // brings fresh values sooner (a flag flip is the rollback switch).
+    try {
+      if (Get.isRegistered<FeatureFlagService>()) {
+        await Get.find<FeatureFlagService>().refresh();
+      }
+    } catch (_) {}
     // Retry the encrypted peer-identity pin store — the app may have been
     // in a locked-device window at launch where the cipher key was
     // unreadable. Covers both platforms and post-first-unlock recovery.
