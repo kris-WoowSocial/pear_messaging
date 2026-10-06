@@ -47,6 +47,8 @@ import 'core/services/call_foreground_service.dart';
 import 'core/services/callkit_service.dart';
 import 'core/services/identity_service.dart';
 import 'core/services/identity_announcement_service.dart';
+import 'core/services/identity_verification_service.dart';
+import 'core/services/feature_flag_service.dart';
 import 'core/utils/device_utils.dart';
 import 'features/call/call_controller.dart';
 
@@ -500,6 +502,26 @@ void initializeNonCriticalServices() async {
       Get.put(IdentityAnnouncementService());
     } catch (e) {
       debugPrint('❌ IdentityAnnouncementService init failed: $e');
+    }
+  }));
+
+  // Feature flags — Remote Config, all new capabilities default OFF.
+  futures.add(Future(() async {
+    try {
+      await Get.putAsync(() => FeatureFlagService().init());
+    } catch (e) {
+      debugPrint('❌ FeatureFlagService init failed: $e');
+      Get.put(FeatureFlagService()); // defaults stay off
+    }
+  }));
+
+  // Verification service — QR/safety-code key verification. The service
+  // itself is passive (listens for verify_echo only); UI is flag-gated.
+  futures.add(Future(() {
+    try {
+      Get.put(IdentityVerificationService());
+    } catch (e) {
+      debugPrint('❌ IdentityVerificationService init failed: $e');
     }
   }));
 

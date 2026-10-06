@@ -84,6 +84,10 @@ class SocketService extends GetxService {
   void Function(Map<String, dynamic>)? onIdentityConflict;
   void Function(Map<String, dynamic>)? onIdentityAnnounceAcked;
 
+  /// Inbound verification echo ({from, bundle, mac}) during contact
+  /// verification — wired by IdentityVerificationService.
+  void Function(Map<String, dynamic>)? onVerifyEcho;
+
   /// Initialize the socket service with device ID
   Future<SocketService> init(String deviceId) async {
     _deviceId = deviceId;
@@ -281,6 +285,12 @@ class SocketService extends GetxService {
       debugPrint('⚠️ Identity conflict from server: $data');
       if (data is Map && onIdentityConflict != null) {
         onIdentityConflict!(Map<String, dynamic>.from(data));
+      }
+    });
+
+    _socket?.on('verify_echo', (data) {
+      if (data is Map && onVerifyEcho != null) {
+        onVerifyEcho!(Map<String, dynamic>.from(data));
       }
     });
 
@@ -1329,14 +1339,68 @@ class SocketService extends GetxService {
       return;
     }
 
-    _socket?.emit('call_initiate', {
-      'callerId': callerId,
-      'calleeId': calleeId,
-      'sdpOffer': sdpOffer,
-      if (callerName != null && callerName.isNotEmpty) 'callerName': callerName,
-    });
+    _socket?.emit('call_initiate', buildCallInitiatePayload(
+      callerId: callerId,
+      calleeId: calleeId,
+      sdpOffer: sdpOffer,
+      callerName: callerName,
+    ));
     debugPrint('📞 Call initiated: $callerId -> $calleeId');
   }
+
+  // ---------------------------------------------------------------------------
+  // Call event payloads — CONTRACT: the voice-call wire shape below is frozen.
+  // Any change breaks shipped clients. Pinned by test/call_contract_test.dart.
+  // ---------------------------------------------------------------------------
+
+  static Map<String, dynamic> buildCallInitiatePayload({
+    required String callerId,
+    required String calleeId,
+    required String sdpOffer,
+    String? callerName,
+  }) =>
+      {
+        'callerId': callerId,
+        'calleeId': calleeId,
+        'sdpOffer': sdpOffer,
+        if (callerName != null && callerName.isNotEmpty)
+          'callerName': callerName,
+      };
+
+  static Map<String, dynamic> buildCallAcceptPayload({
+    required String callId,
+    required String callerId,
+    required String sdpAnswer,
+  }) =>
+      {'callId': callId, 'callerId': callerId, 'sdpAnswer': sdpAnswer};
+
+  static Map<String, dynamic> buildCallRejectPayload({
+    required String callId,
+    required String callerId,
+    String? reason,
+  }) =>
+      {'callId': callId, 'callerId': callerId, 'reason': reason ?? 'rejected'};
+
+  static Map<String, dynamic> buildCallTerminatePayload({
+    required String callId,
+    String? reason,
+  }) =>
+      {'callId': callId, 'reason': reason ?? 'ended'};
+
+  static Map<String, dynamic> buildIceCandidatePayload({
+    required String callId,
+    required String targetDeviceId,
+    required String candidate,
+    String? sdpMid,
+    int? sdpMLineIndex,
+  }) =>
+      {
+        'callId': callId,
+        'targetDeviceId': targetDeviceId,
+        'candidate': candidate,
+        'sdpMid': sdpMid,
+        'sdpMLineIndex': sdpMLineIndex,
+      };
 
   /// Accept a call
   void acceptCall({
@@ -1349,11 +1413,11 @@ class SocketService extends GetxService {
       return;
     }
 
-    _socket?.emit('call_accept', {
-      'callId': callId,
-      'callerId': callerId,
-      'sdpAnswer': sdpAnswer,
-    });
+    _socket?.emit('call_accept', buildCallAcceptPayload(
+      callId: callId,
+      callerId: callerId,
+      sdpAnswer: sdpAnswer,
+    ));
     debugPrint('📞 Call accepted: $callId');
   }
 
@@ -1368,11 +1432,11 @@ class SocketService extends GetxService {
       return;
     }
 
-    _socket?.emit('call_reject', {
-      'callId': callId,
-      'callerId': callerId,
-      'reason': reason ?? 'rejected',
-    });
+    _socket?.emit('call_reject', buildCallRejectPayload(
+      callId: callId,
+      callerId: callerId,
+      reason: reason,
+    ));
     debugPrint('📞 Call rejected: $callId');
   }
 
@@ -1383,10 +1447,10 @@ class SocketService extends GetxService {
       return;
     }
 
-    _socket?.emit('call_terminate', {
-      'callId': callId,
-      'reason': reason ?? 'ended',
-    });
+    _socket?.emit('call_terminate', buildCallTerminatePayload(
+      callId: callId,
+      reason: reason,
+    ));
     debugPrint('📞 Call terminated: $callId');
   }
 
@@ -1403,13 +1467,13 @@ class SocketService extends GetxService {
       return;
     }
 
-    _socket?.emit('ice_candidate', {
-      'callId': callId,
-      'targetDeviceId': targetDeviceId,
-      'candidate': candidate,
-      'sdpMid': sdpMid,
-      'sdpMLineIndex': sdpMLineIndex,
-    });
+    _socket?.emit('ice_candidate', buildIceCandidatePayload(
+      callId: callId,
+      targetDeviceId: targetDeviceId,
+      candidate: candidate,
+      sdpMid: sdpMid,
+      sdpMLineIndex: sdpMLineIndex,
+    ));
     debugPrint(
       '📞 ICE candidate sent: sdpMid=$sdpMid, sdpMLineIndex=$sdpMLineIndex',
     );
@@ -1480,6 +1544,28 @@ class SocketService extends GetxService {
       'status': status,
       'bundleHash': bundleHash,
     });
+  }
+
+  /// Send a verification echo to the QR displayer. The server requires the
+  /// echoed bundle to equal our durably bound bundle. Returns delivery ack.
+  Future<bool> sendVerifyEcho({
+    required String to,
+    required String bundle,
+    required String mac,
+  }) async {
+    if (_socket == null || !_socket!.connected) return false;
+    final completer = Completer<bool>();
+    _socket!.emitWithAck(
+      'verify_echo',
+      {'to': to, 'bundle': bundle, 'mac': mac},
+      ack: (data) {
+        completer.complete(data is Map && data['delivered'] == true);
+      },
+    );
+    return completer.future.timeout(
+      const Duration(seconds: 5),
+      onTimeout: () => false,
+    );
   }
 
   /// Request call resync - used when app cold-starts after accepting from CallKit

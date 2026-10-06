@@ -75,6 +75,10 @@ class IdentityAnnouncementService extends GetxService {
     _socket.onIdentityAnnounce = _handleAnnouncement;
     _socket.onIdentityAnnounceAcked = _handleAnnounceAck;
 
+    // Restore persisted key-changed conflicts — a restart must never drop
+    // the warning, and the sender stops retrying after a 'conflict' ack.
+    keyChangedConflicts.addAll(_storage.peersWithConflict());
+
     // Re-announce whenever the socket registers — reconnect resets backoff
     // so fresh connections retry immediately.
     _registrationWorker = ever(_socket.isRegistered, (registered) {
@@ -255,7 +259,11 @@ class IdentityAnnouncementService extends GetxService {
   }
 
   /// Clear a surfaced conflict after the user has acknowledged it.
-  void dismissConflict(String deviceId) => keyChangedConflicts.remove(deviceId);
+  /// Clears the persisted record too — the pin itself is untouched.
+  void dismissConflict(String deviceId) {
+    keyChangedConflicts.remove(deviceId);
+    _storage.clearPeerConflict(deviceId);
+  }
 
   @override
   void onClose() {

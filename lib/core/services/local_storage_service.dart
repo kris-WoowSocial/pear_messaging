@@ -837,7 +837,50 @@ class LocalStorageService extends GetxService {
     final existingBundle =
         existing is Map ? existing['bundle'] as String? : null;
     if (existingBundle == bundle) return pinResultUnchanged;
+    // Persist the conflicting bundle + time — a key change is serious (a
+    // bound ID cannot legitimately change keys) and must survive restarts.
+    await _peerIdentitiesBox!.put(peerDeviceId, {
+      'bundle': existingBundle,
+      'status': existing is Map ? existing['status'] : null,
+      'updatedAt': existing is Map ? existing['updatedAt'] : null,
+      'conflictBundle': bundle,
+      'conflictAt': DateTime.now().millisecondsSinceEpoch,
+    });
     return pinResultConflict;
+  }
+
+  /// The conflicting bundle seen for a peer, or null. Persisted so a
+  /// restart can't silently drop a key-changed warning.
+  String? getPeerConflictBundle(String peerDeviceId) {
+    if (_peerIdentitiesBox?.isOpen != true) return null;
+    final entry = _peerIdentitiesBox!.get(peerDeviceId);
+    return entry is Map ? entry['conflictBundle'] as String? : null;
+  }
+
+  /// All peers with a recorded key-changed conflict — used to restore the
+  /// warning banner after app restarts.
+  List<String> peersWithConflict() {
+    if (_peerIdentitiesBox?.isOpen != true) return [];
+    return _peerIdentitiesBox!.keys
+        .where((k) {
+          final entry = _peerIdentitiesBox!.get(k);
+          return entry is Map && entry['conflictBundle'] != null;
+        })
+        .map((k) => k as String)
+        .toList();
+  }
+
+  /// Clear a conflict after the user acknowledged it or re-verified.
+  /// The PIN is untouched — dismissing a warning is not trusting the key.
+  Future<void> clearPeerConflict(String peerDeviceId) async {
+    if (_peerIdentitiesBox?.isOpen != true) return;
+    final entry = _peerIdentitiesBox!.get(peerDeviceId);
+    if (entry is! Map || entry['conflictBundle'] == null) return;
+    await _peerIdentitiesBox!.put(peerDeviceId, {
+      'bundle': entry['bundle'],
+      'status': entry['status'],
+      'updatedAt': entry['updatedAt'],
+    });
   }
 
   /// Pinned bundle for a peer, or null.
@@ -860,9 +903,27 @@ class LocalStorageService extends GetxService {
     await _ensurePeerIdentitiesBox();
     final entry = _peerIdentitiesBox!.get(peerDeviceId);
     if (entry is! Map || entry['bundle'] == null) return false;
-    if (entry['status'] == 'verified') return true;
+    if (entry['status'] == 'verified' && entry['conflictBundle'] == null) {
+      return true;
+    }
     await _peerIdentitiesBox!.put(peerDeviceId, {
       'bundle': entry['bundle'],
+      'status': 'verified',
+      'updatedAt': DateTime.now().millisecondsSinceEpoch,
+    });
+    return true;
+  }
+
+  /// Replace a pin after the user explicitly confirmed the new key via QR
+  /// scan (the in-person channel outranks the TOFU pin). Also used when
+  /// scanning a contact that had no pin yet — pins as 'verified'.
+  Future<bool> replacePeerPinVerified(
+      String peerDeviceId, String bundle) async {
+    if (getChat(peerDeviceId) == null) return false;
+    await _ensurePeerIdentitiesBox();
+    if (_peerIdentitiesBox?.isOpen != true) return false;
+    await _peerIdentitiesBox!.put(peerDeviceId, {
+      'bundle': bundle,
       'status': 'verified',
       'updatedAt': DateTime.now().millisecondsSinceEpoch,
     });
