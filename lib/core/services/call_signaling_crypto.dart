@@ -91,13 +91,19 @@ class CallSignalingCrypto {
     'b2a': _ReplayWindow(),
   };
 
+  /// Test-only escape hatch: simulates release-mode checks inside
+  /// debug-mode tests so the guard branches get real coverage.
+  /// Harmless in release (the !kDebugMode path already throws first).
+  @visibleForTesting
+  static bool debugForceReleaseMode = false;
+
+  bool get _guarded => kDebugMode && !debugForceReleaseMode;
+
   /// Test-only view of send counters (counter-cap test).
   /// Throws in release builds — a readable counter map invites misuse.
   @visibleForTesting
   Map<String, int> get sendCountersForTest {
-    if (!kDebugMode) {
-      throw const CallSignalingCryptoException('test_only');
-    }
+    if (!_guarded) throw const CallSignalingCryptoException('test_only');
     return _sendCounters;
   }
 
@@ -106,9 +112,7 @@ class CallSignalingCrypto {
   /// must never be reachable from production code paths.
   @visibleForTesting
   Future<Uint8List> debugKeyBytes(String which) async {
-    if (!kDebugMode) {
-      throw const CallSignalingCryptoException('test_only');
-    }
+    if (!_guarded) throw const CallSignalingCryptoException('test_only');
     final k = which == 'offer'
         ? _offerKey
         : which == 'kAB'
@@ -236,15 +240,14 @@ class CallSignalingCrypto {
     required List<Uint8List> offerDtlsFps,
     @visibleForTesting List<int>? ephSeed,
   }) async {
-    if (ephSeed != null && !kDebugMode) {
+    if (ephSeed != null && !_guarded) {
       // A caller-supplied ephemeral seed would silently kill forward
-      // secrecy — compile-guard it so release builds can never take
-      // this path.
+      // secrecy — throw loudly in release builds, never fall back.
       throw const CallSignalingCryptoException('test_only_parameter');
     }
     _callId = callId;
     _amCaller = true;
-    _ephLocal = kDebugMode && ephSeed != null
+    _ephLocal = _guarded && ephSeed != null
         ? await _x25519.newKeyPairFromSeed(Uint8List.fromList(ephSeed))
         : await _x25519.newKeyPair();
     _ephLocalPub = Uint8List.fromList(
@@ -360,10 +363,10 @@ class CallSignalingCrypto {
     required List<Uint8List> answerDtlsFps,
     @visibleForTesting List<int>? ephSeed,
   }) async {
-    if (ephSeed != null && !kDebugMode) {
+    if (ephSeed != null && !_guarded) {
       throw const CallSignalingCryptoException('test_only_parameter');
     }
-    _ephLocal = kDebugMode && ephSeed != null
+    _ephLocal = _guarded && ephSeed != null
         ? await _x25519.newKeyPairFromSeed(Uint8List.fromList(ephSeed))
         : await _x25519.newKeyPair();
     _ephLocalPub = Uint8List.fromList(

@@ -399,6 +399,67 @@ void main() {
       expect(callee.decryptFailures, 0); // replays never counted
     });
 
+    test('mixed: 7 auth failures + 100 duplicates + 1 failure = crypto_failed',
+        () async {
+      final (caller, callee, _, __) = await _handshake();
+      // 7 real auth failures
+      for (var i = 0; i < 7; i++) {
+        try {
+          await callee.decryptMessage(
+              direction: 'a2b',
+              event: 'ice_candidate',
+              encrypted: {'n': 'AAAA', 'c': 'AAAA', 'k': '500$i'});
+        } catch (_) {}
+      }
+      // 100 duplicates of a valid record — replays never count
+      final dup = await caller.encryptMessage(
+          direction: 'a2b', event: 'ice_candidate', plaintext: 'd');
+      await callee.decryptMessage(
+          direction: 'a2b', event: 'ice_candidate', encrypted: dup);
+      for (var i = 0; i < 100; i++) {
+        try {
+          await callee.decryptMessage(
+              direction: 'a2b', event: 'ice_candidate', encrypted: dup);
+        } catch (_) {}
+      }
+      expect(callee.decryptFailures, 7);
+      // 8th real failure → crypto_failed
+      expect(
+        callee.decryptMessage(
+            direction: 'a2b',
+            event: 'ice_candidate',
+            encrypted: {'n': 'AAAA', 'c': 'AAAA', 'k': '5007'}),
+        throwsA(isA<CallSignalingCryptoException>()),
+      );
+    });
+
+    test('release-mode guard: seeded ephemeral throws, no fallback', () async {
+      CallSignalingCrypto.debugForceReleaseMode = true;
+      try {
+        final a = await _mk(), b = await _mk();
+        final pins = {'devB': await b.bundle()};
+        final c = CallSignalingCrypto(
+            dh: a.dh,
+            sign: a.sign,
+            myDeviceId: 'devA',
+            resolvePeerBundle: (id) => pins[id]);
+        expect(
+          c.beginOffer(
+              callId: 'c', myId: 'devA', peerId: 'devB',
+              peerBundleB64: pins['devB']!,
+              offerDtlsFps: CallSignalingCrypto.extractDtlsFingerprints(offerSdp),
+              ephSeed: Uint8List(32)),
+          throwsA(isA<CallSignalingCryptoException>()),
+        );
+        expect(() => c.sendCountersForTest,
+            throwsA(isA<CallSignalingCryptoException>()));
+        expect(c.debugKeyBytes('offer'),
+            throwsA(isA<CallSignalingCryptoException>()));
+      } finally {
+        CallSignalingCrypto.debugForceReleaseMode = false;
+      }
+    });
+
     test('crypto_failed is sticky — no decrypts accepted after', () async {
       final (caller, callee, _, __) = await _handshake();
       // force the threshold
