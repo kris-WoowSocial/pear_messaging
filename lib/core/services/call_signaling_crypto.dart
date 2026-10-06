@@ -2,7 +2,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:cryptography/cryptography.dart';
-import 'package:flutter/foundation.dart' show visibleForTesting;
+import 'package:flutter/foundation.dart' show kDebugMode, visibleForTesting;
 
 import 'identity_service.dart';
 
@@ -92,13 +92,23 @@ class CallSignalingCrypto {
   };
 
   /// Test-only view of send counters (counter-cap test).
+  /// Throws in release builds — a readable counter map invites misuse.
   @visibleForTesting
-  Map<String, int> get sendCountersForTest => _sendCounters;
+  Map<String, int> get sendCountersForTest {
+    if (!kDebugMode) {
+      throw const CallSignalingCryptoException('test_only');
+    }
+    return _sendCounters;
+  }
 
   /// Test-only: extract derived key bytes for fixed-vector verification.
-  /// 'offer' | 'kAB' | 'kBA'. Never ship calls to this in production paths.
+  /// 'offer' | 'kAB' | 'kBA'. Throws in release builds — raw key bytes
+  /// must never be reachable from production code paths.
   @visibleForTesting
   Future<Uint8List> debugKeyBytes(String which) async {
+    if (!kDebugMode) {
+      throw const CallSignalingCryptoException('test_only');
+    }
     final k = which == 'offer'
         ? _offerKey
         : which == 'kAB'
@@ -217,9 +227,15 @@ class CallSignalingCrypto {
     required List<Uint8List> offerDtlsFps,
     @visibleForTesting List<int>? ephSeed,
   }) async {
+    if (ephSeed != null && !kDebugMode) {
+      // A caller-supplied ephemeral seed would silently kill forward
+      // secrecy — compile-guard it so release builds can never take
+      // this path.
+      throw const CallSignalingCryptoException('test_only_parameter');
+    }
     _callId = callId;
     _amCaller = true;
-    _ephLocal = ephSeed != null
+    _ephLocal = kDebugMode && ephSeed != null
         ? await _x25519.newKeyPairFromSeed(Uint8List.fromList(ephSeed))
         : await _x25519.newKeyPair();
     _ephLocalPub = Uint8List.fromList(
@@ -333,8 +349,14 @@ class CallSignalingCrypto {
     required Uint8List callerSig,
     required List<Uint8List> offerDtlsFps,
     required List<Uint8List> answerDtlsFps,
+    @visibleForTesting List<int>? ephSeed,
   }) async {
-    _ephLocal = await _x25519.newKeyPair();
+    if (ephSeed != null && !kDebugMode) {
+      throw const CallSignalingCryptoException('test_only_parameter');
+    }
+    _ephLocal = kDebugMode && ephSeed != null
+        ? await _x25519.newKeyPairFromSeed(Uint8List.fromList(ephSeed))
+        : await _x25519.newKeyPair();
     _ephLocalPub = Uint8List.fromList(
         (await _ephLocal!.extract() as SimpleKeyPairData).publicKey.bytes);
     final peer = IdentityService.parseBundle(peerBundleB64);
@@ -441,6 +463,9 @@ class CallSignalingCrypto {
     required String event,
     required Map<String, String> encrypted,
   }) async {
+    if (_failed) {
+      throw const CallSignalingCryptoException('crypto_failed');
+    }
     final key = direction == 'a2b' ? _kAB : _kBA;
     if (key == null) {
       throw const CallSignalingCryptoException('session_keys_not_ready');
@@ -448,9 +473,20 @@ class CallSignalingCrypto {
     try {
       return await _decryptWith(
           key, event, direction, _recvWindows[direction]!, encrypted);
+    } on CallSignalingCryptoException catch (e) {
+      if (e.message == 'malformed_record' ||
+          e.message == 'counter_out_of_range') {
+        decryptFailures++;
+        if (decryptFailures >= decryptFailureThreshold) {
+          _failed = true;
+          throw const CallSignalingCryptoException('crypto_failed');
+        }
+      }
+      rethrow;
     } on SecretBoxAuthenticationError {
       decryptFailures++;
       if (decryptFailures >= decryptFailureThreshold) {
+        _failed = true;
         throw const CallSignalingCryptoException('crypto_failed');
       }
       rethrow;
@@ -459,11 +495,14 @@ class CallSignalingCrypto {
       // candidate, same threshold.
       decryptFailures++;
       if (decryptFailures >= decryptFailureThreshold) {
+        _failed = true;
         throw const CallSignalingCryptoException('crypto_failed');
       }
       throw const CallSignalingCryptoException('malformed_record');
     }
   }
+
+  bool _failed = false; // sticky crypto_failed — nothing more decrypts
 
   /// Order matters: AUTHENTICATE first, then update the replay window —
   /// otherwise a forged record could poison the window.
@@ -474,9 +513,29 @@ class CallSignalingCrypto {
     _ReplayWindow window,
     Map<String, String> encrypted,
   ) async {
-    final n = base64Decode(encrypted['n']!);
-    final c = base64Decode(encrypted['c']!);
-    final counter = int.parse(encrypted['k']!);
+    // Validate every wire field BEFORE parsing — these bytes are
+    // attacker-controlled. No '!' on untrusted input.
+    final nB64 = encrypted['n'];
+    final cB64 = encrypted['c'];
+    final kStr = encrypted['k'];
+    if (nB64 == null || cB64 == null || kStr == null) {
+      throw const CallSignalingCryptoException('malformed_record');
+    }
+    final Uint8List n, c;
+    final int counter;
+    try {
+      n = base64Decode(nB64);
+      c = base64Decode(cB64);
+      counter = int.parse(kStr);
+    } catch (_) {
+      throw const CallSignalingCryptoException('malformed_record');
+    }
+    if (n.length != 12 || c.length < 17 || c.length > 1 << 16) {
+      throw const CallSignalingCryptoException('malformed_record');
+    }
+    if (counter < 0 || counter > maxCounter) {
+      throw const CallSignalingCryptoException('counter_out_of_range');
+    }
     final clear = await _gcm.decrypt(
       SecretBox(c.sublist(0, c.length - 16),
           nonce: n, mac: Mac(c.sublist(c.length - 16))),
@@ -612,7 +671,8 @@ class CallSignalingCrypto {
     return Uint8List.fromList(List.generate(12, (_) => r.nextInt(256)));
   }
 
-  /// Zero key state at call end.
+  /// Clear key state at call end (hygiene — Dart's GC gives no wiping
+  /// guarantee; this reduces exposure windows, not memory forensics).
   void dispose() {
     _offerKey = null;
     _kAB = null;

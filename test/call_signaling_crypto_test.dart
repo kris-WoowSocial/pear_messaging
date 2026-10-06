@@ -349,6 +349,54 @@ void main() {
       );
     });
 
+    test('malformed wire records — missing, empty, oversized fields', () async {
+      final (_, callee, __, ___) = await _handshake();
+      Future<void> bad(Map<String, String> m) async {
+        try {
+          await callee.decryptMessage(
+              direction: 'a2b', event: 'ice_candidate', encrypted: m);
+        } catch (_) {} // counted or thrown — must never crash
+      }
+      await bad({});                                    // missing keys
+      await bad({'n': '', 'c': '', 'k': ''});           // empty strings
+      await bad({'n': '!!!', 'c': '!!!', 'k': 'x'});    // bad b64/int
+      await bad({'n': 'AAAA', 'c': 'AAAA', 'k': '-1'}); // negative counter
+      await bad({'n': 'AAAA', 'c': 'AAAA', 'k': '99999999999'});
+      // oversized nonce field (b64 of 1KB)
+      await bad({
+        'n': base64Encode(List.filled(1024, 1)),
+        'c': base64Encode(List.filled(32, 2)),
+        'k': '1',
+      });
+      // huge ciphertext field — beyond cap must reject pre-parse
+      await bad({
+        'n': base64Encode(List.filled(12, 3)),
+        'c': base64Encode(List.filled(200000, 4)),
+        'k': '1',
+      });
+    });
+
+    test('crypto_failed is sticky — no decrypts accepted after', () async {
+      final (caller, callee, _, __) = await _handshake();
+      // force the threshold
+      for (var i = 0; i < 8; i++) {
+        try {
+          await callee.decryptMessage(
+              direction: 'a2b',
+              event: 'ice_candidate',
+              encrypted: {'n': 'AAAA', 'c': 'AAAA', 'k': '$i'});
+        } catch (_) {}
+      }
+      // A subsequent perfectly-valid message must still be refused.
+      final good = await caller.encryptMessage(
+          direction: 'a2b', event: 'ice_candidate', plaintext: 'ok');
+      expect(
+        callee.decryptMessage(
+            direction: 'a2b', event: 'ice_candidate', encrypted: good),
+        throwsA(isA<CallSignalingCryptoException>()),
+      );
+    });
+
     test('cold start: fresh callee object decrypts stored offer', () async {
       final a = await _mk(), b = await _mk();
       final pins = {'devB': await b.bundle(), 'devA': await a.bundle()};
@@ -393,12 +441,36 @@ void main() {
     final caller = CallSignalingCrypto(
         dh: a.dh, sign: a.sign, myDeviceId: 'devA', resolvePeerBundle: r);
     final fps = CallSignalingCrypto.extractDtlsFingerprints(offerSdp);
-    await caller.beginOffer(
+    final begin = await caller.beginOffer(
         callId: 'call_vec', myId: 'devA', peerId: 'devB',
         peerBundleB64: pins['devB']!, offerDtlsFps: fps,
         ephSeed: Uint8List(32)..fillRange(0, 32, 0x33));
     expect(base64Encode(await caller.debugKeyBytes('offer')),
         'sxUpzdQz1IjJyDeaElrpIy3u5KGQKvzrlwz2c71bVOQ=');
+
+    // Callee side: decrypt the offer with the seeded ephemeral, answer with
+    // the seeded ephB — the derived kAB/kBA must equal Node's on BOTH roles.
+    final callee = CallSignalingCrypto(
+        dh: b.dh, sign: b.sign, myDeviceId: 'devB', resolvePeerBundle: r);
+    final encOffer = await caller.encryptOffer(offerSdp);
+    await callee.decryptOffer(
+        callId: 'call_vec', callerId: 'devA',
+        ephA: begin.eph, encrypted: encOffer);
+    final af = CallSignalingCrypto.extractDtlsFingerprints(answerSdp);
+    final ans = await callee.beginAnswer(
+        peerId: 'devA', peerBundleB64: pins['devA']!,
+        callerSig: begin.fp, offerDtlsFps: fps, answerDtlsFps: af,
+        ephSeed: Uint8List(32)..fillRange(0, 32, 0x44));
+    await caller.completeHandshake(
+        peerId: 'devB', peerBundleB64: pins['devB']!, ephB: ans.eph,
+        calleeSig: ans.fp, answerDtlsFps: af);
+
+    for (final side in [caller, callee]) {
+      expect(base64Encode(await side.debugKeyBytes('kAB')),
+          '/IkeMhMugLy5BK+bl6d4zSoltgmVlT2/3+EdGVTfasY=');
+      expect(base64Encode(await side.debugKeyBytes('kBA')),
+          'K8wQP4gxFxPuOqrGvrlep+Fm6X2ocgVSUxxC/YgNjAs=');
+    }
   });
 
   test('fixed vectors — independently reproduced in Python/Node', () async {
