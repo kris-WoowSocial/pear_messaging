@@ -2,6 +2,7 @@ import 'package:get/get.dart';
 import 'package:flutter/material.dart';
 import 'local_storage_service.dart';
 import 'socket_service.dart';
+import 'identity_announcement_service.dart';
 import 'api_service.dart';
 import 'invitation_storage_service.dart';
 import '../utils/string_utils.dart';
@@ -552,6 +553,13 @@ class ConnectionRequestService extends GetxService {
 
     await _storageService.saveChat(newChat);
 
+    // Announce our identity bundle to the new contact (TOFU pin).
+    try {
+      if (Get.isRegistered<IdentityAnnouncementService>()) {
+        Get.find<IdentityAnnouncementService>().announceTo(senderDeviceId);
+      }
+    } catch (_) {}
+
     // Remove from pending requests
     _removeConnectionRequest(requestId);
 
@@ -755,6 +763,13 @@ class ConnectionRequestService extends GetxService {
 
       _storageService.saveChat(updatedChat);
       debugPrint('💾 SENDER LOG: Chat saved/updated to storage');
+
+      // Announce our identity bundle to the contact who just accepted.
+      try {
+        if (Get.isRegistered<IdentityAnnouncementService>()) {
+          Get.find<IdentityAnnouncementService>().announceTo(targetDeviceId);
+        }
+      } catch (_) {}
 
       // Update chat list to show the accepted chat
       try {

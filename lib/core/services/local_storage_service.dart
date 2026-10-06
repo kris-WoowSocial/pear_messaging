@@ -1,8 +1,10 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:get/get.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:pear_messaging/storage/models/chat_entity.dart';
 import 'package:pear_messaging/storage/models/connection_request_entity.dart';
@@ -52,6 +54,13 @@ class LocalStorageService extends GetxService {
     // Open all boxes at startup so data is ready instantly
     _chatsBox = await Hive.openBox(_chatsBoxName);
     _connectionRequestsBox = await Hive.openBox(_connectionRequestsBoxName);
+    try {
+      _peerIdentitiesBox = await _openPeerIdentitiesBox();
+    } catch (e) {
+      // Never fail app init over the pin store — run degraded instead.
+      debugPrint('⚠️ Peer identity store unavailable: $e');
+      pinStoreUnavailable.value = true;
+    }
     _messagesBox = await Hive.openBox(_messagesBoxName);
     _messagesBoxInitialized = true;
     _buildMessageIndex();
@@ -758,9 +767,218 @@ class LocalStorageService extends GetxService {
         .toList();
   }
 
+  // ---------------------------------------------------------------------------
+  // E2EE identity pinning — dedicated store keyed by peer deviceId.
+  //
+  // Pins live in their own Hive box, NOT inside ChatEntity JSON: any code
+  // path that rebuilds and re-saves a chat would otherwise silently erase a
+  // pin (a trust downgrade), and deleting a chat would delete its pin.
+  // ---------------------------------------------------------------------------
+  static const String _peerIdentitiesBoxName = 'peer_identities';
+  // Cipher key for the pin box lives only in platform secure storage —
+  // on-device tampering with the box can't swap pinned keys without it.
+  static const String _peerIdentitiesKeyName = 'vant_peer_identities_key';
+  static const String _prefsPeerKeyCreated = 'peer_identities_key_created';
+  // Same options as IdentityService: readable after first unlock (needed for
+  // cold-start call answers from a locked phone) and never self-wiping.
+  static const FlutterSecureStorage _peerIdentitySecureStorage =
+      FlutterSecureStorage(
+    iOptions: IOSOptions(
+      accountName: 'VantPeerIdentityKeys',
+      accessibility: KeychainAccessibility.first_unlock_this_device,
+      synchronizable: false,
+    ),
+    aOptions: AndroidOptions(
+      encryptedSharedPreferences: true,
+      resetOnError: false,
+    ),
+  );
+  Box? _peerIdentitiesBox;
+
+  /// Degraded mode: the pin box couldn't be opened (key unreadable — e.g.
+  /// locked keychain — or key lost with a box still on disk). Reads return
+  /// null and pins can't be written; the app keeps working and retries.
+  final RxBool pinStoreUnavailable = false.obs;
+
+  /// The box exists but can't be decrypted (backup restore without the key,
+  /// corruption). Needs a VISIBLE user notice — silently dropping pins would
+  /// let the next announcement win.
+  final RxBool pinStoreCorrupted = false.obs;
+
+  /// Result of an attempted pin. The store NEVER overwrites an existing pin —
+  /// a conflict is surfaced to the caller for the key-changed warning.
+  static const String pinResultPinned = 'pinned';
+  static const String pinResultUnchanged = 'unchanged';
+  static const String pinResultConflict = 'conflict';
+  static const String pinResultNoChat = 'no_chat';
+  static const String pinResultUnavailable = 'unavailable';
+
+  /// Pin a peer's identity bundle on an existing chat.
+  ///
+  /// Rules:
+  /// - No existing pin → creates it with status 'unverified' (TOFU).
+  /// - Identical pin → returns [pinResultUnchanged], nothing written.
+  /// - Different pin → returns [pinResultConflict] and writes NOTHING.
+  /// - Store degraded → returns [pinResultUnavailable], writes NOTHING.
+  Future<String> pinPeerBundle(String peerDeviceId, String bundle) async {
+    if (getChat(peerDeviceId) == null) return pinResultNoChat;
+    await _ensurePeerIdentitiesBox();
+    if (_peerIdentitiesBox?.isOpen != true) return pinResultUnavailable;
+
+    final existing = _peerIdentitiesBox!.get(peerDeviceId);
+    if (existing == null) {
+      await _peerIdentitiesBox!.put(peerDeviceId, {
+        'bundle': bundle,
+        'status': 'unverified',
+        'updatedAt': DateTime.now().millisecondsSinceEpoch,
+      });
+      return pinResultPinned;
+    }
+    final existingBundle =
+        existing is Map ? existing['bundle'] as String? : null;
+    if (existingBundle == bundle) return pinResultUnchanged;
+    return pinResultConflict;
+  }
+
+  /// Pinned bundle for a peer, or null.
+  String? getPeerBundle(String peerDeviceId) {
+    if (_peerIdentitiesBox?.isOpen != true) return null;
+    final entry = _peerIdentitiesBox!.get(peerDeviceId);
+    return entry is Map ? entry['bundle'] as String? : null;
+  }
+
+  /// Verification status ('verified' | 'unverified' | null when unpinned).
+  String? getPeerVerificationStatus(String peerDeviceId) {
+    if (_peerIdentitiesBox?.isOpen != true) return null;
+    final entry = _peerIdentitiesBox!.get(peerDeviceId);
+    return entry is Map ? entry['status'] as String? : null;
+  }
+
+  /// Mark a pinned contact verified. Only allowed when a pin exists —
+  /// cannot create verified state out of thin air.
+  Future<bool> markPeerVerified(String peerDeviceId) async {
+    await _ensurePeerIdentitiesBox();
+    final entry = _peerIdentitiesBox!.get(peerDeviceId);
+    if (entry is! Map || entry['bundle'] == null) return false;
+    if (entry['status'] == 'verified') return true;
+    await _peerIdentitiesBox!.put(peerDeviceId, {
+      'bundle': entry['bundle'],
+      'status': 'verified',
+      'updatedAt': DateTime.now().millisecondsSinceEpoch,
+    });
+    return true;
+  }
+
+  /// 1:1 contact deviceIds with no pinned bundle — announcement targets.
+  List<String> contactsWithoutPin() {
+    if (_peerIdentitiesBox?.isOpen != true) return [];
+    return getAllChats()
+        .where((c) => !c.isGroupChat && getPeerBundle(c.id) == null)
+        .map((c) => c.id)
+        .toList();
+  }
+
+  Future<void> _ensurePeerIdentitiesBox() async {
+    if (_peerIdentitiesBox?.isOpen != true) {
+      _peerIdentitiesBox = await _openPeerIdentitiesBox();
+    }
+  }
+
+  /// Open the pin box AES-encrypted.
+  ///
+  /// Three outcomes:
+  ///  - key read OK → open box normally (corrupt box → pinStoreCorrupted)
+  ///  - key read THREW → degraded; the key may still exist. Never generates
+  ///    a replacement (that would permanently orphan the encrypted box).
+  ///  - key read returned null + key-was-created flag set → the key was lost
+  ///    while a box exists → degraded + corrupted flag (visible notice)
+  ///  - key null + never created → first run; generate + flag.
+  Future<Box?> _openPeerIdentitiesBox() async {
+    String? keyB64;
+    try {
+      keyB64 = await _peerIdentitySecureStorage.read(
+        key: _peerIdentitiesKeyName,
+      );
+    } catch (e) {
+      debugPrint('⚠️ Pin-store key read failed (locked/transient): $e');
+      pinStoreUnavailable.value = true;
+      return null;
+    }
+
+    if (keyB64 == null) {
+      if (_prefs.getBool(_prefsPeerKeyCreated) == true) {
+        // Key existed before and is now gone — box on disk is unreadable.
+        debugPrint('❌ Pin-store key lost but box exists');
+        pinStoreUnavailable.value = true;
+        pinStoreCorrupted.value = true;
+        return null;
+      }
+      keyB64 = base64Encode(Hive.generateSecureKey());
+      try {
+        await _peerIdentitySecureStorage.write(
+          key: _peerIdentitiesKeyName,
+          value: keyB64,
+        );
+        await _prefs.setBool(_prefsPeerKeyCreated, true);
+      } catch (e) {
+        debugPrint('⚠️ Pin-store key write failed: $e');
+        pinStoreUnavailable.value = true;
+        return null;
+      }
+    }
+
+    try {
+      return await Hive.openBox(
+        _peerIdentitiesBoxName,
+        encryptionCipher: HiveAesCipher(base64Decode(keyB64)),
+      );
+    } catch (e) {
+      debugPrint('❌ Pin box cannot be decrypted: $e');
+      pinStoreUnavailable.value = true;
+      pinStoreCorrupted.value = true;
+      return null;
+    }
+  }
+
+  /// Retry opening the pin box after a degraded open (locked keychain,
+  /// transient keystore error). Called by the announcement flush and can be
+  /// called on app resume. No-op once the box is open; never retries a
+  /// corrupted box (that needs the user's explicit reset).
+  Future<void> retryPeerIdentityStore() async {
+    if (_peerIdentitiesBox?.isOpen == true) return;
+    if (pinStoreCorrupted.value) return;
+    _peerIdentitiesBox = await _openPeerIdentitiesBox();
+    if (_peerIdentitiesBox?.isOpen == true) {
+      pinStoreUnavailable.value = false;
+      debugPrint('🔐 Peer identity store recovered');
+    }
+  }
+
+  /// Deliberate pin removal — the "reset verification" action in contact
+  /// settings. Only reachable through explicit user action.
+  Future<void> removePeerPin(String peerDeviceId) async {
+    await _ensurePeerIdentitiesBox();
+    if (_peerIdentitiesBox?.isOpen != true) return;
+    await _peerIdentitiesBox!.delete(peerDeviceId);
+  }
+
+  /// Wipe the pin store after user confirmation (undecryptable box flow).
+  /// Keeps the cipher key — a fresh encrypted box is opened next launch.
+  Future<void> resetPeerIdentityStore() async {
+    try {
+      await _peerIdentitiesBox?.close();
+      await Hive.deleteBoxFromDisk(_peerIdentitiesBoxName);
+    } catch (_) {}
+    _peerIdentitiesBox = null;
+    pinStoreUnavailable.value = false;
+    pinStoreCorrupted.value = false;
+    await _ensurePeerIdentitiesBox();
+  }
+
   @override
   void onClose() {
     _chatsBox.close();
+    _peerIdentitiesBox?.close();
     if (_messagesBoxInitialized) {
       _messagesBox.close();
     }

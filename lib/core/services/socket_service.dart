@@ -9,7 +9,9 @@ import 'encryption_service.dart';
 import 'fcm_service.dart';
 import 'block_service.dart';
 import 'connection_request_service.dart';
+import 'identity_service.dart';
 import '../constants/network_constants.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 
 class SocketService extends GetxService {
   // Live server URL
@@ -68,10 +70,29 @@ class SocketService extends GetxService {
   // Getters
   String? get deviceId => _deviceId;
 
+  /// Single-use nonce from the server's register_challenge, completed once
+  /// per socket connection. Reset on each new connect.
+  Completer<String?>? _challengeCompleter;
+
+  /// Callback for inbound identity announcements (peer bundle + signature).
+  /// Wired by the announcement flow.
+  void Function(Map<String, dynamic>)? onIdentityAnnounce;
+
+  /// Callback for server-side identity responses (bound / rejected / conflict).
+  void Function(Map<String, dynamic>)? onIdentityBound;
+  void Function(Map<String, dynamic>)? onRegisterRejected;
+  void Function(Map<String, dynamic>)? onIdentityConflict;
+  void Function(Map<String, dynamic>)? onIdentityAnnounceAcked;
+
   /// Initialize the socket service with device ID
   Future<SocketService> init(String deviceId) async {
     _deviceId = deviceId;
     debugPrint('🔌 SocketService initialized with deviceId: $_deviceId');
+    // Cache client version for the register payload (rollout gating).
+    try {
+      final info = await PackageInfo.fromPlatform();
+      _cachedClientVersion = '${info.version}+${info.buildNumber}';
+    } catch (_) {}
     _setupConnectivityListener();
     await connect();
     return this;
@@ -213,6 +234,9 @@ class SocketService extends GetxService {
           0; // Reset reconnection attempts on successful connection
       _cancelReconnectTimer();
 
+      // Fresh challenge nonce for this connection
+      _challengeCompleter = Completer<String?>();
+
       // Update UserDefaults for iOS background notification handling
       _updateSocketConnectionStatus(true);
 
@@ -223,6 +247,47 @@ class SocketService extends GetxService {
 
       // Send pending delivery acknowledgments for FCM messages received while offline
       FCMService.sendPendingAcknowledgments();
+    });
+
+    _socket?.on('register_challenge', (data) {
+      final nonce = data is Map ? data['nonce'] as String? : null;
+      if (nonce != null &&
+          _challengeCompleter != null &&
+          !_challengeCompleter!.isCompleted) {
+        _challengeCompleter!.complete(nonce);
+      }
+    });
+
+    _socket?.on('identity_announce', (data) {
+      if (data is Map && onIdentityAnnounce != null) {
+        onIdentityAnnounce!(Map<String, dynamic>.from(data));
+      }
+    });
+
+    _socket?.on('identity_bound', (data) {
+      if (data is Map && onIdentityBound != null) {
+        onIdentityBound!(Map<String, dynamic>.from(data));
+      }
+    });
+
+    _socket?.on('register_rejected', (data) {
+      debugPrint('⚠️ Register rejected by server: $data');
+      if (data is Map && onRegisterRejected != null) {
+        onRegisterRejected!(Map<String, dynamic>.from(data));
+      }
+    });
+
+    _socket?.on('identity_conflict', (data) {
+      debugPrint('⚠️ Identity conflict from server: $data');
+      if (data is Map && onIdentityConflict != null) {
+        onIdentityConflict!(Map<String, dynamic>.from(data));
+      }
+    });
+
+    _socket?.on('identity_announce_acked', (data) {
+      if (data is Map && onIdentityAnnounceAcked != null) {
+        onIdentityAnnounceAcked!(Map<String, dynamic>.from(data));
+      }
     });
 
     _socket?.on('device_registered', (data) {
@@ -516,7 +581,7 @@ class SocketService extends GetxService {
     }
   }
 
-  void _registerDevice() {
+  Future<void> _registerDevice() async {
     if (_deviceId == null) {
       debugPrint('⚠️ Cannot register: Device ID is null');
       return;
@@ -525,16 +590,66 @@ class SocketService extends GetxService {
     // Detect platform
     final platform = Platform.isAndroid ? 'android' : 'ios';
 
+    // Wait briefly for the register_challenge nonce — arrives on connect.
+    // If the server doesn't issue one (old deployment), we register without
+    // identity fields (transition window).
+    String? nonce;
+    final challenge = _challengeCompleter;
+    if (challenge != null && !challenge.isCompleted) {
+      nonce = await challenge.future.timeout(
+        const Duration(seconds: 2),
+        onTimeout: () => null,
+      );
+    } else if (challenge != null) {
+      nonce = await challenge.future;
+    }
+
+    // Sign the identity bundle + login when we have keys and a nonce.
+    // identitySig proves possession of the bundle's key ("vant-bind");
+    // registerSig is the login signature ("vant-reg").
+    String? identitySig;
+    String? registerSig;
+    final bundle = _identityBundle();
+    try {
+      if (Get.isRegistered<IdentityService>() && nonce != null) {
+        final identity = Get.find<IdentityService>();
+        identitySig = await identity.signBinding(_deviceId!, nonce);
+        registerSig = await identity.signRegistration(_deviceId!, nonce);
+      }
+    } catch (e) {
+      debugPrint('⚠️ Identity signing failed, registering unsigned: $e');
+    }
+
     _socket?.emit('register', {
       'deviceId': _deviceId,
       'platform': platform,
       'isForeground': _isInForeground,
+      'clientVersion': _clientVersion,
+      'identityBundle': bundle,
+      'identitySig': identitySig,
+      'registerSig': registerSig,
     });
     debugPrint(
-        '📝 Device registration requested: $_deviceId (platform: $platform)');
+        '📝 Device registration requested: $_deviceId (platform: $platform, version: $_clientVersion)');
 
     // Also register FCM token if available
     _registerFCMTokenIfAvailable();
+  }
+
+  /// Client version reported to the server for rollout gating.
+  String get _clientVersion => _cachedClientVersion;
+  String _cachedClientVersion = 'unknown';
+
+  /// Identity bundle for the new identityBundle register field.
+  /// Null when IdentityService is unavailable or has no keys — the server
+  /// treats that as an unbound legacy device.
+  String? _identityBundle() {
+    try {
+      if (Get.isRegistered<IdentityService>()) {
+        return Get.find<IdentityService>().identityBundleBase64;
+      }
+    } catch (_) {}
+    return null;
   }
 
   int _fcmRetryCount = 0;
@@ -1061,6 +1176,24 @@ class SocketService extends GetxService {
     await connect();
   }
 
+  /// Switch to a new device ID and re-register. Used by the identity-conflict
+  /// recovery flow when this ID is already bound to a different key.
+  /// Reconnects so the fresh socket gets a new register_challenge nonce.
+  Future<void> switchDeviceId(String newDeviceId) async {
+    if (newDeviceId == _deviceId) return;
+    debugPrint('🆔 Switching device ID: $_deviceId -> $newDeviceId');
+    _deviceId = newDeviceId;
+    _reconnectAttempts = 0;
+    _cancelReconnectTimer();
+    _socket?.disconnect();
+    _socket?.dispose();
+    _socket = null;
+    isConnected.value = false;
+    isRegistered.value = false;
+    _isConnecting = false;
+    await connect();
+  }
+
   /// Disconnect from server
   void disconnect() {
     _cancelReconnectTimer();
@@ -1308,6 +1441,45 @@ class SocketService extends GetxService {
       'targetDeviceId': targetDeviceId,
     });
     debugPrint('📞 ICE restart requested');
+  }
+
+  /// Send an identity announcement (self-signed bundle) to a contact.
+  /// Returns true if the server relayed it to an online peer socket.
+  Future<bool> sendIdentityAnnounce({
+    required String to,
+    required String bundle,
+    required String signature,
+  }) async {
+    if (_socket == null || !_socket!.connected) return false;
+    final completer = Completer<bool>();
+    _socket!.emitWithAck(
+      'identity_announce',
+      {'to': to, 'bundle': bundle, 'signature': signature},
+      ack: (data) {
+        completer.complete(data is Map && data['delivered'] == true);
+      },
+    );
+    return completer.future.timeout(
+      const Duration(seconds: 5),
+      onTimeout: () => false,
+    );
+  }
+
+  /// Tell the announcer our pin result for their bundle, so they stop
+  /// retrying. The server relays it as 'identity_announce_acked'.
+  /// [bundleHash] lets the sender match the ack to the exact bundle sent —
+  /// stale or misattributed acks are ignored.
+  void sendIdentityAnnounceAck({
+    required String to,
+    required String status,
+    String? bundleHash,
+  }) {
+    if (_socket == null || !_socket!.connected) return;
+    _socket!.emit('identity_announce_ack', {
+      'to': to,
+      'status': status,
+      'bundleHash': bundleHash,
+    });
   }
 
   /// Request call resync - used when app cold-starts after accepting from CallKit
