@@ -249,6 +249,12 @@ class IdentityService extends GetxService {
   Uint8List? get identityBundle =>
       _bundleBytes == null ? null : Uint8List.fromList(_bundleBytes!);
 
+  /// Internal accessors for crypto subsystems (call signaling, message
+  /// encryption). The KeyPair objects stay in-process — never serialize or
+  /// transmit them.
+  KeyPair? get internalX25519KeyPair => _x25519KeyPair;
+  KeyPair? get internalEd25519KeyPair => _ed25519KeyPair;
+
   /// Parse a peer bundle: [version][x25519 pub][ed25519 pub].
   /// Returns null on malformed input — callers must handle, never throw.
   static ({Uint8List x25519Pub, Uint8List ed25519Pub})? parseBundle(
