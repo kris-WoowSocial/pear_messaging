@@ -82,6 +82,7 @@ class CallSignalingCrypto {
   SecretKey? _kAB;
   SecretKey? _kBA;
   String? _callId;
+  String? _peerDeviceId;
   bool _amCaller = false;
 
   // Per-direction counters + replay window (receivers: one per direction).
@@ -169,8 +170,7 @@ class CallSignalingCrypto {
       }
     }
     if (fps.length > 1) {
-      throw const CallSignalingCryptoException(
-          'sdp_fingerprint_mismatch');
+      throw const CallSignalingCryptoException('sdp_fingerprint_mismatch');
     }
     return fps.map((f) => Uint8List.fromList(utf8.encode(f))).toList();
   }
@@ -193,10 +193,13 @@ class CallSignalingCrypto {
   /// Ephemeral×peer DH — the ephemeral key pair is local, so it uses the
   /// library directly (it is OUR ephemeral, never leaves the object).
   Future<SecretKey> _dhEph(List<int> remotePub) async {
+    final keyPair = _ephLocal;
+    if (keyPair == null) {
+      throw const CallSignalingCryptoException('local_ephemeral_not_ready');
+    }
     final secret = await _x25519.sharedSecretKey(
-      keyPair: _ephLocal!,
-      remotePublicKey:
-          SimplePublicKey(remotePub, type: KeyPairType.x25519),
+      keyPair: keyPair,
+      remotePublicKey: SimplePublicKey(remotePub, type: KeyPairType.x25519),
     );
     final bytes = await secret.extractBytes();
     if (bytes.every((b) => b == 0)) {
@@ -222,6 +225,36 @@ class CallSignalingCrypto {
     );
   }
 
+  String _requireCallId() {
+    final value = _callId;
+    if (value == null) {
+      throw const CallSignalingCryptoException('handshake_not_started');
+    }
+    return value;
+  }
+
+  Uint8List _requireLocalEphPub() {
+    final value = _ephLocalPub;
+    if (value == null) {
+      throw const CallSignalingCryptoException('local_ephemeral_not_ready');
+    }
+    return value;
+  }
+
+  Uint8List _requirePeerEphPub() {
+    final value = _ephPeerPub;
+    if (value == null) {
+      throw const CallSignalingCryptoException('peer_ephemeral_not_ready');
+    }
+    return value;
+  }
+
+  void _validateDirection(String direction) {
+    if (direction != 'a2b' && direction != 'b2a') {
+      throw const CallSignalingCryptoException('invalid_direction');
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // Caller side
   // ---------------------------------------------------------------------------
@@ -245,7 +278,11 @@ class CallSignalingCrypto {
       // secrecy — throw loudly in release builds, never fall back.
       throw const CallSignalingCryptoException('test_only_parameter');
     }
+    if (myId != _myDeviceId) {
+      throw const CallSignalingCryptoException('identity_mismatch');
+    }
     _callId = callId;
+    _peerDeviceId = peerId;
     _amCaller = true;
     _ephLocal = _guarded && ephSeed != null
         ? await _x25519.newKeyPairFromSeed(Uint8List.fromList(ephSeed))
@@ -270,13 +307,13 @@ class CallSignalingCrypto {
     _lastOfferFps = offerDtlsFps;
     final fp = await _signCallerFp(
       callId: callId,
-      idA: myId,
+      idA: _myDeviceId,
       idB: peerId,
-      ephA: _ephLocalPub!,
+      ephA: _requireLocalEphPub(),
       offerFps: offerDtlsFps,
     );
     _lastCallerSig = fp;
-    return (eph: _ephLocalPub!, fp: fp);
+    return (eph: _requireLocalEphPub(), fp: fp);
   }
 
   /// Encrypt the offer payload (caller only, pre-answer).
@@ -303,16 +340,21 @@ class CallSignalingCrypto {
     if (callerSig == null || offerFps == null) {
       throw const CallSignalingCryptoException('no_pending_offer');
     }
+    if (_peerDeviceId != peerId) {
+      throw const CallSignalingCryptoException('peer_identity_mismatch');
+    }
+    final callId = _requireCallId();
+    final ephA = _requireLocalEphPub();
     final peer = IdentityService.parseBundle(peerBundleB64);
     if (peer == null) {
       throw const CallSignalingCryptoException('invalid_peer_bundle');
     }
 
     final ok = await _verifyCalleeFp(
-      callId: _callId!,
+      callId: callId,
       idA: _myDeviceId,
       idB: peerId,
-      ephA: _ephLocalPub!,
+      ephA: ephA,
       ephB: ephB,
       offerFps: offerFps,
       answerFps: answerDtlsFps,
@@ -338,9 +380,6 @@ class CallSignalingCrypto {
     required Uint8List ephA,
     required Map<String, String> encrypted,
   }) async {
-    _callId = callId;
-    _amCaller = false;
-    _ephPeerPub = ephA;
     final dhId = await _dhWithPub(_peerX25519FromPin(callerId));
     final dhIdEph = await _dhWithPub(ephA);
     final offerKey = await _hkdfConcat(
@@ -348,8 +387,19 @@ class CallSignalingCrypto {
       salt: callId,
       info: infoOffer,
     );
-    return _decryptWith(
-        offerKey, 'call_initiate', 'a2b', _recvWindows['a2b']!, encrypted);
+    final plaintext = await _decryptWith(
+      offerKey,
+      'call_initiate',
+      'a2b',
+      _recvWindows['a2b']!,
+      encrypted,
+      callId: callId,
+    );
+    _callId = callId;
+    _peerDeviceId = callerId;
+    _amCaller = false;
+    _ephPeerPub = Uint8List.fromList(ephA);
+    return plaintext;
   }
 
   /// Callee at ANSWER time: generate ephB, derive session keys, sign fp.
@@ -366,6 +416,11 @@ class CallSignalingCrypto {
     if (ephSeed != null && !_guarded) {
       throw const CallSignalingCryptoException('test_only_parameter');
     }
+    final callId = _requireCallId();
+    final ephA = _requirePeerEphPub();
+    if (_peerDeviceId != peerId) {
+      throw const CallSignalingCryptoException('peer_identity_mismatch');
+    }
     _ephLocal = _guarded && ephSeed != null
         ? await _x25519.newKeyPairFromSeed(Uint8List.fromList(ephSeed))
         : await _x25519.newKeyPair();
@@ -377,17 +432,17 @@ class CallSignalingCrypto {
     }
 
     final fp = await _signCalleeFp(
-      callId: _callId!,
+      callId: callId,
       idA: peerId, // caller
       idB: _myDeviceId,
-      ephA: _ephPeerPub!,
-      ephB: _ephLocalPub!,
+      ephA: ephA,
+      ephB: _requireLocalEphPub(),
       offerFps: offerDtlsFps,
       answerFps: answerDtlsFps,
       callerSig: callerSig,
     );
     await _deriveSessionKeys(peer.x25519Pub);
-    return (eph: _ephLocalPub!, fp: fp);
+    return (eph: _requireLocalEphPub(), fp: fp);
   }
 
   /// Derive session keys in FIXED role order so both sides compute
@@ -395,27 +450,28 @@ class CallSignalingCrypto {
   ///   DH1 = DH(IKa, IKb)  DH2 = DH(EKa, IKb)
   ///   DH3 = DH(IKa, EKb)  DH4 = DH(EKa, EKb)
   Future<void> _deriveSessionKeys(List<int> peerX25519Pub) async {
-    final peerEph = _ephPeerPub!;
+    final peerEph = _requirePeerEphPub();
+    final callId = _requireCallId();
 
     final SecretKey dh1, dh2, dh3, dh4;
     if (_amCaller) {
       dh1 = await _dhWithPub(peerX25519Pub); // IKa × IKb
-      dh2 = await _dhEph(peerX25519Pub);     // EKa × IKb
-      dh3 = await _dhWithPub(peerEph);       // IKa × EKb
-      dh4 = await _dhEph(peerEph);           // EKa × EKb
+      dh2 = await _dhEph(peerX25519Pub); // EKa × IKb
+      dh3 = await _dhWithPub(peerEph); // IKa × EKb
+      dh4 = await _dhEph(peerEph); // EKa × EKb
     } else {
       dh1 = await _dhWithPub(peerX25519Pub); // IKb × IKa
-      dh2 = await _dhWithPub(peerEph);       // IKb × EKa
-      dh3 = await _dhEph(peerX25519Pub);     // EKb × IKa
-      dh4 = await _dhEph(peerEph);           // EKb × EKa
+      dh2 = await _dhWithPub(peerEph); // IKb × EKa
+      dh3 = await _dhEph(peerX25519Pub); // EKb × IKa
+      dh4 = await _dhEph(peerEph); // EKb × EKa
     }
     final session = await _hkdfConcat(
       [dh1, dh2, dh3, dh4],
-      salt: _callId!,
+      salt: callId,
       info: infoSession,
     );
-    _kAB = await _hkdfConcat([session], salt: _callId!, info: infoAB);
-    _kBA = await _hkdfConcat([session], salt: _callId!, info: infoBA);
+    _kAB = await _hkdfConcat([session], salt: callId, info: infoAB);
+    _kBA = await _hkdfConcat([session], salt: callId, info: infoBA);
   }
 
   // ---------------------------------------------------------------------------
@@ -424,9 +480,10 @@ class CallSignalingCrypto {
 
   /// AAD binds each ciphertext to call + direction + event + counter.
   /// Fixed format: each field length-prefixed so no ambiguity.
-  Uint8List _aad(String event, String direction, int counter) {
+  Uint8List _aad(String event, String direction, int counter,
+      {String? callId}) {
     return _frame([
-      utf8.encode(_callId!),
+      utf8.encode(callId ?? _requireCallId()),
       utf8.encode(direction),
       utf8.encode(event),
       Uint8List(4)
@@ -442,6 +499,7 @@ class CallSignalingCrypto {
     required String event,
     required String plaintext,
   }) {
+    _validateDirection(direction);
     final key = direction == 'a2b' ? _kAB : _kBA;
     if (key == null) {
       throw const CallSignalingCryptoException('session_keys_not_ready');
@@ -475,6 +533,7 @@ class CallSignalingCrypto {
     required String event,
     required Map<String, String> encrypted,
   }) async {
+    _validateDirection(direction);
     if (_failed) {
       throw const CallSignalingCryptoException('crypto_failed');
     }
@@ -523,8 +582,9 @@ class CallSignalingCrypto {
     String event,
     String direction,
     _ReplayWindow window,
-    Map<String, String> encrypted,
-  ) async {
+    Map<String, String> encrypted, {
+    String? callId,
+  }) async {
     // Validate every wire field BEFORE parsing — these bytes are
     // attacker-controlled. No '!' on untrusted input.
     final nB64 = encrypted['n'];
@@ -552,7 +612,7 @@ class CallSignalingCrypto {
       SecretBox(c.sublist(0, c.length - 16),
           nonce: n, mac: Mac(c.sublist(c.length - 16))),
       secretKey: key,
-      aad: _aad(event, direction, counter),
+      aad: _aad(event, direction, counter, callId: callId),
     );
     window.accept(counter); // throws only on replay AFTER auth succeeded
     return utf8.decode(clear);
@@ -633,8 +693,7 @@ class CallSignalingCrypto {
       material,
       signature: Signature(
         calleeSig,
-        publicKey:
-            SimplePublicKey(peerEd25519Pub, type: KeyPairType.ed25519),
+        publicKey: SimplePublicKey(peerEd25519Pub, type: KeyPairType.ed25519),
       ),
     );
   }
@@ -663,8 +722,7 @@ class CallSignalingCrypto {
       material,
       signature: Signature(
         callerSig,
-        publicKey:
-            SimplePublicKey(callerEd25519Pub, type: KeyPairType.ed25519),
+        publicKey: SimplePublicKey(callerEd25519Pub, type: KeyPairType.ed25519),
       ),
     );
   }
@@ -693,7 +751,9 @@ class CallSignalingCrypto {
     _ephLocalPub = null;
     _ephPeerPub = null;
     _callId = null;
+    _peerDeviceId = null;
     _amCaller = false;
+    _failed = false;
     _sendCounters['a2b'] = 0;
     _sendCounters['b2a'] = 0;
     _recvWindows['a2b'] = _ReplayWindow();
