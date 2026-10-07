@@ -22,7 +22,8 @@ class _TestIdentity {
       );
 
   Future<Uint8List> sign(String domain, List<int> msg) async {
-    if (domain != CallSignalingCrypto.fpDomain) {
+    if (domain != CallSignalingCrypto.callerFpDomain &&
+        domain != CallSignalingCrypto.calleeFpDomain) {
       throw ArgumentError.value(domain, 'domain');
     }
     final bound = IdentityService.domainBoundMessage(domain, msg);
@@ -50,6 +51,26 @@ Matcher throwsCrypto(String code) => throwsA(
       isA<CallSignalingCryptoException>()
           .having((error) => error.message, 'message', code),
     );
+
+Uint8List _testFrame(List<List<int>> fields) {
+  final b = BytesBuilder();
+  for (final f in fields) {
+    b.add([
+      (f.length >> 24) & 0xff,
+      (f.length >> 16) & 0xff,
+      (f.length >> 8) & 0xff,
+      f.length & 0xff,
+    ]);
+    b.add(f);
+  }
+  return b.toBytes();
+}
+
+Uint8List _testU32(int value) => Uint8List(4)
+  ..[0] = (value >> 24) & 0xff
+  ..[1] = (value >> 16) & 0xff
+  ..[2] = (value >> 8) & 0xff
+  ..[3] = value & 0xff;
 
 /// Drive a full handshake, returning (caller, callee, ephA, callerSig).
 Future<(CallSignalingCrypto, CallSignalingCrypto, Uint8List, Uint8List)>
@@ -117,18 +138,169 @@ void main() {
     test('round-trip: offer decrypts, both directions work', () async {
       final (caller, callee, _, __) = await _handshake();
       final c2c = await caller.encryptMessage(
-          direction: 'a2b', event: 'ice_candidate', plaintext: 'cand-A');
+          event: 'ice_candidate', plaintext: 'cand-A');
       expect(
-        await callee.decryptMessage(
-            direction: 'a2b', event: 'ice_candidate', encrypted: c2c),
+        await callee.decryptMessage(event: 'ice_candidate', encrypted: c2c),
         'cand-A',
       );
       final b2a = await callee.encryptMessage(
-          direction: 'b2a', event: 'call_accept', plaintext: 'answer');
+          event: 'call_accept', plaintext: 'answer');
       expect(
-        await caller.decryptMessage(
-            direction: 'b2a', event: 'call_accept', encrypted: b2a),
+        await caller.decryptMessage(event: 'call_accept', encrypted: b2a),
         'answer',
+      );
+    });
+
+    test('SDP extractor rejects an SDP without a fingerprint', () {
+      expect(
+        () => CallSignalingCrypto.extractDtlsFingerprints(
+            'v=0\r\no=- 1 1 IN IP4 0.0.0.0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 0\r\n'),
+        throwsCrypto('sdp_no_dtls_fingerprint'),
+      );
+    });
+
+    test('fingerprint signatures use counted lists and role domains', () async {
+      final a = await _mk(), b = await _mk();
+      final bundleA = await a.bundle();
+      final bundleB = await b.bundle();
+      String? r(String id) => {'devB': bundleB, 'devA': bundleA}[id];
+      final caller = CallSignalingCrypto(
+          dh: a.dh, sign: a.sign, myDeviceId: 'devA', resolvePeerBundle: r);
+      final callee = CallSignalingCrypto(
+          dh: b.dh, sign: b.sign, myDeviceId: 'devB', resolvePeerBundle: r);
+      final offerFps = CallSignalingCrypto.extractDtlsFingerprints(offerSdp);
+      final answerFps = CallSignalingCrypto.extractDtlsFingerprints(answerSdp);
+      final begin = await caller.beginOffer(
+          callId: 'domain-count-test',
+          myId: 'devA',
+          peerId: 'devB',
+          offerDtlsFps: offerFps);
+      await callee.decryptOffer(
+        callId: 'domain-count-test',
+        callerId: 'devA',
+        ephA: begin.eph,
+        encrypted: await caller.encryptOffer(offerSdp),
+      );
+
+      final callerMaterial = _testFrame([
+        utf8.encode(CallSignalingCrypto.callerFpDomain),
+        utf8.encode('domain-count-test'),
+        utf8.encode('devA'),
+        utf8.encode('devB'),
+        begin.eph,
+        _testU32(offerFps.length),
+        ...offerFps,
+      ]);
+      final callerPub = IdentityService.parseBundle(bundleA)!.ed25519Pub;
+      expect(
+        await Ed25519().verify(
+          IdentityService.domainBoundMessage(
+              CallSignalingCrypto.callerFpDomain, callerMaterial),
+          signature: Signature(begin.fp,
+              publicKey: SimplePublicKey(callerPub, type: KeyPairType.ed25519)),
+        ),
+        isTrue,
+      );
+      expect(
+        await Ed25519().verify(
+          IdentityService.domainBoundMessage(
+              CallSignalingCrypto.calleeFpDomain, callerMaterial),
+          signature: Signature(begin.fp,
+              publicKey: SimplePublicKey(callerPub, type: KeyPairType.ed25519)),
+        ),
+        isFalse,
+      );
+
+      final answer = await callee.beginAnswer(
+        peerId: 'devA',
+        callerSig: begin.fp,
+        offerDtlsFps: offerFps,
+        answerDtlsFps: answerFps,
+      );
+      final callerSigHash = await Sha256().hash(begin.fp);
+      final calleeMaterial = _testFrame([
+        utf8.encode(CallSignalingCrypto.calleeFpDomain),
+        utf8.encode('domain-count-test'),
+        utf8.encode('devA'),
+        utf8.encode('devB'),
+        begin.eph,
+        answer.eph,
+        _testU32(offerFps.length),
+        ...offerFps,
+        _testU32(answerFps.length),
+        ...answerFps,
+        Uint8List.fromList(callerSigHash.bytes),
+      ]);
+      final calleePub = IdentityService.parseBundle(bundleB)!.ed25519Pub;
+      expect(
+        await Ed25519().verify(
+          IdentityService.domainBoundMessage(
+              CallSignalingCrypto.calleeFpDomain, calleeMaterial),
+          signature: Signature(answer.fp,
+              publicKey: SimplePublicKey(calleePub, type: KeyPairType.ed25519)),
+        ),
+        isTrue,
+      );
+      expect(
+        await Ed25519().verify(
+          IdentityService.domainBoundMessage(
+              CallSignalingCrypto.callerFpDomain, calleeMaterial),
+          signature: Signature(answer.fp,
+              publicKey: SimplePublicKey(calleePub, type: KeyPairType.ed25519)),
+        ),
+        isFalse,
+      );
+    });
+
+    test('concurrent completeHandshake calls are single-flight', () async {
+      final a = await _mk(), b = await _mk();
+      final pins = {'devB': await b.bundle(), 'devA': await a.bundle()};
+      String? r(String id) => pins[id];
+      final caller = CallSignalingCrypto(
+          dh: a.dh, sign: a.sign, myDeviceId: 'devA', resolvePeerBundle: r);
+      final callee = CallSignalingCrypto(
+          dh: b.dh, sign: b.sign, myDeviceId: 'devB', resolvePeerBundle: r);
+      final offerFps = CallSignalingCrypto.extractDtlsFingerprints(offerSdp);
+      final answerFps = CallSignalingCrypto.extractDtlsFingerprints(answerSdp);
+      final begin = await caller.beginOffer(
+          callId: 'complete-race',
+          myId: 'devA',
+          peerId: 'devB',
+          offerDtlsFps: offerFps);
+      await callee.decryptOffer(
+        callId: 'complete-race',
+        callerId: 'devA',
+        ephA: begin.eph,
+        encrypted: await caller.encryptOffer(offerSdp),
+      );
+      final answer = await callee.beginAnswer(
+        peerId: 'devA',
+        callerSig: begin.fp,
+        offerDtlsFps: offerFps,
+        answerDtlsFps: answerFps,
+      );
+
+      final first = caller.completeHandshake(
+          peerId: 'devB',
+          ephB: answer.eph,
+          calleeSig: answer.fp,
+          answerDtlsFps: answerFps);
+      expect(
+        caller.completeHandshake(
+            peerId: 'devB',
+            ephB: answer.eph,
+            calleeSig: answer.fp,
+            answerDtlsFps: answerFps),
+        throwsCrypto('active_handshake'),
+      );
+      await first;
+      expect(
+        caller.completeHandshake(
+            peerId: 'devB',
+            ephB: answer.eph,
+            calleeSig: answer.fp,
+            answerDtlsFps: answerFps),
+        throwsCrypto('active_handshake'),
       );
     });
 
@@ -355,13 +527,11 @@ void main() {
         answerDtlsFps: answerFps,
       );
       final message = await caller.encryptMessage(
-        direction: 'a2b',
         event: 'ice_candidate',
         plaintext: 'first-contact-ok',
       );
       expect(
         await callee.decryptMessage(
-          direction: 'a2b',
           event: 'ice_candidate',
           encrypted: message,
         ),
@@ -688,7 +858,6 @@ void main() {
       );
       expect(
         crypto.decryptMessage(
-          direction: 'a2b',
           event: 'ice_candidate',
           encrypted: const {},
         ),
@@ -801,21 +970,25 @@ void main() {
   });
 
   group('AEAD', () {
-    test('wrong direction / event / callId all fail auth', () async {
+    test('wrong role direction or event fails authentication', () async {
       final (caller, callee, _, __) = await _handshake();
-      final msg = await caller.encryptMessage(
-          direction: 'a2b', event: 'ice_candidate', plaintext: 'x');
-      // wrong direction key (b2a vs a2b)
+      final msg =
+          await caller.encryptMessage(event: 'ice_candidate', plaintext: 'x');
+      // Caller-side receive uses the remote b→a key/AAD; an a→b record fails.
       expect(
-        () => callee.decryptMessage(
-            direction: 'b2a', event: 'ice_candidate', encrypted: msg),
+        () => caller.decryptMessage(event: 'ice_candidate', encrypted: msg),
         throwsA(isA<SecretBoxAuthenticationError>()),
       );
-      // wrong event in AAD
+      // Wrong event in the receiver's expected a→b AAD also fails.
       expect(
-        () => callee.decryptMessage(
-            direction: 'a2b', event: 'call_accept', encrypted: msg),
+        () => callee.decryptMessage(event: 'call_accept', encrypted: msg),
         throwsA(isA<SecretBoxAuthenticationError>()),
+      );
+      final good = await caller.encryptMessage(
+          event: 'ice_candidate', plaintext: 'good');
+      expect(
+        await callee.decryptMessage(event: 'ice_candidate', encrypted: good),
+        'good',
       );
     });
 
@@ -824,56 +997,57 @@ void main() {
       final msgs = <Map<String, String>>[];
       for (var i = 0; i < 3; i++) {
         msgs.add(await caller.encryptMessage(
-            direction: 'a2b', event: 'ice_candidate', plaintext: 'c$i'));
+            event: 'ice_candidate', plaintext: 'c$i'));
       }
       // in-order delivery
       for (final m in msgs) {
-        await callee.decryptMessage(
-            direction: 'a2b', event: 'ice_candidate', encrypted: m);
+        await callee.decryptMessage(event: 'ice_candidate', encrypted: m);
       }
       // replay the first — rejected
       expect(
-        () => callee.decryptMessage(
-            direction: 'a2b', event: 'ice_candidate', encrypted: msgs[0]),
+        () => callee.decryptMessage(event: 'ice_candidate', encrypted: msgs[0]),
         throwsA(isA<CallSignalingCryptoException>()),
       );
     });
 
-    test('invalid directions are rejected before key selection', () async {
+    test('message direction is derived from the call role', () async {
       final (caller, callee, _, __) = await _handshake();
+      final fromCaller = await caller.encryptMessage(
+        event: 'ice_candidate',
+        plaintext: 'from-caller',
+      );
+      final fromCallee = await callee.encryptMessage(
+        event: 'ice_candidate',
+        plaintext: 'from-callee',
+      );
+      expect(caller.sendCountersForTest['a2b'], 2); // offer + this message
+      expect(caller.sendCountersForTest['b2a'], 0);
+      expect(callee.sendCountersForTest['a2b'], 0);
+      expect(callee.sendCountersForTest['b2a'], 1);
       expect(
-        () => caller.encryptMessage(
-          direction: 'sideways',
-          event: 'ice_candidate',
-          plaintext: 'x',
-        ),
-        throwsCrypto('invalid_direction'),
+        await callee.decryptMessage(
+            event: 'ice_candidate', encrypted: fromCaller),
+        'from-caller',
       );
       expect(
-        () => callee.decryptMessage(
-          direction: 'sideways',
-          event: 'ice_candidate',
-          encrypted: const {},
-        ),
-        throwsCrypto('invalid_direction'),
+        await caller.decryptMessage(
+            event: 'ice_candidate', encrypted: fromCallee),
+        'from-callee',
       );
     });
 
     test('replay windows are independent per direction', () async {
       final (caller, callee, _, __) = await _handshake();
       final a2b0 = await caller.encryptMessage(
-        direction: 'a2b',
         event: 'ice_candidate',
         plaintext: 'a0',
       );
       final b2a0 = await callee.encryptMessage(
-        direction: 'b2a',
         event: 'ice_candidate',
         plaintext: 'b0',
       );
       expect(
         await callee.decryptMessage(
-          direction: 'a2b',
           event: 'ice_candidate',
           encrypted: a2b0,
         ),
@@ -881,7 +1055,6 @@ void main() {
       );
       expect(
         await caller.decryptMessage(
-          direction: 'b2a',
           event: 'ice_candidate',
           encrypted: b2a0,
         ),
@@ -889,20 +1062,17 @@ void main() {
       );
       expect(
         callee.decryptMessage(
-          direction: 'a2b',
           event: 'ice_candidate',
           encrypted: a2b0,
         ),
         throwsCrypto('replayed'),
       );
       final b2a1 = await callee.encryptMessage(
-        direction: 'b2a',
         event: 'ice_candidate',
         plaintext: 'b1',
       );
       expect(
         await caller.decryptMessage(
-          direction: 'b2a',
           event: 'ice_candidate',
           encrypted: b2a1,
         ),
@@ -915,7 +1085,6 @@ void main() {
       final nonces = <String>{};
       for (var i = 0; i < 256; i++) {
         final encrypted = await caller.encryptMessage(
-          direction: 'a2b',
           event: 'ice_candidate',
           plaintext: 'candidate-$i',
         );
@@ -996,20 +1165,17 @@ void main() {
       for (var i = 0; i < 7; i++) {
         try {
           await callee.decryptMessage(
-              direction: 'a2b',
               event: 'ice_candidate',
               encrypted: {'n': 'AAAA', 'c': 'AAAA', 'k': '999$i'});
         } catch (_) {}
       }
       // still alive — a good message decrypts
       final good = await caller.encryptMessage(
-          direction: 'a2b', event: 'ice_candidate', plaintext: 'good');
-      await callee.decryptMessage(
-          direction: 'a2b', event: 'ice_candidate', encrypted: good);
+          event: 'ice_candidate', plaintext: 'good');
+      await callee.decryptMessage(event: 'ice_candidate', encrypted: good);
       // 8th failure ends it
       expect(
         callee.decryptMessage(
-            direction: 'a2b',
             event: 'ice_candidate',
             encrypted: {'n': 'AAAA', 'c': 'AAAA', 'k': '9998'}),
         throwsA(isA<CallSignalingCryptoException>()),
@@ -1020,7 +1186,6 @@ void main() {
       final (_, callee, __, ___) = await _handshake();
       try {
         await callee.decryptMessage(
-          direction: 'a2b',
           event: 'ice_candidate',
           encrypted: const {'n': '', 'c': '', 'k': '0'},
         );
@@ -1043,21 +1208,22 @@ void main() {
         () => identity.signBytes('attacker-domain', const [1, 2, 3]),
         throwsA(isA<ArgumentError>()),
       );
-      expect(
-        identity.signBytes(
-          IdentityService.domainCallFingerprint,
-          const [1, 2, 3],
-        ),
-        throwsA(isA<IdentityUnavailableException>()),
-      );
+      for (final domain in [
+        IdentityService.domainCallFingerprintCaller,
+        IdentityService.domainCallFingerprintCallee,
+      ]) {
+        expect(
+          identity.signBytes(domain, const [1, 2, 3]),
+          throwsA(isA<IdentityUnavailableException>()),
+        );
+      }
     });
 
     test('malformed wire records — missing, empty, oversized fields', () async {
       final (_, callee, __, ___) = await _handshake();
       Future<void> bad(Map<String, String> m) async {
         try {
-          await callee.decryptMessage(
-              direction: 'a2b', event: 'ice_candidate', encrypted: m);
+          await callee.decryptMessage(event: 'ice_candidate', encrypted: m);
         } catch (_) {} // counted or thrown — must never crash
       }
 
@@ -1082,22 +1248,19 @@ void main() {
 
     test('20 duplicate records do NOT push toward crypto_failed', () async {
       final (caller, callee, _, __) = await _handshake();
-      final m = await caller.encryptMessage(
-          direction: 'a2b', event: 'ice_candidate', plaintext: 'dup');
-      await callee.decryptMessage(
-          direction: 'a2b', event: 'ice_candidate', encrypted: m);
+      final m =
+          await caller.encryptMessage(event: 'ice_candidate', plaintext: 'dup');
+      await callee.decryptMessage(event: 'ice_candidate', encrypted: m);
       for (var i = 0; i < 20; i++) {
         try {
-          await callee.decryptMessage(
-              direction: 'a2b', event: 'ice_candidate', encrypted: m);
+          await callee.decryptMessage(event: 'ice_candidate', encrypted: m);
         } catch (_) {}
       }
       // Call still healthy — a fresh message decrypts fine.
       final fresh = await caller.encryptMessage(
-          direction: 'a2b', event: 'ice_candidate', plaintext: 'fresh');
+          event: 'ice_candidate', plaintext: 'fresh');
       expect(
-        await callee.decryptMessage(
-            direction: 'a2b', event: 'ice_candidate', encrypted: fresh),
+        await callee.decryptMessage(event: 'ice_candidate', encrypted: fresh),
         'fresh',
       );
       expect(callee.decryptFailures, 0); // replays never counted
@@ -1110,27 +1273,23 @@ void main() {
       for (var i = 0; i < 7; i++) {
         try {
           await callee.decryptMessage(
-              direction: 'a2b',
               event: 'ice_candidate',
               encrypted: {'n': 'AAAA', 'c': 'AAAA', 'k': '500$i'});
         } catch (_) {}
       }
       // 100 duplicates of a valid record — replays never count
-      final dup = await caller.encryptMessage(
-          direction: 'a2b', event: 'ice_candidate', plaintext: 'd');
-      await callee.decryptMessage(
-          direction: 'a2b', event: 'ice_candidate', encrypted: dup);
+      final dup =
+          await caller.encryptMessage(event: 'ice_candidate', plaintext: 'd');
+      await callee.decryptMessage(event: 'ice_candidate', encrypted: dup);
       for (var i = 0; i < 100; i++) {
         try {
-          await callee.decryptMessage(
-              direction: 'a2b', event: 'ice_candidate', encrypted: dup);
+          await callee.decryptMessage(event: 'ice_candidate', encrypted: dup);
         } catch (_) {}
       }
       expect(callee.decryptFailures, 7);
       // 8th real failure → crypto_failed
       expect(
         callee.decryptMessage(
-            direction: 'a2b',
             event: 'ice_candidate',
             encrypted: {'n': 'AAAA', 'c': 'AAAA', 'k': '5007'}),
         throwsA(isA<CallSignalingCryptoException>()),
@@ -1172,17 +1331,15 @@ void main() {
       for (var i = 0; i < 8; i++) {
         try {
           await callee.decryptMessage(
-              direction: 'a2b',
               event: 'ice_candidate',
               encrypted: {'n': 'AAAA', 'c': 'AAAA', 'k': '$i'});
         } catch (_) {}
       }
       // A subsequent perfectly-valid message must still be refused.
-      final good = await caller.encryptMessage(
-          direction: 'a2b', event: 'ice_candidate', plaintext: 'ok');
+      final good =
+          await caller.encryptMessage(event: 'ice_candidate', plaintext: 'ok');
       expect(
-        callee.decryptMessage(
-            direction: 'a2b', event: 'ice_candidate', encrypted: good),
+        callee.decryptMessage(event: 'ice_candidate', encrypted: good),
         throwsA(isA<CallSignalingCryptoException>()),
       );
     });

@@ -44,9 +44,11 @@ class IdentityService extends GetxService {
   static const String domainRegister = 'vant-reg';
   static const String domainAnnounce = 'vant-announce';
   static const String domainCall = 'vant-call';
-  static const String domainCallFingerprint = 'vant-call-fp';
+  static const String domainCallFingerprintCaller = 'vant-call-fp-caller';
+  static const String domainCallFingerprintCallee = 'vant-call-fp-callee';
   static const Set<String> signingDomainAllowList = {
-    domainCallFingerprint,
+    domainCallFingerprintCaller,
+    domainCallFingerprintCallee,
   };
 
   /// Canonical domain-bound signing bytes: 4-byte domain length, domain, then

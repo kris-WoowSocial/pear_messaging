@@ -143,11 +143,11 @@ void main() {
     final svc = await IdentityService().init();
     final message = Uint8List.fromList([1, 2, 3, 250]);
     final signature = await svc.signBytes(
-      IdentityService.domainCallFingerprint,
+      IdentityService.domainCallFingerprintCaller,
       message,
     );
     final parsed = IdentityService.parseBundle(svc.identityBundleBase64!)!;
-    final domain = utf8.encode(IdentityService.domainCallFingerprint);
+    final domain = utf8.encode(IdentityService.domainCallFingerprintCaller);
     final expected = Uint8List.fromList([
       0,
       0,

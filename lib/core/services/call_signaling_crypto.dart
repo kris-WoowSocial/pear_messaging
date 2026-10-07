@@ -22,8 +22,11 @@ import 'identity_service.dart';
 /// still decrypt the offer with only its pinned identity key.
 ///
 /// Signed fingerprints bind media to verified identities:
-///   caller: sign("vant-call-fp" | callId | idA | idB | ephA | fps(offer))
-///   callee: sign(... | ephB | fps(answer) | sha256(callerSig))
+///   caller: sign(callerFpDomain | callId | idA | idB | ephA |
+///                offerFpsCount | offerFps)
+///   callee: sign(calleeFpDomain | callId | idA | idB | ephA | ephB |
+///                offerFpsCount | offerFps | answerFpsCount | answerFps |
+///                sha256(callerSig))
 /// covering EVERY a=fingerprint line in canonical order, verified against
 /// the exact SDP string handed to setRemoteDescription.
 ///
@@ -71,7 +74,10 @@ class CallSignalingCrypto {
   static const String infoAB = 'vant-call A\u2192B'; // "vant-call A→B"
   static const String infoBA = 'vant-call B\u2192A'; // "vant-call B→A"
 
-  static const String fpDomain = 'vant-call-fp';
+  static const String callerFpDomain =
+      IdentityService.domainCallFingerprintCaller;
+  static const String calleeFpDomain =
+      IdentityService.domainCallFingerprintCallee;
   static const int replayWindowBits = 64;
   static const int maxCounter = 1 << 31; // hard cap — never wrap
 
@@ -91,6 +97,7 @@ class CallSignalingCrypto {
   ParsedIdentityBundle? _peerBundle;
   bool _amCaller = false;
   bool _answerStarted = false;
+  bool _completingHandshake = false;
   bool _handshakeComplete = false;
   String? _inboundOfferRecord;
   Future<String>? _inboundOffer;
@@ -170,6 +177,12 @@ class CallSignalingCrypto {
     return b.toBytes();
   }
 
+  static Uint8List _u32(int value) => Uint8List(4)
+    ..[0] = (value >> 24) & 0xff
+    ..[1] = (value >> 16) & 0xff
+    ..[2] = (value >> 8) & 0xff
+    ..[3] = value & 0xff;
+
   /// Extract every `a=fingerprint:` value from SDP in canonical order
   /// (sorted). Multi-section SDP MUST present identical fingerprints across
   /// sections — differing values are a downgrade/MITM shape.
@@ -180,6 +193,9 @@ class CallSignalingCrypto {
       if (l.startsWith('a=fingerprint:')) {
         fps.add(l.substring('a=fingerprint:'.length).trim());
       }
+    }
+    if (fps.isEmpty) {
+      throw const CallSignalingCryptoException('sdp_no_dtls_fingerprint');
     }
     if (fps.length > 1) {
       throw const CallSignalingCryptoException('sdp_fingerprint_mismatch');
@@ -442,7 +458,7 @@ class CallSignalingCrypto {
     required Uint8List calleeSig,
     required List<Uint8List> answerDtlsFps,
   }) async {
-    if (_handshakeComplete) {
+    if (_handshakeComplete || _completingHandshake) {
       throw const CallSignalingCryptoException('active_handshake');
     }
     final callerSig = _lastCallerSig;
@@ -457,24 +473,29 @@ class CallSignalingCrypto {
     final ephA = _requireLocalEphPub();
     final peer = resolvePeer();
 
-    final ok = await _verifyCalleeFp(
-      callId: callId,
-      idA: _myDeviceId,
-      idB: peerId,
-      ephA: ephA,
-      ephB: ephB,
-      offerFps: offerFps,
-      answerFps: answerDtlsFps,
-      callerSig: callerSig,
-      calleeSig: calleeSig,
-      peerEd25519Pub: peer.ed25519Pub, // pinned key — NOT the message's key
-    );
-    if (!ok) throw const CallSignalingCryptoException('crypto_failed');
+    _completingHandshake = true;
+    try {
+      final ok = await _verifyCalleeFp(
+        callId: callId,
+        idA: _myDeviceId,
+        idB: peerId,
+        ephA: ephA,
+        ephB: ephB,
+        offerFps: offerFps,
+        answerFps: answerDtlsFps,
+        callerSig: callerSig,
+        calleeSig: calleeSig,
+        peerEd25519Pub: peer.ed25519Pub, // pinned key — NOT the message's key
+      );
+      if (!ok) throw const CallSignalingCryptoException('crypto_failed');
 
-    _ephPeerPub = ephB;
-    await _deriveSessionKeys(peer.x25519Pub);
-    _peerBundle = peer;
-    _handshakeComplete = true;
+      _ephPeerPub = ephB;
+      await _deriveSessionKeys(peer.x25519Pub);
+      _peerBundle = peer;
+      _handshakeComplete = true;
+    } finally {
+      _completingHandshake = false;
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -736,12 +757,14 @@ class CallSignalingCrypto {
     ]);
   }
 
+  String get _localDirection => _amCaller ? 'a2b' : 'b2a';
+  String get _remoteDirection => _amCaller ? 'b2a' : 'a2b';
+
   Future<Map<String, String>> encryptMessage({
-    required String direction, // 'a2b' | 'b2a'
     required String event,
     required String plaintext,
   }) {
-    _validateDirection(direction);
+    final direction = _localDirection;
     final key = direction == 'a2b' ? _kAB : _kBA;
     if (key == null) {
       throw const CallSignalingCryptoException('session_keys_not_ready');
@@ -751,6 +774,7 @@ class CallSignalingCrypto {
 
   Future<Map<String, String>> _encryptWith(
       SecretKey key, String event, String direction, String plaintext) async {
+    _validateDirection(direction);
     final counter = _sendCounters[direction]!;
     if (counter >= maxCounter) {
       throw const CallSignalingCryptoException('counter_exhausted');
@@ -771,14 +795,13 @@ class CallSignalingCrypto {
   }
 
   Future<String> decryptMessage({
-    required String direction,
     required String event,
     required Map<String, String> encrypted,
   }) async {
-    _validateDirection(direction);
     if (_failed) {
       throw const CallSignalingCryptoException('crypto_failed');
     }
+    final direction = _remoteDirection;
     final key = direction == 'a2b' ? _kAB : _kBA;
     if (key == null) {
       throw const CallSignalingCryptoException('session_keys_not_ready');
@@ -827,6 +850,7 @@ class CallSignalingCrypto {
     Map<String, String> encrypted, {
     String? callId,
   }) async {
+    _validateDirection(direction);
     // Validate every wire field BEFORE parsing — these bytes are
     // attacker-controlled. No '!' on untrusted input.
     final nB64 = encrypted['n'];
@@ -872,14 +896,15 @@ class CallSignalingCrypto {
     required List<Uint8List> offerFps,
   }) async {
     final material = _frame([
-      utf8.encode(fpDomain),
+      utf8.encode(callerFpDomain),
       utf8.encode(callId),
       utf8.encode(idA),
       utf8.encode(idB),
       ephA,
+      _u32(offerFps.length),
       ...offerFps,
     ]);
-    return _sign(fpDomain, material);
+    return _sign(callerFpDomain, material);
   }
 
   Future<Uint8List> _signCalleeFp({
@@ -894,17 +919,19 @@ class CallSignalingCrypto {
   }) async {
     final callerSigHash = await Sha256().hash(callerSig);
     final material = _frame([
-      utf8.encode(fpDomain),
+      utf8.encode(calleeFpDomain),
       utf8.encode(callId),
       utf8.encode(idA),
       utf8.encode(idB),
       ephA,
       ephB,
+      _u32(offerFps.length),
       ...offerFps,
+      _u32(answerFps.length),
       ...answerFps,
       Uint8List.fromList(callerSigHash.bytes),
     ]);
-    return _sign(fpDomain, material);
+    return _sign(calleeFpDomain, material);
   }
 
   Future<bool> _verifyCalleeFp({
@@ -921,18 +948,20 @@ class CallSignalingCrypto {
   }) async {
     final callerSigHash = await Sha256().hash(callerSig);
     final material = _frame([
-      utf8.encode(fpDomain),
+      utf8.encode(calleeFpDomain),
       utf8.encode(callId),
       utf8.encode(idA),
       utf8.encode(idB),
       ephA,
       ephB,
+      _u32(offerFps.length),
       ...offerFps,
+      _u32(answerFps.length),
       ...answerFps,
       Uint8List.fromList(callerSigHash.bytes),
     ]);
     return _ed25519.verify(
-      IdentityService.domainBoundMessage(fpDomain, material),
+      IdentityService.domainBoundMessage(calleeFpDomain, material),
       signature: Signature(
         calleeSig,
         publicKey: SimplePublicKey(peerEd25519Pub, type: KeyPairType.ed25519),
@@ -993,15 +1022,16 @@ class CallSignalingCrypto {
     required List<int> callerEd25519Pub,
   }) async {
     final material = _frame([
-      utf8.encode(fpDomain),
+      utf8.encode(callerFpDomain),
       utf8.encode(callId),
       utf8.encode(idA),
       utf8.encode(idB),
       ephA,
+      _u32(offerFps.length),
       ...offerFps,
     ]);
     return _ed25519.verify(
-      IdentityService.domainBoundMessage(fpDomain, material),
+      IdentityService.domainBoundMessage(callerFpDomain, material),
       signature: Signature(
         callerSig,
         publicKey: SimplePublicKey(callerEd25519Pub, type: KeyPairType.ed25519),
@@ -1078,6 +1108,7 @@ class CallSignalingCrypto {
     _peerBundle = null;
     _amCaller = false;
     _answerStarted = false;
+    _completingHandshake = false;
     _handshakeComplete = false;
     _inboundOfferRecord = null;
     _inboundOffer = null;
