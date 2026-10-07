@@ -308,7 +308,7 @@ class CallSignalingCrypto {
         callId: callId,
         myId: myId,
         peerId: peerId,
-        peer: _peerBundleFromPin(peerId),
+        resolvePeer: () => _peerBundleFromPin(peerId),
         offerDtlsFps: offerDtlsFps,
         ephSeed: ephSeed,
       );
@@ -325,7 +325,7 @@ class CallSignalingCrypto {
         callId: callId,
         myId: myId,
         peerId: peerId,
-        peer: _firstContactBundle(peerBundleB64),
+        resolvePeer: () => _firstContactBundle(peerBundleB64),
         offerDtlsFps: offerDtlsFps,
         ephSeed: ephSeed,
       );
@@ -334,7 +334,7 @@ class CallSignalingCrypto {
     required String callId,
     required String myId,
     required String peerId,
-    required ParsedIdentityBundle peer,
+    required ParsedIdentityBundle Function() resolvePeer,
     required List<Uint8List> offerDtlsFps,
     List<int>? ephSeed,
   }) async {
@@ -347,34 +347,47 @@ class CallSignalingCrypto {
     if (myId != _myDeviceId) {
       throw const CallSignalingCryptoException('identity_mismatch');
     }
+    final peer = resolvePeer();
     _callId = callId;
     _peerDeviceId = peerId;
     _amCaller = true;
-    _ephLocal = _guarded && ephSeed != null
-        ? await _x25519.newKeyPairFromSeed(Uint8List.fromList(ephSeed))
-        : await _x25519.newKeyPair();
-    _ephLocalPub = Uint8List.fromList(
-        (await _ephLocal!.extract() as SimpleKeyPairData).publicKey.bytes);
+    try {
+      _ephLocal = _guarded && ephSeed != null
+          ? await _x25519.newKeyPairFromSeed(Uint8List.fromList(ephSeed))
+          : await _x25519.newKeyPair();
+      _ephLocalPub = Uint8List.fromList(
+          (await _ephLocal!.extract() as SimpleKeyPairData).publicKey.bytes);
 
-    // offerKey = HKDF(DH(IKa,IKb) ‖ DH(EKa,IKb))
-    final dhId = await _dhWithPub(peer.x25519Pub);
-    final dhEphId = await _dhEph(peer.x25519Pub);
-    _offerKey = await _hkdfConcat(
-      [dhId, dhEphId],
-      salt: callId,
-      info: infoOffer,
-    );
+      // offerKey = HKDF(DH(IKa,IKb) ‖ DH(EKa,IKb))
+      final dhId = await _dhWithPub(peer.x25519Pub);
+      final dhEphId = await _dhEph(peer.x25519Pub);
+      _offerKey = await _hkdfConcat(
+        [dhId, dhEphId],
+        salt: callId,
+        info: infoOffer,
+      );
 
-    _lastOfferFps = offerDtlsFps;
-    final fp = await _signCallerFp(
-      callId: callId,
-      idA: _myDeviceId,
-      idB: peerId,
-      ephA: _requireLocalEphPub(),
-      offerFps: offerDtlsFps,
-    );
-    _lastCallerSig = fp;
-    return (eph: _requireLocalEphPub(), fp: fp);
+      _lastOfferFps = offerDtlsFps;
+      final fp = await _signCallerFp(
+        callId: callId,
+        idA: _myDeviceId,
+        idB: peerId,
+        ephA: _requireLocalEphPub(),
+        offerFps: offerDtlsFps,
+      );
+      _lastCallerSig = fp;
+      return (eph: _requireLocalEphPub(), fp: fp);
+    } catch (_) {
+      _callId = null;
+      _peerDeviceId = null;
+      _amCaller = false;
+      _ephLocal = null;
+      _ephLocalPub = null;
+      _offerKey = null;
+      _lastOfferFps = null;
+      _lastCallerSig = null;
+      rethrow;
+    }
   }
 
   /// Encrypt the offer payload (caller only, pre-answer).
@@ -397,7 +410,7 @@ class CallSignalingCrypto {
   }) =>
       _completeHandshake(
         peerId: peerId,
-        peer: _peerBundleFromPin(peerId),
+        resolvePeer: () => _peerBundleFromPin(peerId),
         ephB: ephB,
         calleeSig: calleeSig,
         answerDtlsFps: answerDtlsFps,
@@ -412,7 +425,7 @@ class CallSignalingCrypto {
   }) =>
       _completeHandshake(
         peerId: peerId,
-        peer: _firstContactBundle(peerBundleB64),
+        resolvePeer: () => _firstContactBundle(peerBundleB64),
         ephB: ephB,
         calleeSig: calleeSig,
         answerDtlsFps: answerDtlsFps,
@@ -420,7 +433,7 @@ class CallSignalingCrypto {
 
   Future<void> _completeHandshake({
     required String peerId,
-    required ParsedIdentityBundle peer,
+    required ParsedIdentityBundle Function() resolvePeer,
     required Uint8List ephB,
     required Uint8List calleeSig,
     required List<Uint8List> answerDtlsFps,
@@ -438,6 +451,7 @@ class CallSignalingCrypto {
     }
     final callId = _requireCallId();
     final ephA = _requireLocalEphPub();
+    final peer = resolvePeer();
 
     final ok = await _verifyCalleeFp(
       callId: callId,
@@ -473,7 +487,7 @@ class CallSignalingCrypto {
       _decryptOffer(
         callId: callId,
         callerId: callerId,
-        callerX25519Pub: _peerBundleFromPin(callerId).x25519Pub,
+        resolveCallerX25519Pub: () => _peerBundleFromPin(callerId).x25519Pub,
         ephA: ephA,
         encrypted: encrypted,
       );
@@ -488,7 +502,8 @@ class CallSignalingCrypto {
       _decryptOffer(
         callId: callId,
         callerId: callerId,
-        callerX25519Pub: _firstContactBundle(callerBundleB64).x25519Pub,
+        resolveCallerX25519Pub: () =>
+            _firstContactBundle(callerBundleB64).x25519Pub,
         ephA: ephA,
         encrypted: encrypted,
       );
@@ -496,7 +511,7 @@ class CallSignalingCrypto {
   Future<String> _decryptOffer({
     required String callId,
     required String callerId,
-    required List<int> callerX25519Pub,
+    required List<int> Function() resolveCallerX25519Pub,
     required Uint8List ephA,
     required Map<String, String> encrypted,
   }) async {
@@ -513,6 +528,7 @@ class CallSignalingCrypto {
       }
       throw const CallSignalingCryptoException('active_handshake');
     }
+    final callerX25519Pub = resolveCallerX25519Pub();
     final dhId = await _dhWithPub(callerX25519Pub);
     final dhIdEph = await _dhWithPub(ephA);
     final offerKey = await _hkdfConcat(
@@ -549,7 +565,7 @@ class CallSignalingCrypto {
   }) =>
       _beginAnswer(
         peerId: peerId,
-        peer: _peerBundleFromPin(peerId),
+        resolvePeer: () => _peerBundleFromPin(peerId),
         callerSig: callerSig,
         offerDtlsFps: offerDtlsFps,
         answerDtlsFps: answerDtlsFps,
@@ -566,7 +582,7 @@ class CallSignalingCrypto {
   }) =>
       _beginAnswer(
         peerId: peerId,
-        peer: _firstContactBundle(peerBundleB64),
+        resolvePeer: () => _firstContactBundle(peerBundleB64),
         callerSig: callerSig,
         offerDtlsFps: offerDtlsFps,
         answerDtlsFps: answerDtlsFps,
@@ -575,7 +591,7 @@ class CallSignalingCrypto {
 
   Future<({Uint8List eph, Uint8List fp})> _beginAnswer({
     required String peerId,
-    required ParsedIdentityBundle peer,
+    required ParsedIdentityBundle Function() resolvePeer,
     required Uint8List callerSig,
     required List<Uint8List> offerDtlsFps,
     required List<Uint8List> answerDtlsFps,
@@ -585,13 +601,14 @@ class CallSignalingCrypto {
       throw const CallSignalingCryptoException('test_only_parameter');
     }
     final callId = _requireCallId();
-    final ephA = _requirePeerEphPub();
     if (_amCaller || _answerStarted || _handshakeComplete) {
       throw const CallSignalingCryptoException('active_handshake');
     }
     if (_peerDeviceId != peerId) {
       throw const CallSignalingCryptoException('peer_identity_mismatch');
     }
+    final ephA = _requirePeerEphPub();
+    final peer = resolvePeer();
     _answerStarted = true;
     try {
       _ephLocal = _guarded && ephSeed != null
@@ -872,10 +889,50 @@ class CallSignalingCrypto {
     );
   }
 
-  /// Verify the caller's signature (callee side) — binds ephA and the
-  /// offer fingerprints to the PINNED Ed25519 key, never a message-supplied
-  /// key.
+  /// Verify the caller's signature (callee side) against the pinned identity.
   Future<bool> verifyCallerFp({
+    required String callId,
+    required String idA,
+    required String idB,
+    required Uint8List ephA,
+    required List<Uint8List> offerFps,
+    required Uint8List callerSig,
+  }) async {
+    final caller = _peerBundleFromPin(idA);
+    return _verifyCallerFp(
+      callId: callId,
+      idA: idA,
+      idB: idB,
+      ephA: ephA,
+      offerFps: offerFps,
+      callerSig: callerSig,
+      callerEd25519Pub: caller.ed25519Pub,
+    );
+  }
+
+  /// First-contact variant: the only path that accepts a wire-supplied bundle.
+  Future<bool> verifyCallerFpFirstContact({
+    required String callId,
+    required String idA,
+    required String idB,
+    required String callerBundleB64,
+    required Uint8List ephA,
+    required List<Uint8List> offerFps,
+    required Uint8List callerSig,
+  }) async {
+    final caller = _firstContactBundle(callerBundleB64);
+    return _verifyCallerFp(
+      callId: callId,
+      idA: idA,
+      idB: idB,
+      ephA: ephA,
+      offerFps: offerFps,
+      callerSig: callerSig,
+      callerEd25519Pub: caller.ed25519Pub,
+    );
+  }
+
+  Future<bool> _verifyCallerFp({
     required String callId,
     required String idA,
     required String idB,
