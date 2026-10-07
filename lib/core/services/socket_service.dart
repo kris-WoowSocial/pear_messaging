@@ -305,6 +305,7 @@ class SocketService extends GetxService {
       if (deviceId == _deviceId) {
         isRegistered.value = true;
         debugPrint('✅ Socket registration confirmed for $_deviceId');
+        unawaited(_registerFCMTokenIfAvailable());
       }
     });
 
@@ -641,9 +642,6 @@ class SocketService extends GetxService {
     });
     debugPrint(
         '📝 Device registration requested: $_deviceId (platform: $platform, version: $_clientVersion)');
-
-    // Also register FCM token if available
-    _registerFCMTokenIfAvailable();
   }
 
   /// Client version reported to the server for rollout gating.
@@ -707,6 +705,12 @@ class SocketService extends GetxService {
       return;
     }
 
+    if (!isRegistered.value) {
+      debugPrint(
+          '📱 Deferring FCM token until device registration is confirmed');
+      return;
+    }
+
     if (_socket == null) {
       debugPrint('⚠️ Cannot register FCM token: Socket is null');
       return;
@@ -714,7 +718,7 @@ class SocketService extends GetxService {
 
     debugPrint('📱 Emitting register_fcm event...');
     debugPrint('📱 Device ID: $_deviceId');
-    debugPrint('📱 FCM Token: $fcmToken');
+    debugPrint('FCM token length: ${fcmToken.length}');
 
     _socket!.emit('register_fcm', {
       'deviceId': _deviceId,
