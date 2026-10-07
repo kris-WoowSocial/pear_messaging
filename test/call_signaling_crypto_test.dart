@@ -21,8 +21,12 @@ class _TestIdentity {
         remotePublicKey: SimplePublicKey(peerPub, type: KeyPairType.x25519),
       );
 
-  Future<Uint8List> sign(List<int> msg) async =>
-      Uint8List.fromList((await _e.sign(msg, keyPair: ed)).bytes);
+  Future<Uint8List> sign(String domain, List<int> msg) async {
+    if (domain != CallSignalingCrypto.fpDomain) {
+      throw ArgumentError.value(domain, 'domain');
+    }
+    return Uint8List.fromList((await _e.sign(msg, keyPair: ed)).bytes);
+  }
 
   Future<String> bundle() async {
     final xd = await x.extract() as SimpleKeyPairData;
@@ -69,7 +73,6 @@ Future<(CallSignalingCrypto, CallSignalingCrypto, Uint8List, Uint8List)>
     callId: callId,
     myId: 'devA',
     peerId: 'devB',
-    peerBundleB64: pinMap['devB']!,
     offerDtlsFps: offerFps,
   );
   final encOffer = await caller.encryptOffer(offerSdp);
@@ -96,14 +99,12 @@ Future<(CallSignalingCrypto, CallSignalingCrypto, Uint8List, Uint8List)>
   final answerFps = CallSignalingCrypto.extractDtlsFingerprints(answerSdp);
   final ans = await callee.beginAnswer(
     peerId: 'devA',
-    peerBundleB64: pinMap['devA']!,
     callerSig: begin.fp,
     offerDtlsFps: offerFps,
     answerDtlsFps: answerFps,
   );
   await caller.completeHandshake(
     peerId: 'devB',
-    peerBundleB64: pinMap['devB']!,
     ephB: ans.eph,
     calleeSig: ans.fp,
     answerDtlsFps: answerFps,
@@ -141,11 +142,7 @@ void main() {
           dh: b.dh, sign: b.sign, myDeviceId: 'devB', resolvePeerBundle: r);
       final fps = CallSignalingCrypto.extractDtlsFingerprints(offerSdp);
       final begin = await caller.beginOffer(
-          callId: 'c',
-          myId: 'devA',
-          peerId: 'devB',
-          peerBundleB64: pins['devB']!,
-          offerDtlsFps: fps);
+          callId: 'c', myId: 'devA', peerId: 'devB', offerDtlsFps: fps);
       await callee.decryptOffer(
           callId: 'c',
           callerId: 'devA',
@@ -156,7 +153,6 @@ void main() {
           'v=0\r\na=fingerprint:sha-256 ZZ:ZZ:ZZ\r\nm=audio\r\n');
       final ans = await callee.beginAnswer(
           peerId: 'devA',
-          peerBundleB64: pins['devA']!,
           callerSig: begin.fp,
           offerDtlsFps: fps,
           answerDtlsFps: evilAnswerFps);
@@ -165,7 +161,6 @@ void main() {
       expect(
         caller.completeHandshake(
           peerId: 'devB',
-          peerBundleB64: pins['devB']!,
           ephB: ans.eph,
           calleeSig: ans.fp,
           answerDtlsFps: realFps,
@@ -184,11 +179,7 @@ void main() {
           dh: b.dh, sign: b.sign, myDeviceId: 'devB', resolvePeerBundle: r);
       final fps = CallSignalingCrypto.extractDtlsFingerprints(offerSdp);
       final begin = await caller.beginOffer(
-          callId: 'c',
-          myId: 'devA',
-          peerId: 'devB',
-          peerBundleB64: pins['devB']!,
-          offerDtlsFps: fps);
+          callId: 'c', myId: 'devA', peerId: 'devB', offerDtlsFps: fps);
       await callee.decryptOffer(
           callId: 'c',
           callerId: 'devA',
@@ -199,14 +190,12 @@ void main() {
       // the offer the caller actually sent.
       final ans = await callee.beginAnswer(
           peerId: 'devA',
-          peerBundleB64: pins['devA']!,
           callerSig: Uint8List(64)..[0] = 9,
           offerDtlsFps: fps,
           answerDtlsFps: af);
       expect(
         caller.completeHandshake(
           peerId: 'devB',
-          peerBundleB64: pins['devB']!,
           ephB: ans.eph,
           calleeSig: ans.fp,
           answerDtlsFps: af,
@@ -254,10 +243,103 @@ void main() {
           callId: 'c',
           myId: 'attacker-controlled-id',
           peerId: 'devB',
-          peerBundleB64: pins['devB']!,
           offerDtlsFps: CallSignalingCrypto.extractDtlsFingerprints(offerSdp),
         ),
         throwsCrypto('identity_mismatch'),
+      );
+    });
+
+    test('normal path requires a pin; first-contact path is explicit',
+        () async {
+      final a = await _mk(), b = await _mk();
+      final bundleB = await b.bundle();
+      final crypto = CallSignalingCrypto(
+        dh: a.dh,
+        sign: a.sign,
+        myDeviceId: 'devA',
+        resolvePeerBundle: (_) => null,
+      );
+      final fps = CallSignalingCrypto.extractDtlsFingerprints(offerSdp);
+      expect(
+        () => crypto.beginOffer(
+          callId: 'pinned-only',
+          myId: 'devA',
+          peerId: 'devB',
+          offerDtlsFps: fps,
+        ),
+        throwsCrypto('no_pinned_peer_bundle'),
+      );
+      final firstContact = await crypto.beginOfferFirstContact(
+        callId: 'first-contact',
+        myId: 'devA',
+        peerId: 'devB',
+        peerBundleB64: bundleB,
+        offerDtlsFps: fps,
+      );
+      expect(firstContact.eph, hasLength(32));
+      expect(firstContact.fp, hasLength(64));
+    });
+
+    test('explicit first-contact APIs complete without a pin', () async {
+      final a = await _mk(), b = await _mk();
+      final bundleA = await a.bundle();
+      final bundleB = await b.bundle();
+      final caller = CallSignalingCrypto(
+          dh: a.dh,
+          sign: a.sign,
+          myDeviceId: 'devA',
+          resolvePeerBundle: (_) => null);
+      final callee = CallSignalingCrypto(
+          dh: b.dh,
+          sign: b.sign,
+          myDeviceId: 'devB',
+          resolvePeerBundle: (_) => null);
+      final offerFps = CallSignalingCrypto.extractDtlsFingerprints(offerSdp);
+      final answerFps = CallSignalingCrypto.extractDtlsFingerprints(answerSdp);
+      final begin = await caller.beginOfferFirstContact(
+        callId: 'first-contact-full',
+        myId: 'devA',
+        peerId: 'devB',
+        peerBundleB64: bundleB,
+        offerDtlsFps: offerFps,
+      );
+      final encrypted = await caller.encryptOffer(offerSdp);
+      expect(
+        await callee.decryptOfferFirstContact(
+          callId: 'first-contact-full',
+          callerId: 'devA',
+          callerBundleB64: bundleA,
+          ephA: begin.eph,
+          encrypted: encrypted,
+        ),
+        offerSdp,
+      );
+      final answer = await callee.beginAnswerFirstContact(
+        peerId: 'devA',
+        peerBundleB64: bundleA,
+        callerSig: begin.fp,
+        offerDtlsFps: offerFps,
+        answerDtlsFps: answerFps,
+      );
+      await caller.completeHandshakeFirstContact(
+        peerId: 'devB',
+        peerBundleB64: bundleB,
+        ephB: answer.eph,
+        calleeSig: answer.fp,
+        answerDtlsFps: answerFps,
+      );
+      final message = await caller.encryptMessage(
+        direction: 'a2b',
+        event: 'ice_candidate',
+        plaintext: 'first-contact-ok',
+      );
+      expect(
+        await callee.decryptMessage(
+          direction: 'a2b',
+          event: 'ice_candidate',
+          encrypted: message,
+        ),
+        'first-contact-ok',
       );
     });
 
@@ -275,7 +357,6 @@ void main() {
         callId: 'right-call',
         myId: 'devA',
         peerId: 'devB',
-        peerBundleB64: pins['devB']!,
         offerDtlsFps: fps,
       );
       final encrypted = await caller.encryptOffer(offerSdp);
@@ -291,12 +372,54 @@ void main() {
       expect(
         callee.beginAnswer(
           peerId: 'devA',
-          peerBundleB64: pins['devA']!,
           callerSig: begin.fp,
           offerDtlsFps: fps,
           answerDtlsFps: CallSignalingCrypto.extractDtlsFingerprints(answerSdp),
         ),
         throwsCrypto('handshake_not_started'),
+      );
+    });
+
+    test('offer decryption is idempotent for exact resync records', () async {
+      final a = await _mk(), b = await _mk();
+      final pins = {'devB': await b.bundle(), 'devA': await a.bundle()};
+      String? r(String id) => pins[id];
+      final caller = CallSignalingCrypto(
+          dh: a.dh, sign: a.sign, myDeviceId: 'devA', resolvePeerBundle: r);
+      final callee = CallSignalingCrypto(
+          dh: b.dh, sign: b.sign, myDeviceId: 'devB', resolvePeerBundle: r);
+      final fps = CallSignalingCrypto.extractDtlsFingerprints(offerSdp);
+      final begin = await caller.beginOffer(
+        callId: 'resync-call',
+        myId: 'devA',
+        peerId: 'devB',
+        offerDtlsFps: fps,
+      );
+      final encrypted = await caller.encryptOffer(offerSdp);
+      final first = await callee.decryptOffer(
+        callId: 'resync-call',
+        callerId: 'devA',
+        ephA: begin.eph,
+        encrypted: encrypted,
+      );
+      final second = await callee.decryptOffer(
+        callId: 'resync-call',
+        callerId: 'devA',
+        ephA: begin.eph,
+        encrypted: Map<String, String>.from(encrypted),
+      );
+      expect(first, offerSdp);
+      expect(second, offerSdp);
+
+      final changed = Map<String, String>.from(encrypted)..['k'] = '1';
+      expect(
+        callee.decryptOffer(
+          callId: 'resync-call',
+          callerId: 'devA',
+          ephA: begin.eph,
+          encrypted: changed,
+        ),
+        throwsCrypto('active_handshake'),
       );
     });
 
@@ -312,7 +435,6 @@ void main() {
       expect(
         crypto.beginAnswer(
           peerId: 'devB',
-          peerBundleB64: pins['devB']!,
           callerSig: Uint8List(64),
           offerDtlsFps: const [],
           answerDtlsFps: const [],
@@ -322,7 +444,6 @@ void main() {
       expect(
         crypto.completeHandshake(
           peerId: 'devB',
-          peerBundleB64: pins['devB']!,
           ephB: Uint8List(32),
           calleeSig: Uint8List(64),
           answerDtlsFps: const [],
@@ -336,6 +457,40 @@ void main() {
           encrypted: const {},
         ),
         throwsCrypto('session_keys_not_ready'),
+      );
+    });
+
+    test('begin and non-resync offer calls reject an active handshake',
+        () async {
+      final (caller, callee, ephA, callerSig) = await _handshake();
+      final offerFps = CallSignalingCrypto.extractDtlsFingerprints(offerSdp);
+      final answerFps = CallSignalingCrypto.extractDtlsFingerprints(answerSdp);
+      expect(
+        caller.beginOffer(
+          callId: 'another-call',
+          myId: 'devA',
+          peerId: 'devB',
+          offerDtlsFps: offerFps,
+        ),
+        throwsCrypto('active_handshake'),
+      );
+      expect(
+        callee.beginAnswer(
+          peerId: 'devA',
+          callerSig: callerSig,
+          offerDtlsFps: offerFps,
+          answerDtlsFps: answerFps,
+        ),
+        throwsCrypto('active_handshake'),
+      );
+      expect(
+        callee.decryptOffer(
+          callId: 'another-call',
+          callerId: 'devA',
+          ephA: ephA,
+          encrypted: const {'n': '', 'c': '', 'k': '0'},
+        ),
+        throwsCrypto('active_handshake'),
       );
     });
   });
@@ -476,11 +631,7 @@ void main() {
       counters['a2b'] = CallSignalingCrypto.maxCounter;
       final fps = CallSignalingCrypto.extractDtlsFingerprints(offerSdp);
       await caller.beginOffer(
-          callId: 'c',
-          myId: 'devA',
-          peerId: 'devB',
-          peerBundleB64: pins['devB']!,
-          offerDtlsFps: fps);
+          callId: 'c', myId: 'devA', peerId: 'devB', offerDtlsFps: fps);
       expect(
         () => caller.encryptOffer(offerSdp),
         throwsA(isA<CallSignalingCryptoException>()),
@@ -506,11 +657,7 @@ void main() {
       final fps = CallSignalingCrypto.extractDtlsFingerprints(offerSdp);
       expect(
         caller2.beginOffer(
-            callId: 'c',
-            myId: 'devA',
-            peerId: 'devB',
-            peerBundleB64: pins['devB']!,
-            offerDtlsFps: fps),
+            callId: 'c', myId: 'devA', peerId: 'devB', offerDtlsFps: fps),
         throwsA(isA<CallSignalingCryptoException>()),
       );
     });
@@ -526,13 +673,13 @@ void main() {
       );
       final fps = CallSignalingCrypto.extractDtlsFingerprints(offerSdp);
       expect(
-        c.beginOffer(
+        () => c.beginOfferFirstContact(
             callId: 'x',
             myId: 'devA',
             peerId: 'devB',
             peerBundleB64: 'invalid',
             offerDtlsFps: fps),
-        throwsA(anything), // either unavailable or invalid bundle — typed
+        throwsCrypto('invalid_peer_bundle'),
       );
     });
 
@@ -558,6 +705,42 @@ void main() {
             event: 'ice_candidate',
             encrypted: {'n': 'AAAA', 'c': 'AAAA', 'k': '9998'}),
         throwsA(isA<CallSignalingCryptoException>()),
+      );
+    });
+
+    test('dispose resets decrypt failures and handshake guards', () async {
+      final (_, callee, __, ___) = await _handshake();
+      try {
+        await callee.decryptMessage(
+          direction: 'a2b',
+          event: 'ice_candidate',
+          encrypted: const {'n': '', 'c': '', 'k': '0'},
+        );
+      } catch (_) {}
+      expect(callee.decryptFailures, 1);
+      callee.dispose();
+      expect(callee.decryptFailures, 0);
+      final offer = await callee.beginOffer(
+        callId: 'after-dispose',
+        myId: 'devB',
+        peerId: 'devA',
+        offerDtlsFps: CallSignalingCrypto.extractDtlsFingerprints(offerSdp),
+      );
+      expect(offer.eph, hasLength(32));
+    });
+
+    test('unsupported IdentityService signing domains are rejected', () async {
+      final identity = IdentityService();
+      expect(
+        () => identity.signBytes('attacker-domain', const [1, 2, 3]),
+        throwsA(isA<ArgumentError>()),
+      );
+      expect(
+        identity.signBytes(
+          IdentityService.domainCallFingerprint,
+          const [1, 2, 3],
+        ),
+        throwsA(isA<IdentityUnavailableException>()),
       );
     });
 
@@ -661,7 +844,6 @@ void main() {
               callId: 'c',
               myId: 'devA',
               peerId: 'devB',
-              peerBundleB64: pins['devB']!,
               offerDtlsFps:
                   CallSignalingCrypto.extractDtlsFingerprints(offerSdp),
               ephSeed: Uint8List(32)),
@@ -705,11 +887,7 @@ void main() {
           dh: a.dh, sign: a.sign, myDeviceId: 'devA', resolvePeerBundle: r);
       final fps = CallSignalingCrypto.extractDtlsFingerprints(offerSdp);
       final begin = await caller.beginOffer(
-          callId: 'c',
-          myId: 'devA',
-          peerId: 'devB',
-          peerBundleB64: pins['devB']!,
-          offerDtlsFps: fps);
+          callId: 'c', myId: 'devA', peerId: 'devB', offerDtlsFps: fps);
       final encOffer = await caller.encryptOffer(offerSdp);
       // NEW object — only the pinned identity exists (as on app restart).
       final freshCallee = CallSignalingCrypto(
@@ -746,7 +924,6 @@ void main() {
         callId: 'call_vec',
         myId: 'devA',
         peerId: 'devB',
-        peerBundleB64: pins['devB']!,
         offerDtlsFps: fps,
         ephSeed: Uint8List(32)..fillRange(0, 32, 0x33));
     expect(base64Encode(await caller.debugKeyBytes('offer')),
@@ -765,17 +942,12 @@ void main() {
     final af = CallSignalingCrypto.extractDtlsFingerprints(answerSdp);
     final ans = await callee.beginAnswer(
         peerId: 'devA',
-        peerBundleB64: pins['devA']!,
         callerSig: begin.fp,
         offerDtlsFps: fps,
         answerDtlsFps: af,
         ephSeed: Uint8List(32)..fillRange(0, 32, 0x44));
     await caller.completeHandshake(
-        peerId: 'devB',
-        peerBundleB64: pins['devB']!,
-        ephB: ans.eph,
-        calleeSig: ans.fp,
-        answerDtlsFps: af);
+        peerId: 'devB', ephB: ans.eph, calleeSig: ans.fp, answerDtlsFps: af);
 
     for (final side in [caller, callee]) {
       expect(base64Encode(await side.debugKeyBytes('kAB')),

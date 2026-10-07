@@ -44,6 +44,10 @@ class IdentityService extends GetxService {
   static const String domainRegister = 'vant-reg';
   static const String domainAnnounce = 'vant-announce';
   static const String domainCall = 'vant-call';
+  static const String domainCallFingerprint = 'vant-call-fp';
+  static const Set<String> signingDomainAllowList = {
+    domainCallFingerprint,
+  };
 
   /// Secure storage dedicated to identity keys. iOS accessibility is
   /// first_unlock_this_device: readable while locked after first unlock
@@ -123,8 +127,7 @@ class IdentityService extends GetxService {
 
     final allPresent =
         xPrivB64 != null && ePrivB64 != null && bundleB64 != null;
-    final allAbsent =
-        xPrivB64 == null && ePrivB64 == null && bundleB64 == null;
+    final allAbsent = xPrivB64 == null && ePrivB64 == null && bundleB64 == null;
 
     if (allPresent) {
       final ok = await _loadKeys(xPrivB64!, ePrivB64!, bundleB64!);
@@ -168,7 +171,8 @@ class IdentityService extends GetxService {
 
   /// Load key pairs and verify the stored bundle byte-matches the public
   /// keys derived from the seeds. Returns false on any mismatch/corruption.
-  Future<bool> _loadKeys(String xPrivB64, String ePrivB64, String bundleB64) async {
+  Future<bool> _loadKeys(
+      String xPrivB64, String ePrivB64, String bundleB64) async {
     try {
       final xPriv = base64Decode(xPrivB64);
       final ePriv = base64Decode(ePrivB64);
@@ -259,13 +263,15 @@ class IdentityService extends GetxService {
     }
     return _x25519.sharedSecretKey(
       keyPair: kp,
-      remotePublicKey:
-          SimplePublicKey(peerPublicKey, type: KeyPairType.x25519),
+      remotePublicKey: SimplePublicKey(peerPublicKey, type: KeyPairType.x25519),
     );
   }
 
   /// Ed25519-sign a payload with the identity key.
-  Future<Uint8List> signBytes(List<int> message) async {
+  Future<Uint8List> signBytes(String domain, List<int> message) async {
+    if (!signingDomainAllowList.contains(domain)) {
+      throw ArgumentError.value(domain, 'domain', 'unsupported signing domain');
+    }
     final kp = _ed25519KeyPair;
     if (kp == null) {
       throw const IdentityUnavailableException();
@@ -357,8 +363,8 @@ class IdentityService extends GetxService {
         payload,
         signature: Signature(
           base64Decode(signatureBase64),
-          publicKey: SimplePublicKey(parsed.ed25519Pub,
-              type: KeyPairType.ed25519),
+          publicKey:
+              SimplePublicKey(parsed.ed25519Pub, type: KeyPairType.ed25519),
         ),
       );
     } catch (_) {
@@ -382,8 +388,8 @@ class IdentityService extends GetxService {
         payload,
         signature: Signature(
           base64Decode(signatureBase64),
-          publicKey: SimplePublicKey(parsed.ed25519Pub,
-              type: KeyPairType.ed25519),
+          publicKey:
+              SimplePublicKey(parsed.ed25519Pub, type: KeyPairType.ed25519),
         ),
       );
     } catch (_) {
@@ -406,8 +412,7 @@ class IdentityService extends GetxService {
   }) {
     return _x25519.sharedSecretKey(
       keyPair: myKeyPair,
-      remotePublicKey:
-          SimplePublicKey(peerPublicKey, type: KeyPairType.x25519),
+      remotePublicKey: SimplePublicKey(peerPublicKey, type: KeyPairType.x25519),
     );
   }
 
