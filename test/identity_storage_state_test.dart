@@ -137,4 +137,42 @@ void main() {
     expect(svc.storageState.value, IdentityStorageState.loaded);
     expect(svc.hasIdentity.value, isTrue);
   });
+
+  test('signBytes signs a length-prefixed domain plus message', () async {
+    SharedPreferences.setMockInitialValues({});
+    final svc = await IdentityService().init();
+    final message = Uint8List.fromList([1, 2, 3, 250]);
+    final signature = await svc.signBytes(
+      IdentityService.domainCallFingerprint,
+      message,
+    );
+    final parsed = IdentityService.parseBundle(svc.identityBundleBase64!)!;
+    final domain = utf8.encode(IdentityService.domainCallFingerprint);
+    final expected = Uint8List.fromList([
+      0,
+      0,
+      0,
+      domain.length,
+      ...domain,
+      ...message,
+    ]);
+    final publicKey = SimplePublicKey(
+      parsed.ed25519Pub,
+      type: KeyPairType.ed25519,
+    );
+    expect(
+      await Ed25519().verify(
+        expected,
+        signature: Signature(signature, publicKey: publicKey),
+      ),
+      isTrue,
+    );
+    expect(
+      await Ed25519().verify(
+        message,
+        signature: Signature(signature, publicKey: publicKey),
+      ),
+      isFalse,
+    );
+  });
 }

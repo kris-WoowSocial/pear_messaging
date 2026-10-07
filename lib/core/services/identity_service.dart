@@ -49,6 +49,22 @@ class IdentityService extends GetxService {
     domainCallFingerprint,
   };
 
+  /// Canonical domain-bound signing bytes: 4-byte domain length, domain, then
+  /// the caller's already-framed message bytes.
+  static Uint8List domainBoundMessage(String domain, List<int> message) {
+    final domainBytes = utf8.encode(domain);
+    final b = BytesBuilder()
+      ..add([
+        (domainBytes.length >> 24) & 0xff,
+        (domainBytes.length >> 16) & 0xff,
+        (domainBytes.length >> 8) & 0xff,
+        domainBytes.length & 0xff,
+      ])
+      ..add(domainBytes)
+      ..add(message);
+    return b.toBytes();
+  }
+
   /// Secure storage dedicated to identity keys. iOS accessibility is
   /// first_unlock_this_device: readable while locked after first unlock
   /// (required for answering calls from a locked phone / killed app) and
@@ -276,7 +292,10 @@ class IdentityService extends GetxService {
     if (kp == null) {
       throw const IdentityUnavailableException();
     }
-    final sig = await _ed25519.sign(message, keyPair: kp);
+    final sig = await _ed25519.sign(
+      domainBoundMessage(domain, message),
+      keyPair: kp,
+    );
     return Uint8List.fromList(sig.bytes);
   }
 

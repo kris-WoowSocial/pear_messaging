@@ -25,7 +25,8 @@ class _TestIdentity {
     if (domain != CallSignalingCrypto.fpDomain) {
       throw ArgumentError.value(domain, 'domain');
     }
-    return Uint8List.fromList((await _e.sign(msg, keyPair: ed)).bytes);
+    final bound = IdentityService.domainBoundMessage(domain, msg);
+    return Uint8List.fromList((await _e.sign(bound, keyPair: ed)).bytes);
   }
 
   Future<String> bundle() async {
@@ -185,21 +186,27 @@ void main() {
           ephA: begin.eph,
           encrypted: await caller.encryptOffer(offerSdp));
       final af = CallSignalingCrypto.extractDtlsFingerprints(answerSdp);
-      // callee signs a DIFFERENT callerSig — the answer isn't bound to
-      // the offer the caller actually sent.
+      // A caller signature that does not match this offer is rejected before
+      // the callee generates/signs an answer.
+      expect(
+        callee.beginAnswer(
+            peerId: 'devA',
+            callerSig: Uint8List(64)..[0] = 9,
+            offerDtlsFps: fps,
+            answerDtlsFps: af),
+        throwsCrypto('crypto_failed'),
+      );
+      // Failed verification does not poison the answer phase.
       final ans = await callee.beginAnswer(
           peerId: 'devA',
-          callerSig: Uint8List(64)..[0] = 9,
+          callerSig: begin.fp,
           offerDtlsFps: fps,
           answerDtlsFps: af);
-      expect(
-        caller.completeHandshake(
-          peerId: 'devB',
-          ephB: ans.eph,
-          calleeSig: ans.fp,
-          answerDtlsFps: af,
-        ),
-        throwsA(isA<CallSignalingCryptoException>()),
+      await caller.completeHandshake(
+        peerId: 'devB',
+        ephB: ans.eph,
+        calleeSig: ans.fp,
+        answerDtlsFps: af,
       );
     });
 
@@ -362,6 +369,91 @@ void main() {
       );
     });
 
+    test('first-contact APIs reject a bundle that conflicts with a pin',
+        () async {
+      final a = await _mk(), b = await _mk(), attacker = await _mk();
+      final bundleA = await a.bundle();
+      final bundleB = await b.bundle();
+      final attackerBundle = await attacker.bundle();
+      final pins = {'devB': bundleB, 'devA': bundleA};
+      String? r(String id) => pins[id];
+      final caller = CallSignalingCrypto(
+          dh: a.dh, sign: a.sign, myDeviceId: 'devA', resolvePeerBundle: r);
+      final callee = CallSignalingCrypto(
+          dh: b.dh, sign: b.sign, myDeviceId: 'devB', resolvePeerBundle: r);
+      final offerFps = CallSignalingCrypto.extractDtlsFingerprints(offerSdp);
+      final answerFps = CallSignalingCrypto.extractDtlsFingerprints(answerSdp);
+
+      expect(
+        caller.beginOfferFirstContact(
+          callId: 'conflict-offer',
+          myId: 'devA',
+          peerId: 'devB',
+          peerBundleB64: attackerBundle,
+          offerDtlsFps: offerFps,
+        ),
+        throwsCrypto('pinned_peer_bundle_conflict'),
+      );
+      expect(
+        callee.decryptOfferFirstContact(
+          callId: 'conflict-offer',
+          callerId: 'devA',
+          callerBundleB64: attackerBundle,
+          ephA: Uint8List(32),
+          encrypted: const {'n': '', 'c': '', 'k': '0'},
+        ),
+        throwsCrypto('pinned_peer_bundle_conflict'),
+      );
+
+      final begin = await caller.beginOfferFirstContact(
+        callId: 'conflict-offer',
+        myId: 'devA',
+        peerId: 'devB',
+        peerBundleB64: bundleB,
+        offerDtlsFps: offerFps,
+      );
+      final encrypted = await caller.encryptOffer(offerSdp);
+      await callee.decryptOfferFirstContact(
+        callId: 'conflict-offer',
+        callerId: 'devA',
+        callerBundleB64: bundleA,
+        ephA: begin.eph,
+        encrypted: encrypted,
+      );
+      expect(
+        callee.beginAnswerFirstContact(
+          peerId: 'devA',
+          peerBundleB64: attackerBundle,
+          callerSig: begin.fp,
+          offerDtlsFps: offerFps,
+          answerDtlsFps: answerFps,
+        ),
+        throwsCrypto('pinned_peer_bundle_conflict'),
+      );
+      expect(
+        caller.completeHandshakeFirstContact(
+          peerId: 'devB',
+          peerBundleB64: attackerBundle,
+          ephB: Uint8List(32),
+          calleeSig: Uint8List(64),
+          answerDtlsFps: answerFps,
+        ),
+        throwsCrypto('pinned_peer_bundle_conflict'),
+      );
+      expect(
+        callee.verifyCallerFpFirstContact(
+          callId: 'conflict-offer',
+          idA: 'devA',
+          idB: 'devB',
+          callerBundleB64: attackerBundle,
+          ephA: begin.eph,
+          offerFps: offerFps,
+          callerSig: begin.fp,
+        ),
+        throwsCrypto('pinned_peer_bundle_conflict'),
+      );
+    });
+
     test('wrong-call offer decryption fails and commits no handshake state',
         () async {
       final a = await _mk(), b = await _mk();
@@ -442,6 +534,129 @@ void main() {
         ),
         throwsCrypto('active_handshake'),
       );
+    });
+
+    test('peer bundle resolves once per call on both sides', () async {
+      final a = await _mk(), b = await _mk();
+      final pins = {'devB': await b.bundle(), 'devA': await a.bundle()};
+      var callerPinReads = 0;
+      var calleePinReads = 0;
+      String? callerResolver(String id) {
+        callerPinReads++;
+        return pins[id];
+      }
+
+      String? calleeResolver(String id) {
+        calleePinReads++;
+        return pins[id];
+      }
+
+      final caller = CallSignalingCrypto(
+          dh: a.dh,
+          sign: a.sign,
+          myDeviceId: 'devA',
+          resolvePeerBundle: callerResolver);
+      final callee = CallSignalingCrypto(
+          dh: b.dh,
+          sign: b.sign,
+          myDeviceId: 'devB',
+          resolvePeerBundle: calleeResolver);
+      final offerFps = CallSignalingCrypto.extractDtlsFingerprints(offerSdp);
+      final answerFps = CallSignalingCrypto.extractDtlsFingerprints(answerSdp);
+      final begin = await caller.beginOffer(
+          callId: 'one-pin-read',
+          myId: 'devA',
+          peerId: 'devB',
+          offerDtlsFps: offerFps);
+      await callee.decryptOffer(
+        callId: 'one-pin-read',
+        callerId: 'devA',
+        ephA: begin.eph,
+        encrypted: await caller.encryptOffer(offerSdp),
+      );
+      expect(
+        await callee.verifyCallerFp(
+          callId: 'one-pin-read',
+          idA: 'devA',
+          idB: 'devB',
+          ephA: begin.eph,
+          offerFps: offerFps,
+          callerSig: begin.fp,
+        ),
+        isTrue,
+      );
+      final answer = await callee.beginAnswer(
+          peerId: 'devA',
+          callerSig: begin.fp,
+          offerDtlsFps: offerFps,
+          answerDtlsFps: answerFps);
+      await caller.completeHandshake(
+          peerId: 'devB',
+          ephB: answer.eph,
+          calleeSig: answer.fp,
+          answerDtlsFps: answerFps);
+      expect(callerPinReads, 1);
+      expect(calleePinReads, 1);
+    });
+
+    test('concurrent identical offers share one in-flight decryption',
+        () async {
+      final a = await _mk(), b = await _mk();
+      final pins = {'devB': await b.bundle(), 'devA': await a.bundle()};
+      var calleePinReads = 0;
+      var calleeDhCalls = 0;
+      String? calleeResolver(String id) {
+        calleePinReads++;
+        return pins[id];
+      }
+
+      Future<SecretKey> calleeDh(List<int> peerPub) {
+        calleeDhCalls++;
+        return b.dh(peerPub);
+      }
+
+      final caller = CallSignalingCrypto(
+          dh: a.dh,
+          sign: a.sign,
+          myDeviceId: 'devA',
+          resolvePeerBundle: (id) => pins[id]);
+      final callee = CallSignalingCrypto(
+          dh: calleeDh,
+          sign: b.sign,
+          myDeviceId: 'devB',
+          resolvePeerBundle: calleeResolver);
+      final fps = CallSignalingCrypto.extractDtlsFingerprints(offerSdp);
+      final begin = await caller.beginOffer(
+          callId: 'concurrent-offer',
+          myId: 'devA',
+          peerId: 'devB',
+          offerDtlsFps: fps);
+      final encrypted = await caller.encryptOffer(offerSdp);
+      final changed = Map<String, String>.from(encrypted)..['k'] = '1';
+
+      final first = callee.decryptOffer(
+        callId: 'concurrent-offer',
+        callerId: 'devA',
+        ephA: begin.eph,
+        encrypted: encrypted,
+      );
+      final duplicate = callee.decryptOffer(
+        callId: 'concurrent-offer',
+        callerId: 'devA',
+        ephA: begin.eph,
+        encrypted: Map<String, String>.from(encrypted),
+      );
+      final different = callee.decryptOffer(
+        callId: 'concurrent-offer',
+        callerId: 'devA',
+        ephA: begin.eph,
+        encrypted: changed,
+      );
+
+      await expectLater(different, throwsCrypto('active_handshake'));
+      expect(await Future.wait([first, duplicate]), [offerSdp, offerSdp]);
+      expect(calleePinReads, 1);
+      expect(calleeDhCalls, 2);
     });
 
     test('out-of-order handshake calls return typed errors', () async {
