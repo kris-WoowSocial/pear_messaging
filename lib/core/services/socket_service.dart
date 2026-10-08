@@ -447,7 +447,9 @@ class SocketService extends GetxService {
 
     // WebRTC Call: Incoming call
     _socket?.on('incoming_call', (data) {
-      debugPrint('📞 Incoming call: $data');
+      debugPrint(
+        '📞 Incoming call: callId=${data is Map ? data['callId'] : null}, encrypted=${data is Map && data['crypto'] != null}',
+      );
       if (onIncomingCall != null && data != null) {
         onIncomingCall!(Map<String, dynamic>.from(data));
       }
@@ -470,7 +472,9 @@ class SocketService extends GetxService {
 
     // WebRTC Call: Call accepted
     _socket?.on('call_accepted', (data) {
-      debugPrint('📞 Call accepted: $data');
+      debugPrint(
+        '📞 Call accepted: callId=${data is Map ? data['callId'] : null}, encrypted=${data is Map && data['crypto'] != null}',
+      );
       if (onCallAccepted != null && data != null) {
         onCallAccepted!(Map<String, dynamic>.from(data));
       }
@@ -510,7 +514,9 @@ class SocketService extends GetxService {
 
     // WebRTC Call: ICE restart
     _socket?.on('ice_restart', (data) {
-      debugPrint('📞 ICE restart: $data');
+      debugPrint(
+        '📞 ICE restart: callId=${data is Map ? data['callId'] : null}, encrypted=${data is Map && data['crypto'] != null}',
+      );
       if (onIceRestart != null && data != null) {
         onIceRestart!(Map<String, dynamic>.from(data));
       }
@@ -526,7 +532,9 @@ class SocketService extends GetxService {
 
     // WebRTC Call: Call resync - server resends SDP offer after cold-start accept
     _socket?.on('call_resync', (data) {
-      debugPrint('📞 Call resync: $data');
+      debugPrint(
+        '📞 Call resync: callId=${data is Map ? data['callId'] : null}',
+      );
       if (onCallResync != null && data != null) {
         onCallResync!(Map<String, dynamic>.from(data));
       }
@@ -662,9 +670,14 @@ class SocketService extends GetxService {
 
   List<String> get _announcedCapabilities {
     if (!Get.isRegistered<FeatureFlagService>()) return const [];
-    return Get.find<FeatureFlagService>().videoCalling.value
-        ? const ['video_call']
-        : const [];
+    final flags = Get.find<FeatureFlagService>();
+    return [
+      if (flags.videoCalling.value) 'video_call',
+      if (flags.encryptedSignaling.value &&
+          Get.isRegistered<IdentityService>() &&
+          Get.find<IdentityService>().hasIdentity.value)
+        'encrypted_call',
+    ];
   }
 
   /// Identity bundle for the new identityBundle register field.
@@ -1354,9 +1367,10 @@ class SocketService extends GetxService {
   void initiateCall({
     required String callerId,
     required String calleeId,
-    required String sdpOffer,
+    String? sdpOffer,
     String? callerName,
     bool isVideo = false,
+    Map<String, dynamic>? crypto,
   }) {
     if (!isConnected.value) {
       debugPrint('❌ Cannot initiate call: not connected');
@@ -1368,6 +1382,7 @@ class SocketService extends GetxService {
       calleeId: calleeId,
       sdpOffer: sdpOffer,
       callerName: callerName,
+      crypto: crypto,
     );
     if (isVideo) payload['isVideo'] = true;
     _socket?.emit('call_initiate', payload);
@@ -1382,23 +1397,31 @@ class SocketService extends GetxService {
   static Map<String, dynamic> buildCallInitiatePayload({
     required String callerId,
     required String calleeId,
-    required String sdpOffer,
+    String? sdpOffer,
     String? callerName,
+    Map<String, dynamic>? crypto,
   }) =>
       {
         'callerId': callerId,
         'calleeId': calleeId,
-        'sdpOffer': sdpOffer,
+        if (sdpOffer != null) 'sdpOffer': sdpOffer,
         if (callerName != null && callerName.isNotEmpty)
           'callerName': callerName,
+        if (crypto != null) 'crypto': crypto,
       };
 
   static Map<String, dynamic> buildCallAcceptPayload({
     required String callId,
     required String callerId,
-    required String sdpAnswer,
+    String? sdpAnswer,
+    Map<String, dynamic>? crypto,
   }) =>
-      {'callId': callId, 'callerId': callerId, 'sdpAnswer': sdpAnswer};
+      {
+        'callId': callId,
+        'callerId': callerId,
+        if (sdpAnswer != null) 'sdpAnswer': sdpAnswer,
+        if (crypto != null) 'crypto': crypto,
+      };
 
   static Map<String, dynamic> buildCallRejectPayload({
     required String callId,
@@ -1416,34 +1439,40 @@ class SocketService extends GetxService {
   static Map<String, dynamic> buildIceCandidatePayload({
     required String callId,
     required String targetDeviceId,
-    required String candidate,
+    String? candidate,
     String? sdpMid,
     int? sdpMLineIndex,
+    Map<String, dynamic>? crypto,
   }) =>
       {
         'callId': callId,
         'targetDeviceId': targetDeviceId,
-        'candidate': candidate,
+        if (candidate != null) 'candidate': candidate,
         'sdpMid': sdpMid,
         'sdpMLineIndex': sdpMLineIndex,
+        if (crypto != null) 'crypto': crypto,
       };
 
   /// Accept a call
   void acceptCall({
     required String callId,
     required String callerId,
-    required String sdpAnswer,
+    String? sdpAnswer,
+    Map<String, dynamic>? crypto,
   }) {
     if (!isConnected.value) {
       debugPrint('❌ Cannot accept call: not connected');
       return;
     }
 
-    _socket?.emit('call_accept', buildCallAcceptPayload(
-      callId: callId,
-      callerId: callerId,
-      sdpAnswer: sdpAnswer,
-    ));
+    _socket?.emit(
+        'call_accept',
+        buildCallAcceptPayload(
+          callId: callId,
+          callerId: callerId,
+          sdpAnswer: sdpAnswer,
+          crypto: crypto,
+        ));
     debugPrint('📞 Call accepted: $callId');
   }
 
@@ -1458,11 +1487,13 @@ class SocketService extends GetxService {
       return;
     }
 
-    _socket?.emit('call_reject', buildCallRejectPayload(
-      callId: callId,
-      callerId: callerId,
-      reason: reason,
-    ));
+    _socket?.emit(
+        'call_reject',
+        buildCallRejectPayload(
+          callId: callId,
+          callerId: callerId,
+          reason: reason,
+        ));
     debugPrint('📞 Call rejected: $callId');
   }
 
@@ -1473,10 +1504,12 @@ class SocketService extends GetxService {
       return;
     }
 
-    _socket?.emit('call_terminate', buildCallTerminatePayload(
-      callId: callId,
-      reason: reason,
-    ));
+    _socket?.emit(
+        'call_terminate',
+        buildCallTerminatePayload(
+          callId: callId,
+          reason: reason,
+        ));
     debugPrint('📞 Call terminated: $callId');
   }
 
@@ -1484,22 +1517,26 @@ class SocketService extends GetxService {
   void sendIceCandidate({
     required String callId,
     required String targetDeviceId,
-    required String candidate,
+    String? candidate,
     String? sdpMid,
     int? sdpMLineIndex,
+    Map<String, dynamic>? crypto,
   }) {
     if (!isConnected.value) {
       debugPrint('❌ Cannot send ICE candidate: not connected');
       return;
     }
 
-    _socket?.emit('ice_candidate', buildIceCandidatePayload(
-      callId: callId,
-      targetDeviceId: targetDeviceId,
-      candidate: candidate,
-      sdpMid: sdpMid,
-      sdpMLineIndex: sdpMLineIndex,
-    ));
+    _socket?.emit(
+        'ice_candidate',
+        buildIceCandidatePayload(
+          callId: callId,
+          targetDeviceId: targetDeviceId,
+          candidate: candidate,
+          sdpMid: sdpMid,
+          sdpMLineIndex: sdpMLineIndex,
+          crypto: crypto,
+        ));
     debugPrint(
       '📞 ICE candidate sent: sdpMid=$sdpMid, sdpMLineIndex=$sdpMLineIndex',
     );
@@ -1522,6 +1559,7 @@ class SocketService extends GetxService {
     required String targetDeviceId,
     String? sdpOffer,
     String? sdpAnswer,
+    Map<String, dynamic>? crypto,
   }) {
     if (!isConnected.value) {
       debugPrint('❌ Cannot request ICE restart: not connected');
@@ -1533,6 +1571,7 @@ class SocketService extends GetxService {
       'targetDeviceId': targetDeviceId,
       if (sdpOffer != null) 'sdpOffer': sdpOffer,
       if (sdpAnswer != null) 'sdpAnswer': sdpAnswer,
+      if (crypto != null) 'crypto': crypto,
     });
     debugPrint('📞 ICE restart requested');
   }

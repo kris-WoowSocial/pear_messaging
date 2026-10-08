@@ -1,5 +1,7 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -9,7 +11,9 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import '../../core/services/call_media_helper.dart';
+import '../../core/services/call_signaling_crypto.dart';
 import '../../core/services/feature_flag_service.dart';
+import '../../core/services/identity_service.dart';
 import '../../core/services/socket_service.dart';
 import '../../core/services/webrtc_call_service.dart';
 import '../../core/services/local_storage_service.dart';
@@ -88,7 +92,19 @@ class CallController extends GetxController {
   Timer? _pendingAcceptedCallWatchTimer;
 
   // Buffer for ICE candidates generated before server callId is known (caller only)
+  // or before the encrypted signaling handshake completes.
   final List<Map<String, dynamic>> _pendingIceCandidates = [];
+
+  // Per-call encrypted signaling state. The caller supplies the 128-bit
+  // session ID; the server adopts it as the call ID for encrypted calls.
+  CallSignalingCrypto? _signalingCrypto;
+  String? _cryptoSessionId;
+  String? _peerCryptoBundle;
+  Uint8List? _incomingCallerFp;
+  List<Uint8List> _incomingOfferFps = const [];
+  bool _cryptoActive = false;
+  bool _cryptoHandshakeReady = false;
+  bool _cryptoAnswerInFlight = false;
 
   // Call history tracking
   DateTime? _callStartTime;
@@ -258,8 +274,7 @@ class CallController extends GetxController {
       if (prefs.getBool('fsi_prompt_shown') == true) return;
       await prefs.setBool('fsi_prompt_shown', true);
 
-      debugPrint(
-          '⚠️ Full-screen intent denied — prompting user to enable it');
+      debugPrint('⚠️ Full-screen intent denied — prompting user to enable it');
       Get.dialog(
         AlertDialog(
           title: const Text('Enable Full-Screen Calls'),
@@ -468,7 +483,6 @@ class CallController extends GetxController {
       );
       _latestIncomingCallData = null;
       _socketService.requestCallResync(callId: callId);
-
     }
   }
 
@@ -568,20 +582,15 @@ class CallController extends GetxController {
     };
 
     _webrtcService.onIceCandidate = (candidate, sdpMid, sdpMLineIndex) {
-      _handleIceCandidate(candidate, sdpMid, sdpMLineIndex);
+      unawaited(_handleIceCandidate(candidate, sdpMid, sdpMLineIndex));
     };
 
     _webrtcService.onLocalDescription = (sdp) {
-      _handleLocalDescription(sdp);
+      unawaited(_handleLocalDescription(sdp));
     };
 
     _webrtcService.onIceRestartDescription = (sdp, isOffer) {
-      _socketService.requestIceRestart(
-        callId: currentCallId.value,
-        targetDeviceId: remoteDeviceId.value,
-        sdpOffer: isOffer ? sdp : null,
-        sdpAnswer: isOffer ? null : sdp,
-      );
+      unawaited(_sendIceRestartDescription(sdp, isOffer));
     };
 
     _webrtcService.onIceRestartNeeded = (_) {
@@ -623,7 +632,7 @@ class CallController extends GetxController {
     };
 
     _socketService.onCallAccepted = (data) {
-      _handleCallAccepted(data);
+      unawaited(_handleCallAccepted(data));
     };
 
     _socketService.onCalleeConnecting = (data) {
@@ -639,7 +648,7 @@ class CallController extends GetxController {
     };
 
     _socketService.onIceCandidate = (data) {
-      _handleRemoteIceCandidate(data);
+      unawaited(_handleRemoteIceCandidate(data));
     };
 
     _socketService.onPeerRinging = (data) {
@@ -647,7 +656,7 @@ class CallController extends GetxController {
     };
 
     _socketService.onIceRestart = (data) {
-      _handleIceRestart(data);
+      unawaited(_handleIceRestart(data));
     };
 
     _socketService.onCallMediaUpdate = (data) {
@@ -683,8 +692,7 @@ class CallController extends GetxController {
       Get.find<FeatureFlagService>().encryptedSignaling.value;
 
   void _updateCallEncryptionState(String peerDeviceId) {
-    if (!_encryptedSignalingEnabled ||
-        _storageService.getPeerBundle(peerDeviceId) == null) {
+    if (!_cryptoActive) {
       callEncryptionState.value = CallEncryptionState.legacyUnencrypted;
       return;
     }
@@ -694,13 +702,155 @@ class CallController extends GetxController {
             : CallEncryptionState.encryptedUnverified;
   }
 
-  Future<bool> _peerSupportsVideo(String deviceId) async {
-    final info = await _socketService.requestPeerCapabilities(deviceId);
-    final capabilities = info?['capabilities'];
+  CallSignalingCrypto? _createSignalingCrypto(String peerDeviceId) {
+    if (!_encryptedSignalingEnabled || !Get.isRegistered<IdentityService>()) {
+      return null;
+    }
+    final identity = Get.find<IdentityService>();
+    final deviceId = _storageService.deviceId;
+    if (!identity.hasIdentity.value || deviceId == null || deviceId.isEmpty) {
+      return null;
+    }
+    return CallSignalingCrypto(
+      dh: identity.x25519SharedSecret,
+      sign: identity.signBytes,
+      myDeviceId: deviceId,
+      resolvePeerBundle: _storageService.getPeerBundle,
+    );
+  }
+
+  String _newCryptoSessionId() {
+    final random = Random.secure();
+    final bytes = Uint8List.fromList(
+      List<int>.generate(16, (_) => random.nextInt(256)),
+    );
+    return 'cs_${base64UrlEncode(bytes).replaceAll('=', '')}';
+  }
+
+  Map<String, dynamic>? _wireCrypto(Map<String, dynamic>? data) {
+    final crypto = data?['crypto'];
+    return crypto is Map ? Map<String, dynamic>.from(crypto) : null;
+  }
+
+  String? _wireString(Map<String, dynamic> map, String key) {
+    final value = map[key];
+    return value is String && value.isNotEmpty ? value : null;
+  }
+
+  Uint8List? _wireBytes(Map<String, dynamic> map, String key) {
+    final value = map[key];
+    if (value is! String || value.isEmpty) return null;
+    try {
+      return Uint8List.fromList(base64Decode(value));
+    } catch (_) {
+      return null;
+    }
+  }
+
+  List<Uint8List>? _wireByteList(Map<String, dynamic> map, String key) {
+    final values = map[key];
+    if (values is! List) return null;
+    final decoded = <Uint8List>[];
+    for (final item in values) {
+      if (item is! String) return null;
+      try {
+        decoded.add(Uint8List.fromList(base64Decode(item)));
+      } catch (_) {
+        return null;
+      }
+    }
+    return decoded;
+  }
+
+  bool _sameFingerprints(List<Uint8List> a, List<Uint8List> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i].length != b[i].length) return false;
+      for (var j = 0; j < a[i].length; j++) {
+        if (a[i][j] != b[i][j]) return false;
+      }
+    }
+    return true;
+  }
+
+  Future<Map<String, dynamic>?> _encryptSignal(
+    String event,
+    String plaintext,
+  ) async {
+    final crypto = _signalingCrypto;
+    final sessionId = _cryptoSessionId;
+    if (crypto == null || sessionId == null || !_cryptoHandshakeReady) {
+      return null;
+    }
+    final encrypted = await crypto.encryptMessage(
+      event: event,
+      plaintext: plaintext,
+    );
+    return {'v': 1, 'sessionId': sessionId, 'enc': encrypted};
+  }
+
+  Future<String?> _decryptSignal(
+    String event,
+    Map<String, dynamic>? cryptoPayload,
+    String encryptedKey,
+  ) async {
+    final crypto = _signalingCrypto;
+    final sessionId = _cryptoSessionId;
+    if (crypto == null || sessionId == null || cryptoPayload == null) {
+      return null;
+    }
+    if (cryptoPayload['v'] != 1 || cryptoPayload['sessionId'] != sessionId) {
+      return null;
+    }
+    final encrypted = cryptoPayload[encryptedKey];
+    if (encrypted is! Map) return null;
+    final record = <String, String>{};
+    for (final key in const ['n', 'c', 'k']) {
+      final value = encrypted[key];
+      if (value is! String) return null;
+      record[key] = value;
+    }
+    try {
+      return await crypto.decryptMessage(event: event, encrypted: record);
+    } on CallSignalingCryptoException catch (e) {
+      debugPrint('⚠️ Encrypted call signal rejected: ${e.message}');
+      if (e.message == 'crypto_failed') {
+        endCall();
+      }
+      return null;
+    }
+  }
+
+  Future<bool> _peerSupportsVideo(
+    String deviceId, [
+    Map<String, dynamic>? info,
+  ]) async {
+    final peerInfo =
+        info ?? await _socketService.requestPeerCapabilities(deviceId);
+    final capabilities = peerInfo?['capabilities'];
     return CallMediaHelper.peerSupportsVideo(
-      clientVersion: info?['clientVersion'] as String?,
+      clientVersion: peerInfo?['clientVersion'] as String?,
       capabilities: capabilities is List ? capabilities.cast<String>() : null,
     );
+  }
+
+  Future<void> _prepareEncryptedCaller(
+    String calleeDeviceId,
+    Map<String, dynamic>? peerInfo,
+  ) async {
+    _resetCryptoState();
+    if (!_encryptedSignalingEnabled) return;
+    final capabilities = peerInfo?['capabilities'];
+    final supportsEncrypted =
+        capabilities is List && capabilities.contains('encrypted_call');
+    _peerCryptoBundle = _storageService.getPeerBundle(calleeDeviceId) ??
+        (peerInfo?['identityBundle'] as String?);
+    if (!supportsEncrypted || _peerCryptoBundle == null) return;
+    _signalingCrypto = _createSignalingCrypto(calleeDeviceId);
+    if (_signalingCrypto == null) return;
+    _cryptoSessionId = _newCryptoSessionId();
+    _cryptoActive = true;
+    _updateCallEncryptionState(calleeDeviceId);
   }
 
   Future<void> _requestIceRestart({bool fatalOnFailure = false}) async {
@@ -718,11 +868,56 @@ class CallController extends GetxController {
     }
   }
 
+  Future<void> _sendIceRestartDescription(String sdp, bool isOffer) async {
+    Map<String, dynamic>? cryptoPayload;
+    if (_cryptoActive) {
+      cryptoPayload = await _encryptSignal(
+        'ice_restart',
+        jsonEncode({'sdp': sdp, 'type': isOffer ? 'offer' : 'answer'}),
+      );
+      if (cryptoPayload == null) return;
+    }
+    _socketService.requestIceRestart(
+      callId: currentCallId.value,
+      targetDeviceId: remoteDeviceId.value,
+      sdpOffer: !_cryptoActive && isOffer ? sdp : null,
+      sdpAnswer: !_cryptoActive && !isOffer ? sdp : null,
+      crypto: cryptoPayload == null
+          ? null
+          : {
+              'v': 1,
+              'sessionId': _cryptoSessionId,
+              'iceRestartEnc': cryptoPayload['enc'],
+            },
+    );
+  }
+
   Future<void> _handleIceRestart(Map<String, dynamic> data) async {
     if ((data['callId'] as String?) != currentCallId.value ||
         !_videoCallingEnabled) {
       return;
     }
+
+    if (_cryptoActive) {
+      final plaintext = await _decryptSignal(
+        'ice_restart',
+        _wireCrypto(data),
+        'iceRestartEnc',
+      );
+      if (plaintext == null) return;
+      try {
+        final decoded = jsonDecode(plaintext);
+        if (decoded is! Map || decoded['sdp'] is! String) return;
+        if (decoded['type'] == 'offer') {
+          await _webrtcService.handleIceRestartOffer(decoded['sdp'] as String);
+        } else if (decoded['type'] == 'answer') {
+          await _webrtcService.handleIceRestartAnswer(decoded['sdp'] as String);
+        }
+      } catch (_) {}
+      return;
+    }
+
+    if (_wireCrypto(data) != null) return;
     final offer = data['sdpOffer'] as String?;
     final answer = data['sdpAnswer'] as String?;
     if (offer != null && offer.isNotEmpty) {
@@ -1300,7 +1495,10 @@ class CallController extends GetxController {
       }
 
       final wantsVideo = isVideo && _videoCallingEnabled;
-      if (wantsVideo && !await _peerSupportsVideo(calleeDeviceId)) {
+      final peerInfo = wantsVideo || _encryptedSignalingEnabled
+          ? await _socketService.requestPeerCapabilities(calleeDeviceId)
+          : null;
+      if (wantsVideo && !await _peerSupportsVideo(calleeDeviceId, peerInfo)) {
         Get.snackbar(
           'Video unavailable',
           'Ask them to update Vant to use video calls.',
@@ -1330,6 +1528,7 @@ class CallController extends GetxController {
 
       // Resolve caller's own display name to pass to backend
       await _resolveCallerDisplayName();
+      await _prepareEncryptedCaller(calleeDeviceId, peerInfo);
 
       // Start WebRTC call - this will trigger onLocalDescription callback
       final success = await _webrtcService.startCall(
@@ -1358,6 +1557,7 @@ class CallController extends GetxController {
       }
 
       if (!success) {
+        _resetCryptoState();
         // Show error if call failed (likely permission issue)
         Get.snackbar(
           'Call Failed',
@@ -1397,6 +1597,101 @@ class CallController extends GetxController {
     });
   }
 
+  Future<String?> _decryptIncomingOffer(
+    Map<String, dynamic> data,
+    String callId,
+    String callerId,
+  ) async {
+    final cryptoPayload = _wireCrypto(data);
+    if (cryptoPayload == null) {
+      _resetCryptoState();
+      return data['sdpOffer'] as String?;
+    }
+    if (!_encryptedSignalingEnabled) {
+      return null;
+    }
+
+    final crypto = _createSignalingCrypto(callerId);
+    final sessionId = _wireString(cryptoPayload, 'sessionId');
+    final callerEph = _wireBytes(cryptoPayload, 'callerEph');
+    final callerFp = _wireBytes(cryptoPayload, 'callerFp');
+    final callerBundle = _wireString(cryptoPayload, 'callerBundle');
+    final encrypted = cryptoPayload['sdpOfferEnc'];
+    if (crypto == null ||
+        sessionId == null ||
+        sessionId != callId ||
+        callerEph == null ||
+        callerFp == null ||
+        callerBundle == null ||
+        encrypted is! Map) {
+      return null;
+    }
+    final record = <String, String>{};
+    for (final key in const ['n', 'c', 'k']) {
+      final value = encrypted[key];
+      if (value is! String) return null;
+      record[key] = value;
+    }
+
+    _resetCryptoState();
+    _signalingCrypto = crypto;
+    _cryptoSessionId = sessionId;
+    _peerCryptoBundle = callerBundle;
+    _cryptoActive = true;
+    final sdpOffer = await crypto.decryptOfferFirstContact(
+      callId: sessionId,
+      callerId: callerId,
+      callerBundleB64: callerBundle,
+      ephA: callerEph,
+      encrypted: record,
+    );
+    _incomingCallerFp = callerFp;
+    _incomingOfferFps = CallSignalingCrypto.extractDtlsFingerprints(sdpOffer);
+    if (_storageService.getPeerBundle(callerId) == null) {
+      unawaited(_storageService.pinPeerBundle(callerId, callerBundle));
+    }
+    _updateCallEncryptionState(callerId);
+    return sdpOffer;
+  }
+
+  void _rejectCryptoCall(String reason, {String? callId, String? callerId}) {
+    final rejectCallId = callId ?? currentCallId.value;
+    final rejectCallerId = callerId ?? remoteDeviceId.value;
+    if (rejectCallId.isNotEmpty && rejectCallerId.isNotEmpty) {
+      _socketService.rejectCall(
+        callId: rejectCallId,
+        callerId: rejectCallerId,
+        reason: reason,
+      );
+    }
+    _webrtcService.endCall();
+    _resetCallState();
+  }
+
+  void _failCryptoCall(String reason) {
+    _logCallHistory(reason: reason);
+    _webrtcService.endCall();
+    _resetCallState();
+    Get.snackbar(
+      'Secure call unavailable',
+      'Could not establish encrypted call signaling.',
+      snackPosition: SnackPosition.BOTTOM,
+      duration: const Duration(seconds: 3),
+    );
+  }
+
+  void _resetCryptoState() {
+    _signalingCrypto?.dispose();
+    _signalingCrypto = null;
+    _cryptoSessionId = null;
+    _peerCryptoBundle = null;
+    _incomingCallerFp = null;
+    _incomingOfferFps = const [];
+    _cryptoActive = false;
+    _cryptoHandshakeReady = false;
+    _cryptoAnswerInFlight = false;
+  }
+
   /// Accept an incoming call
   Future<bool> acceptCall(Map<String, dynamic> callData) async {
     try {
@@ -1415,7 +1710,6 @@ class CallController extends GetxController {
       _stopNativeIncomingCall();
 
       final callerId = callData['callerId'] as String;
-      final sdpOffer = callData['sdpOffer'] as String;
       final calleeDeviceId = _storageService.deviceId;
 
       if (calleeDeviceId == null) {
@@ -1439,6 +1733,18 @@ class CallController extends GetxController {
       if (!hasPermission) {
         debugPrint('❌ Cannot accept call: Microphone permission denied');
         _resetCallState();
+        return false;
+      }
+
+      String? sdpOffer;
+      try {
+        sdpOffer = await _decryptIncomingOffer(callData, callId, callerId);
+      } catch (e) {
+        debugPrint('❌ Encrypted offer rejected: $e');
+        sdpOffer = null;
+      }
+      if (sdpOffer == null) {
+        _rejectCryptoCall('crypto_failed', callId: callId, callerId: callerId);
         return false;
       }
 
@@ -1645,32 +1951,94 @@ class CallController extends GetxController {
   }
 
   /// Handle call accepted from socket
-  void _handleCallAccepted(Map<String, dynamic> data) {
-    debugPrint('📞 Call accepted: $data');
+  Future<void> _handleCallAccepted(Map<String, dynamic> data) async {
+    debugPrint('📞 Call accepted');
 
-    final sdpAnswer = data['sdpAnswer'] as String;
     // Set server-assigned callId
     currentCallId.value = data['callId'] as String;
 
-    // Flush any buffered ICE candidates now that we have the real callId
-    if (_pendingIceCandidates.isNotEmpty) {
-      debugPrint(
-        '📤 Flushing ${_pendingIceCandidates.length} buffered ICE candidates',
-      );
-      for (final c in _pendingIceCandidates) {
-        _socketService.sendIceCandidate(
-          callId: currentCallId.value,
-          targetDeviceId: remoteDeviceId.value,
-          candidate: c['candidate'] as String,
-          sdpMid: c['sdpMid'] as String?,
-          sdpMLineIndex: c['sdpMLineIndex'] as int?,
-        );
+    if (_cryptoActive) {
+      if (_cryptoAnswerInFlight ||
+          (_cryptoHandshakeReady && data['callId'] == currentCallId.value)) {
+        return;
       }
-      _pendingIceCandidates.clear();
+      _cryptoAnswerInFlight = true;
+      final crypto = _signalingCrypto;
+      final cryptoPayload = _wireCrypto(data);
+      final sessionId = _cryptoSessionId;
+      final peerBundle = _peerCryptoBundle;
+      if (crypto == null ||
+          cryptoPayload == null ||
+          sessionId == null ||
+          cryptoPayload['sessionId'] != sessionId ||
+          peerBundle == null) {
+        debugPrint('⚠️ Encrypted call accepted without valid crypto payload');
+        endCall();
+        return;
+      }
+      final ephB = _wireBytes(cryptoPayload, 'calleeEph');
+      final calleeFp = _wireBytes(cryptoPayload, 'calleeFp');
+      final answerFps = _wireByteList(cryptoPayload, 'answerFps');
+      final encrypted = cryptoPayload['sdpAnswerEnc'];
+      if (ephB == null ||
+          calleeFp == null ||
+          answerFps == null ||
+          encrypted is! Map) {
+        debugPrint('⚠️ Malformed encrypted call answer');
+        endCall();
+        return;
+      }
+      final record = <String, String>{};
+      for (final key in const ['n', 'c', 'k']) {
+        final value = encrypted[key];
+        if (value is! String) {
+          endCall();
+          return;
+        }
+        record[key] = value;
+      }
+      try {
+        await crypto.completeHandshakeFirstContact(
+          peerId: remoteDeviceId.value,
+          peerBundleB64: peerBundle,
+          ephB: ephB,
+          calleeSig: calleeFp,
+          answerDtlsFps: answerFps,
+        );
+        final sdpAnswer = await crypto.decryptMessage(
+          event: 'call_accept',
+          encrypted: record,
+        );
+        if (!_sameFingerprints(
+          CallSignalingCrypto.extractDtlsFingerprints(sdpAnswer),
+          answerFps,
+        )) {
+          throw const CallSignalingCryptoException('sdp_fingerprint_mismatch');
+        }
+        _cryptoHandshakeReady = true;
+        if (_storageService.getPeerBundle(remoteDeviceId.value) == null) {
+          unawaited(
+            _storageService.pinPeerBundle(remoteDeviceId.value, peerBundle),
+          );
+        }
+        _updateCallEncryptionState(remoteDeviceId.value);
+        await _flushPendingIceCandidates();
+        await _webrtcService.setRemoteDescription(sdpAnswer, 'answer');
+      } catch (e) {
+        debugPrint('❌ Encrypted call answer rejected: $e');
+        endCall();
+      }
+      return;
     }
 
-    // Set remote description in WebRTC
-    _webrtcService.setRemoteDescription(sdpAnswer, 'answer');
+    final sdpAnswer = data['sdpAnswer'] as String?;
+    if (sdpAnswer == null || _wireCrypto(data) != null) {
+      debugPrint('⚠️ Rejecting invalid call answer payload');
+      endCall();
+      return;
+    }
+    await _flushPendingIceCandidates();
+    await _webrtcService.setRemoteDescription(sdpAnswer, 'answer');
   }
 
   /// Handle call initiated from server (server-assigned callId for caller)
@@ -1683,6 +2051,11 @@ class CallController extends GetxController {
     );
 
     if (callId == null || callId.isEmpty) return;
+    if (_cryptoActive && callId != _cryptoSessionId) {
+      debugPrint('❌ Encrypted call ID mismatch');
+      endCall();
+      return;
+    }
 
     // Only apply if we are the caller and the callee matches
     if (!isCaller.value || calleeId != remoteDeviceId.value) {
@@ -1702,22 +2075,7 @@ class CallController extends GetxController {
       return;
     }
 
-    // Flush any buffered ICE candidates now that we have the real callId
-    if (_pendingIceCandidates.isNotEmpty) {
-      debugPrint(
-        '📤 Flushing ${_pendingIceCandidates.length} buffered ICE candidates',
-      );
-      for (final c in _pendingIceCandidates) {
-        _socketService.sendIceCandidate(
-          callId: currentCallId.value,
-          targetDeviceId: remoteDeviceId.value,
-          candidate: c['candidate'] as String,
-          sdpMid: c['sdpMid'] as String?,
-          sdpMLineIndex: c['sdpMLineIndex'] as int?,
-        );
-      }
-      _pendingIceCandidates.clear();
-    }
+    unawaited(_flushPendingIceCandidates());
   }
 
   /// Handle call rejected from socket
@@ -1808,21 +2166,46 @@ class CallController extends GetxController {
   }
 
   /// Handle local ICE candidate from WebRTC
-  void _handleIceCandidate(
+  Future<void> _handleIceCandidate(
     String candidate,
     String? sdpMid,
     int? sdpMLineIndex,
-  ) {
+  ) async {
     if (remoteDeviceId.value.isEmpty) return;
 
-    if (currentCallId.value.isEmpty) {
-      // Buffer candidates until server callId arrives (caller only)
-      debugPrint('📤 Buffering ICE candidate (no callId yet): sdpMid=$sdpMid');
+    if (currentCallId.value.isEmpty ||
+        (_cryptoActive && !_cryptoHandshakeReady)) {
+      // Buffer candidates until server callId arrives (caller only) or until
+      // encrypted session keys exist.
+      debugPrint('📤 Buffering ICE candidate: sdpMid=$sdpMid');
       _pendingIceCandidates.add({
         'candidate': candidate,
         'sdpMid': sdpMid,
         'sdpMLineIndex': sdpMLineIndex,
       });
+      return;
+    }
+
+    if (_cryptoActive) {
+      final cryptoPayload = await _encryptSignal(
+        'ice_candidate',
+        jsonEncode({
+          'candidate': candidate,
+          'sdpMid': sdpMid,
+          'sdpMLineIndex': sdpMLineIndex,
+        }),
+      );
+      if (cryptoPayload == null) return;
+      _socketService.sendIceCandidate(
+        callId: currentCallId.value,
+        targetDeviceId: remoteDeviceId.value,
+        crypto: {
+          'v': 1,
+          'sessionId': _cryptoSessionId,
+          'iceEnc': cryptoPayload['enc'],
+        },
+      );
+      debugPrint('📤 Encrypted ICE candidate sent');
       return;
     }
 
@@ -1836,18 +2219,55 @@ class CallController extends GetxController {
     debugPrint('📤 ICE candidate sent to ${remoteDeviceId.value}');
   }
 
+  Future<void> _flushPendingIceCandidates() async {
+    if (_pendingIceCandidates.isEmpty || currentCallId.value.isEmpty) return;
+    if (_cryptoActive && !_cryptoHandshakeReady) return;
+
+    final pending = List<Map<String, dynamic>>.from(_pendingIceCandidates);
+    _pendingIceCandidates.clear();
+    debugPrint('📤 Flushing ${pending.length} buffered ICE candidates');
+    for (final c in pending) {
+      await _handleIceCandidate(
+        c['candidate'] as String,
+        c['sdpMid'] as String?,
+        c['sdpMLineIndex'] as int?,
+      );
+    }
+  }
+
   /// Handle remote ICE candidate from socket
-  void _handleRemoteIceCandidate(Map<String, dynamic> data) {
-    final candidate = data['candidate'] as String;
-    final sdpMid = data['sdpMid'] as String?;
-    final sdpMLineIndex = data['sdpMLineIndex'] as int?;
+  Future<void> _handleRemoteIceCandidate(Map<String, dynamic> data) async {
+    String? candidate = data['candidate'] as String?;
+    String? sdpMid = data['sdpMid'] as String?;
+    int? sdpMLineIndex = data['sdpMLineIndex'] as int?;
+
+    if (_cryptoActive) {
+      final plaintext = await _decryptSignal(
+        'ice_candidate',
+        _wireCrypto(data),
+        'iceEnc',
+      );
+      if (plaintext == null) return;
+      try {
+        final decoded = jsonDecode(plaintext);
+        if (decoded is! Map) return;
+        candidate = decoded['candidate'] as String?;
+        sdpMid = decoded['sdpMid'] as String?;
+        final index = decoded['sdpMLineIndex'];
+        sdpMLineIndex = index is num ? index.toInt() : null;
+      } catch (_) {
+        return;
+      }
+    } else if (_wireCrypto(data) != null) {
+      return;
+    }
 
     debugPrint(
       '📞 Remote ICE candidate received - sdpMid: $sdpMid, sdpMLineIndex: $sdpMLineIndex',
     );
 
-    if (sdpMid == null || sdpMLineIndex == null) {
-      debugPrint('⚠️ Skipping ICE candidate with null sdpMid or sdpMLineIndex');
+    if (candidate == null || sdpMid == null || sdpMLineIndex == null) {
+      debugPrint('⚠️ Skipping ICE candidate with missing fields');
       return;
     }
 
@@ -1855,35 +2275,116 @@ class CallController extends GetxController {
   }
 
   /// Handle local SDP description (offer or answer) from WebRTC
-  void _handleLocalDescription(String sdp) {
+  Future<void> _handleLocalDescription(String sdp) async {
     debugPrint('📞 Local SDP description received, length: ${sdp.length}');
 
     if (isCaller.value) {
       // Caller: Send SDP offer to callee via socket
       final callerDeviceId = _storageService.deviceId;
-      if (callerDeviceId != null) {
-        _socketService.initiateCall(
-          callerId: callerDeviceId,
-          calleeId: remoteDeviceId.value,
-          sdpOffer: sdp,
-          callerName: callerDisplayName.value.isNotEmpty
-              ? callerDisplayName.value
-              : null,
-          isVideo: isVideoCall.value && _videoCallingEnabled,
-        );
-        debugPrint(
-          '📞 SDP offer sent to socket with callerName: ${callerDisplayName.value}',
-        );
+      if (callerDeviceId == null) return;
+
+      if (_cryptoActive) {
+        final crypto = _signalingCrypto;
+        final sessionId = _cryptoSessionId;
+        final peerBundle = _peerCryptoBundle;
+        if (crypto == null || sessionId == null || peerBundle == null) {
+          _failCryptoCall('missing_call_crypto');
+          return;
+        }
+        try {
+          final begin = await crypto.beginOfferFirstContact(
+            callId: sessionId,
+            myId: callerDeviceId,
+            peerId: remoteDeviceId.value,
+            peerBundleB64: peerBundle,
+            offerDtlsFps: CallSignalingCrypto.extractDtlsFingerprints(sdp),
+          );
+          final cryptoPayload = <String, dynamic>{
+            'v': 1,
+            'sessionId': sessionId,
+            'callerEph': base64Encode(begin.eph),
+            'callerFp': base64Encode(begin.fp),
+            'sdpOfferEnc': await crypto.encryptOffer(sdp),
+          };
+          _socketService.initiateCall(
+            callerId: callerDeviceId,
+            calleeId: remoteDeviceId.value,
+            callerName: callerDisplayName.value.isNotEmpty
+                ? callerDisplayName.value
+                : null,
+            isVideo: isVideoCall.value && _videoCallingEnabled,
+            crypto: cryptoPayload,
+          );
+          debugPrint('📞 Encrypted SDP offer sent');
+        } catch (e) {
+          debugPrint('❌ Encrypted call offer failed: $e');
+          _failCryptoCall('offer_failed');
+        }
+        return;
       }
-    } else {
-      // Callee: Send SDP answer to caller via socket
-      _socketService.acceptCall(
-        callId: currentCallId.value,
-        callerId: remoteDeviceId.value,
-        sdpAnswer: sdp,
+
+      _socketService.initiateCall(
+        callerId: callerDeviceId,
+        calleeId: remoteDeviceId.value,
+        sdpOffer: sdp,
+        callerName:
+            callerDisplayName.value.isNotEmpty ? callerDisplayName.value : null,
+        isVideo: isVideoCall.value && _videoCallingEnabled,
       );
-      debugPrint('📞 SDP answer sent to socket');
+      debugPrint(
+        '📞 SDP offer sent to socket with callerName: ${callerDisplayName.value}',
+      );
+      return;
     }
+
+    // Callee: Send SDP answer to caller via socket
+    if (_cryptoActive) {
+      final crypto = _signalingCrypto;
+      final callerFp = _incomingCallerFp;
+      if (crypto == null || callerFp == null) {
+        _rejectCryptoCall('missing_answer_crypto');
+        return;
+      }
+      try {
+        final answerFps = CallSignalingCrypto.extractDtlsFingerprints(sdp);
+        final answer = await crypto.beginAnswer(
+          peerId: remoteDeviceId.value,
+          callerSig: callerFp,
+          offerDtlsFps: _incomingOfferFps,
+          answerDtlsFps: answerFps,
+        );
+        final encrypted = await crypto.encryptMessage(
+          event: 'call_accept',
+          plaintext: sdp,
+        );
+        _cryptoHandshakeReady = true;
+        _socketService.acceptCall(
+          callId: currentCallId.value,
+          callerId: remoteDeviceId.value,
+          crypto: {
+            'v': 1,
+            'sessionId': _cryptoSessionId,
+            'calleeEph': base64Encode(answer.eph),
+            'calleeFp': base64Encode(answer.fp),
+            'answerFps': answerFps.map(base64Encode).toList(),
+            'sdpAnswerEnc': encrypted,
+          },
+        );
+        debugPrint('📞 Encrypted SDP answer sent');
+        unawaited(_flushPendingIceCandidates());
+      } catch (e) {
+        debugPrint('❌ Encrypted call answer failed: $e');
+        _rejectCryptoCall('crypto_failed');
+      }
+      return;
+    }
+
+    _socketService.acceptCall(
+      callId: currentCallId.value,
+      callerId: remoteDeviceId.value,
+      sdpAnswer: sdp,
+    );
+    debugPrint('📞 SDP answer sent to socket');
   }
 
   /// Handle peer ringing notification
@@ -2113,6 +2614,7 @@ class CallController extends GetxController {
 
   /// Reset call state
   void _resetCallState() {
+    _resetCryptoState();
     final callId = currentCallId.value;
     unawaited(_teardownAndroidCall(callId));
     unawaited(_setNativeInCall(false));
@@ -2175,6 +2677,7 @@ class CallController extends GetxController {
     unawaited(WakelockPlus.disable());
     _stopProximitySensor();
     _stopDurationUpdateTimer();
+    _resetCryptoState();
     _webrtcService.dispose();
   }
 
@@ -2284,7 +2787,9 @@ class CallController extends GetxController {
 
   /// Handle incoming call from socket (including resync'd calls after cold-start)
   Future<void> _handleIncomingCall(Map<String, dynamic> data) async {
-    debugPrint('📞 Incoming call received: $data');
+    debugPrint(
+      '📞 Incoming call received: callId=${data['callId']}, callerId=${data['callerId']}, video=${data['isVideo'] == true}, encrypted=${_wireCrypto(data) != null}',
+    );
     final incomingCallId = data['callId'] as String?;
 
     if (incomingCallId == null || incomingCallId.isEmpty) {
@@ -2318,6 +2823,34 @@ class CallController extends GetxController {
       debugPrint('📞 Auto-accepting resync call: $incomingCallId');
       _acceptIncomingCallResync(data);
       return;
+    }
+
+    if (_wireCrypto(data) != null) {
+      if (!_encryptedSignalingEnabled) {
+        _socketService.rejectCall(
+          callId: incomingCallId,
+          callerId: data['callerId'] as String? ?? '',
+          reason: 'peer_update_required',
+        );
+        return;
+      }
+      try {
+        final offer = await _decryptIncomingOffer(
+          data,
+          incomingCallId,
+          data['callerId'] as String? ?? '',
+        );
+        if (offer == null) {
+          throw const CallSignalingCryptoException('malformed_record');
+        }
+      } catch (_) {
+        _rejectCryptoCall(
+          'crypto_failed',
+          callId: incomingCallId,
+          callerId: data['callerId'] as String? ?? '',
+        );
+        return;
+      }
     }
 
     // Avoid duplicate UI if the incoming call screen is already open
@@ -2460,11 +2993,10 @@ class CallController extends GetxController {
     try {
       final callId = data['callId'] as String;
       final callerId = data['callerId'] as String;
-      final sdpOffer = data['sdpOffer'] as String?;
       final calleeDeviceId = _storageService.deviceId;
 
-      if (calleeDeviceId == null || sdpOffer == null) {
-        debugPrint('❌ Cannot resync accept: missing deviceId or sdpOffer');
+      if (calleeDeviceId == null) {
+        debugPrint('❌ Cannot resync accept: missing deviceId');
         return;
       }
 
@@ -2484,6 +3016,18 @@ class CallController extends GetxController {
       if (!hasPermission) {
         debugPrint('❌ Cannot resync accept: Microphone permission denied');
         _resetCallState();
+        return;
+      }
+
+      String? sdpOffer;
+      try {
+        sdpOffer = await _decryptIncomingOffer(data, callId, callerId);
+      } catch (e) {
+        debugPrint('❌ Encrypted resync offer rejected: $e');
+        sdpOffer = null;
+      }
+      if (sdpOffer == null) {
+        _rejectCryptoCall('crypto_failed', callId: callId, callerId: callerId);
         return;
       }
 

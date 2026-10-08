@@ -5,7 +5,8 @@ import 'package:pear_messaging/core/services/socket_service.dart';
 /// These must NOT change; if a test here fails, an existing call flow broke.
 void main() {
   group('voice call payload contract', () {
-    test('call_initiate keys are exactly {callerId, calleeId, sdpOffer, callerName?}',
+    test(
+        'call_initiate keys are exactly {callerId, calleeId, sdpOffer, callerName?}',
         () {
       final p = SocketService.buildCallInitiatePayload(
         callerId: '1111111111',
@@ -69,6 +70,37 @@ void main() {
         p.keys.toSet(),
         {'callId', 'targetDeviceId', 'candidate', 'sdpMid', 'sdpMLineIndex'},
       );
+    });
+
+    test('encrypted payloads carry opaque crypto envelopes without SDP', () {
+      const crypto = {
+        'v': 1,
+        'sessionId': 'cs_test-session',
+        'sdpOfferEnc': {'n': 'nonce', 'c': 'cipher', 'k': '0'},
+      };
+      final initiate = SocketService.buildCallInitiatePayload(
+        callerId: 'a',
+        calleeId: 'b',
+        crypto: crypto,
+      );
+      expect(initiate.containsKey('sdpOffer'), isFalse);
+      expect(initiate['crypto'], crypto);
+
+      final accept = SocketService.buildCallAcceptPayload(
+        callId: 'cs_test-session',
+        callerId: 'a',
+        crypto: crypto,
+      );
+      expect(accept.containsKey('sdpAnswer'), isFalse);
+      expect(accept['crypto'], crypto);
+
+      final ice = SocketService.buildIceCandidatePayload(
+        callId: 'cs_test-session',
+        targetDeviceId: 'a',
+        crypto: crypto,
+      );
+      expect(ice.containsKey('candidate'), isFalse);
+      expect(ice['crypto'], crypto);
     });
   });
 }
