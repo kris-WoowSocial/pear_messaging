@@ -72,6 +72,13 @@ void main() {
       );
     });
 
+    test('clientVersion keeps semantic version plus build metadata', () {
+      expect(
+        SocketService.formatClientVersion('1.8.0', '180'),
+        '1.8.0+180',
+      );
+    });
+
     test('encrypted payloads carry opaque crypto envelopes without SDP', () {
       const crypto = {
         'v': 1,

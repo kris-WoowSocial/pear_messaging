@@ -91,6 +91,10 @@ class SocketService extends GetxService {
   /// verification — wired by IdentityVerificationService.
   void Function(Map<String, dynamic>)? onVerifyEcho;
 
+  @visibleForTesting
+  static String formatClientVersion(String version, String buildNumber) =>
+      '$version+$buildNumber';
+
   /// Initialize the socket service with device ID
   Future<SocketService> init(String deviceId) async {
     _deviceId = deviceId;
@@ -98,7 +102,10 @@ class SocketService extends GetxService {
     // Cache client version for the register payload (rollout gating).
     try {
       final info = await PackageInfo.fromPlatform();
-      _cachedClientVersion = '${info.version}+${info.buildNumber}';
+      _cachedClientVersion = formatClientVersion(
+        info.version,
+        info.buildNumber,
+      );
     } catch (_) {}
     _setupConnectivityListener();
     await connect();

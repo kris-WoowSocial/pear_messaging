@@ -36,6 +36,8 @@ class WebRTCCallService {
   bool _isCameraEnabled = false;
   bool _isFrontCamera = true;
   bool _iceRestartInProgress = false;
+  bool _deferredVideoRequested = false;
+  MediaStream? _deferredVideoStream;
   String? _localSdp;
   String? _remoteSdp;
 
@@ -54,7 +56,7 @@ class WebRTCCallService {
   Function(MediaStream)? onRemoteStream;
   Function(String)? onCallEnded;
   Function(String candidate, String? sdpMid, int? sdpMLineIndex)?
-  onIceCandidate;
+      onIceCandidate;
   Function(String)? onCallStateChange;
   Function(String)? onLocalDescription; // Callback for SDP offer/answer
   Function(String sdp, bool isOffer)? onIceRestartDescription;
@@ -66,6 +68,7 @@ class WebRTCCallService {
   // from the registered signaling socket and expire server-side; no shared TURN
   // secret is embedded in the app.
   Future<List<Map<String, dynamic>>?> Function()? iceServersProvider;
+  List<Map<String, dynamic>>? _pendingIceServers;
   final Map<String, dynamic> _fallbackIceServers = {
     'iceServers': [
       {'urls': 'stun:stun.l.google.com:19302'},
@@ -80,8 +83,25 @@ class WebRTCCallService {
         10, // Pre-generate ICE candidates for faster connection
   };
 
+  /// Use ICE servers already delivered inside an authenticated call event.
+  /// This lets a cold-started callee create the peer connection without an
+  /// extra `call_ice_servers` round trip.
+  void primeIceServers(dynamic rawServers) {
+    if (rawServers is! List) return;
+    final servers = <Map<String, dynamic>>[];
+    for (final item in rawServers) {
+      if (item is Map) servers.add(Map<String, dynamic>.from(item));
+    }
+    if (servers.isNotEmpty) _pendingIceServers = servers;
+  }
+
   Future<Map<String, dynamic>> _resolveIceServers() async {
     try {
+      final primed = _pendingIceServers;
+      _pendingIceServers = null;
+      if (primed != null && primed.isNotEmpty) {
+        return {..._fallbackIceServers, 'iceServers': primed};
+      }
       final servers = await iceServersProvider?.call();
       if (servers == null || servers.isEmpty) return _fallbackIceServers;
       return {
@@ -104,6 +124,7 @@ class WebRTCCallService {
     required String calleeDeviceId,
     required String callerDeviceId,
     bool isVideo = false,
+    bool deferVideoTransmission = false,
   }) async {
     try {
       _remoteDeviceId = calleeDeviceId;
@@ -121,7 +142,10 @@ class WebRTCCallService {
         return false;
       }
 
-      if (isVideo && !await _requestCameraPermission()) {
+      _deferredVideoRequested = isVideo && deferVideoTransmission;
+      if (isVideo &&
+          !deferVideoTransmission &&
+          !await _requestCameraPermission()) {
         _isVideoCall = false;
         _isSpeakerOn = false;
         onCameraPermissionDenied?.call();
@@ -139,7 +163,9 @@ class WebRTCCallService {
       // Get local audio stream with hardware optimization
       // On iOS, audio session is configured by flutter_webrtc during getUserMedia.
       // We'll configure speaker routing AFTER the stream is captured (on connection).
-      _localStream = await _getUserMedia(video: _isVideoCall);
+      _localStream = await _getUserMedia(
+        video: _isVideoCall && !deferVideoTransmission,
+      );
       if (_localStream == null) {
         debugPrint('❌ Failed to get local stream');
         return false;
@@ -192,6 +218,7 @@ class WebRTCCallService {
     required String calleeDeviceId,
     required String sdpOffer,
     bool isVideo = false,
+    bool deferVideoTransmission = false,
   }) async {
     try {
       _currentCallId = callId;
@@ -209,7 +236,10 @@ class WebRTCCallService {
         return false;
       }
 
-      if (isVideo && !await _requestCameraPermission()) {
+      _deferredVideoRequested = isVideo && deferVideoTransmission;
+      if (isVideo &&
+          !deferVideoTransmission &&
+          !await _requestCameraPermission()) {
         _isVideoCall = false;
         _isSpeakerOn = false;
         onCameraPermissionDenied?.call();
@@ -236,7 +266,9 @@ class WebRTCCallService {
       // Get local audio stream with hardware optimization
       // On iOS, audio session is configured by flutter_webrtc during getUserMedia.
       // We'll configure speaker routing AFTER the stream is captured (on connection).
-      _localStream = await _getUserMedia(video: _isVideoCall);
+      _localStream = await _getUserMedia(
+        video: _isVideoCall && !deferVideoTransmission,
+      );
       if (_localStream == null) {
         debugPrint('❌ Failed to get local stream');
         return false;
@@ -500,6 +532,80 @@ class WebRTCCallService {
     );
   }
 
+  /// Acquires the deferred camera track after encrypted signaling is ready.
+  /// This method does not create an offer, so it can be used by the callee
+  /// immediately before answering a caller-initiated media-upgrade offer.
+  Future<bool> prepareDeferredVideo() async {
+    if (!_isVideoCall ||
+        !_deferredVideoRequested ||
+        _peerConnection == null ||
+        _localStream == null) {
+      return false;
+    }
+    _deferredVideoRequested = false;
+
+    try {
+      if (!await _requestCameraPermission()) {
+        _isVideoCall = false;
+        _isSpeakerOn = false;
+        onCameraPermissionDenied?.call();
+        return false;
+      }
+
+      final constraints = CallMediaHelper.mediaConstraints(video: true);
+      final videoStream = await navigator.mediaDevices.getUserMedia({
+        'audio': false,
+        'video': constraints['video'],
+      });
+      final videoTracks = videoStream.getVideoTracks();
+      final videoTrack = videoTracks.isEmpty ? null : videoTracks.first;
+      if (videoTrack == null) {
+        await videoStream.dispose();
+        return false;
+      }
+
+      _deferredVideoStream = videoStream;
+      await _localStream!.addTrack(videoTrack);
+      await _peerConnection!.addTrack(videoTrack, _localStream!);
+      _isFrontCamera = true;
+      _isCameraEnabled = true;
+      await _applyVideoBitrateCap();
+      onLocalStream?.call(_localStream!);
+      return true;
+    } catch (e) {
+      debugPrint('❌ Deferred camera acquisition failed: $e');
+      _isVideoCall = false;
+      _isSpeakerOn = false;
+      onCameraPermissionDenied?.call();
+      return false;
+    }
+  }
+
+  /// Starts the deferred camera and sends a renegotiation offer through the
+  /// encrypted ICE-restart channel. Only the call initiator calls this.
+  Future<bool> enableDeferredVideo() async {
+    if (_iceRestartInProgress || !await prepareDeferredVideo()) return false;
+    _iceRestartInProgress = true;
+    try {
+      final offer = await _peerConnection!.createOffer();
+      if (offer.sdp == null ||
+          _localSdp == null ||
+          !CallMediaHelper.sameDtlsFingerprints(_localSdp!, offer.sdp!)) {
+        _iceRestartInProgress = false;
+        debugPrint('❌ Video upgrade aborted: DTLS fingerprint changed');
+        return false;
+      }
+      await _peerConnection!.setLocalDescription(offer);
+      _localSdp = offer.sdp;
+      onIceRestartDescription?.call(offer.sdp!, true);
+      return true;
+    } catch (e) {
+      _iceRestartInProgress = false;
+      debugPrint('❌ Deferred video negotiation failed: $e');
+      return false;
+    }
+  }
+
   /// Create and apply an ICE-restart offer. The SDP is returned through
   /// [onIceRestartDescription] instead of the normal call signaling callback.
   Future<bool> restartIce() async {
@@ -526,12 +632,28 @@ class WebRTCCallService {
   }
 
   /// Handle a remote ICE-restart offer and return its SDP answer through
-  /// [onIceRestartDescription].
-  Future<bool> handleIceRestartOffer(String sdp) async {
+  /// [onIceRestartDescription]. [acceptDuringLocalRestart] implements the
+  /// deterministic glare tie-break: the polite side rolls back its pending
+  /// local restart and answers the impolite side's offer.
+  Future<bool> handleIceRestartOffer(
+    String sdp, {
+    bool acceptDuringLocalRestart = false,
+  }) async {
     if (_peerConnection == null) return false;
     if (_iceRestartInProgress) {
-      debugPrint('📞 Ignoring remote ICE restart offer during local restart');
-      return false;
+      if (!acceptDuringLocalRestart) {
+        debugPrint('📞 Ignoring remote ICE restart offer during local restart');
+        return false;
+      }
+      try {
+        await _peerConnection!.setLocalDescription(
+          RTCSessionDescription('', 'rollback'),
+        );
+        _iceRestartInProgress = false;
+      } catch (e) {
+        debugPrint('❌ ICE restart glare rollback failed: $e');
+        return false;
+      }
     }
     if (_remoteSdp != null &&
         !CallMediaHelper.sameDtlsFingerprints(_remoteSdp!, sdp)) {
@@ -708,6 +830,9 @@ class WebRTCCallService {
     });
     _localStream?.dispose();
     _localStream = null;
+    await _deferredVideoStream?.dispose();
+    _deferredVideoStream = null;
+    _deferredVideoRequested = false;
 
     _remoteStream?.dispose();
     _remoteStream = null;
@@ -832,6 +957,7 @@ class WebRTCCallService {
   bool get isCameraEnabled => _isCameraEnabled;
   bool get isFrontCamera => _isFrontCamera;
   bool get isIceRestartInProgress => _iceRestartInProgress;
+  bool get hasDeferredVideo => _deferredVideoRequested;
   bool get isInCall => _peerConnection != null;
   String? get currentCallId => _currentCallId;
   String? get remoteDeviceId => _remoteDeviceId;

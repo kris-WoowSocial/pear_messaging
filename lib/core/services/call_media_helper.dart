@@ -36,6 +36,26 @@ class CallMediaHelper {
     return major > 1 || (major == 1 && minor >= 8);
   }
 
+  /// A peer that pinned an identity, signed encrypted-call support, or has
+  /// already completed an encrypted call must never silently downgrade to
+  /// plaintext signaling.
+  static bool peerRequiresEncryptedCall({
+    required bool hasPinnedIdentity,
+    required bool signedEncryptedCapability,
+    required bool encryptedCallSeen,
+  }) {
+    return hasPinnedIdentity || signedEncryptedCapability || encryptedCallSeen;
+  }
+
+  /// Perfect-negotiation glare rule: the original caller is impolite and keeps
+  /// its restart offer; the callee is polite and accepts the caller's offer.
+  static bool acceptRemoteIceRestartOffer({
+    required bool localRestartInProgress,
+    required bool isCaller,
+  }) {
+    return !localRestartInProgress || !isCaller;
+  }
+
   static bool wifiMobileSwitch({
     required Iterable<ConnectivityResult>? before,
     required Iterable<ConnectivityResult> after,

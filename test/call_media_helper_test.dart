@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pear_messaging/core/services/call_media_helper.dart';
@@ -88,5 +90,71 @@ void main() {
     expect(CallMediaHelper.sameDtlsFingerprints(first, same), true);
     expect(CallMediaHelper.sameDtlsFingerprints(first, changed), false);
     expect(CallMediaHelper.dtlsFingerprints('v=0'), isEmpty);
+  });
+
+  test('pinned, signed, or previously encrypted peers require encrypted calls',
+      () {
+    bool required({
+      bool pinned = false,
+      bool signedEncrypted = false,
+      bool encryptedSeen = false,
+    }) =>
+        CallMediaHelper.peerRequiresEncryptedCall(
+          hasPinnedIdentity: pinned,
+          signedEncryptedCapability: signedEncrypted,
+          encryptedCallSeen: encryptedSeen,
+        );
+
+    expect(required(), isFalse);
+    expect(required(pinned: true), isTrue);
+    expect(required(signedEncrypted: true), isTrue);
+    expect(required(encryptedSeen: true), isTrue);
+  });
+
+  test('ICE restart glare gives the caller deterministic precedence', () {
+    // With no local offer both peers accept normally.
+    expect(
+      CallMediaHelper.acceptRemoteIceRestartOffer(
+        localRestartInProgress: false,
+        isCaller: true,
+      ),
+      isTrue,
+    );
+    expect(
+      CallMediaHelper.acceptRemoteIceRestartOffer(
+        localRestartInProgress: false,
+        isCaller: false,
+      ),
+      isTrue,
+    );
+
+    // Simultaneous restarts: caller is impolite, callee politely rolls back.
+    expect(
+      CallMediaHelper.acceptRemoteIceRestartOffer(
+        localRestartInProgress: true,
+        isCaller: true,
+      ),
+      isFalse,
+    );
+    expect(
+      CallMediaHelper.acceptRemoteIceRestartOffer(
+        localRestartInProgress: true,
+        isCaller: false,
+      ),
+      isTrue,
+    );
+  });
+
+  test('deferred video captures camera only for the post-handshake upgrade',
+      () {
+    final source =
+        File('lib/core/services/webrtc_call_service.dart').readAsStringSync();
+
+    expect(source, contains('_deferredVideoRequested'));
+    expect(source, contains('_isVideoCall && !deferVideoTransmission'));
+    expect(source, contains('prepareDeferredVideo'));
+    expect(source, contains('enableDeferredVideo'));
+    expect(source, contains("'audio': false"));
+    expect(source, contains("'video': constraints['video']"));
   });
 }

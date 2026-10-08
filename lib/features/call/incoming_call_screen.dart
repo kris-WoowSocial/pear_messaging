@@ -246,8 +246,10 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
         await CallKitService().setCallConnected(callId);
       }
 
-      // If we have SDP offer (socket was connected), accept directly
-      if (sdpOffer != null && sdpOffer.isNotEmpty) {
+      // If we have a plaintext SDP offer or a complete encrypted offer
+      // (socket was connected), accept directly without a resync round trip.
+      if ((sdpOffer != null && sdpOffer.isNotEmpty) ||
+          callData['crypto'] is Map) {
         await controller.acceptCall(callData);
         Get.offNamed(controller.activeCallRoute);
       } else {
