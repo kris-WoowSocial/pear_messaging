@@ -547,6 +547,7 @@ class CallController extends GetxController {
 
   /// Initialize WebRTC service
   Future<void> _initializeWebrtcService() async {
+    _webrtcService.iceServersProvider = _socketService.requestIceServers;
     await _webrtcService.initialize();
 
     // Setup WebRTC callbacks

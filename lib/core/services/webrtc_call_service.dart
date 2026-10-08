@@ -62,38 +62,37 @@ class WebRTCCallService {
   Function(String reason)? onConnectionFailed;
   Function()? onCameraPermissionDenied;
 
-  // ICE servers configuration
-  // Direct P2P is tried first (STUN), TURN is used only as a fallback when
-  // direct connectivity fails. Forcing relay-only previously caused calls to
-  // auto-disconnect whenever the TURN relay had any hiccup.
-  final Map<String, dynamic> _iceServers = {
+  // Direct P2P is tried first (STUN). TURN credentials are fetched per call
+  // from the registered signaling socket and expire server-side; no shared TURN
+  // secret is embedded in the app.
+  Future<List<Map<String, dynamic>>?> Function()? iceServersProvider;
+  final Map<String, dynamic> _fallbackIceServers = {
     'iceServers': [
       {'urls': 'stun:stun.l.google.com:19302'},
       {'urls': 'stun:stun1.l.google.com:19302'},
       {'urls': 'stun:stun2.l.google.com:19302'},
       {'urls': 'stun:stun3.l.google.com:19302'},
       {'urls': 'stun:stun4.l.google.com:19302'},
-      {
-        'urls': 'turn:turn.vant.chat:3478?transport=udp',
-        'username': 'vantchat',
-        'credential': 'Y9FA4x5PA2WDAMwBWfVClL5R7VyH8/BfRql9jTBNg54=',
-      },
-      {
-        'urls': 'turn:turn.vant.chat:3478?transport=tcp',
-        'username': 'vantchat',
-        'credential': 'Y9FA4x5PA2WDAMwBWfVClL5R7VyH8/BfRql9jTBNg54=',
-      },
-      {
-        'urls': 'turn:turn.vant.chat:443?transport=tcp',
-        'username': 'vantchat',
-        'credential': 'Y9FA4x5PA2WDAMwBWfVClL5R7VyH8/BfRql9jTBNg54=',
-      },
     ],
     'sdpSemantics': 'unified-plan',
     'iceTransportPolicy': 'all', // Try direct P2P first, fallback to TURN
     'iceCandidatePoolSize':
         10, // Pre-generate ICE candidates for faster connection
   };
+
+  Future<Map<String, dynamic>> _resolveIceServers() async {
+    try {
+      final servers = await iceServersProvider?.call();
+      if (servers == null || servers.isEmpty) return _fallbackIceServers;
+      return {
+        ..._fallbackIceServers,
+        'iceServers': servers,
+      };
+    } catch (e) {
+      debugPrint('⚠️ Failed to fetch ICE servers, using STUN fallback: $e');
+      return _fallbackIceServers;
+    }
+  }
 
   /// Initialize the call service
   Future<void> initialize() async {
@@ -298,16 +297,17 @@ class WebRTCCallService {
     }
   }
 
-  /// Create peer connection with ICE servers
+  /// Create peer connection with per-call ICE servers
   Future<void> _createPeerConnection() async {
+    final iceConfig = await _resolveIceServers();
     debugPrint(
-      '🔧 Creating peer connection with ICE servers: ${_iceServers['iceServers'].length} servers',
+      '🔧 Creating peer connection with ICE servers: ${iceConfig['iceServers'].length} servers',
     );
-    for (var i = 0; i < _iceServers['iceServers'].length; i++) {
-      final server = _iceServers['iceServers'][i];
+    for (var i = 0; i < iceConfig['iceServers'].length; i++) {
+      final server = iceConfig['iceServers'][i];
       debugPrint('  ICE Server $i: ${server['urls']}');
     }
-    _peerConnection = await createPeerConnection(_iceServers);
+    _peerConnection = await createPeerConnection(iceConfig);
 
     // Handle ICE candidates
     _peerConnection!.onIceCandidate = (candidate) {
