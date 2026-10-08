@@ -831,6 +831,9 @@ class LocalStorageService extends GetxService {
         'bundle': bundle,
         'status': 'unverified',
         'updatedAt': DateTime.now().millisecondsSinceEpoch,
+        'capabilities': const <String>[],
+        'capabilitySeq': 0,
+        'encryptedCallSeen': false,
       });
       return pinResultPinned;
     }
@@ -839,14 +842,82 @@ class LocalStorageService extends GetxService {
     if (existingBundle == bundle) return pinResultUnchanged;
     // Persist the conflicting bundle + time — a key change is serious (a
     // bound ID cannot legitimately change keys) and must survive restarts.
+    final existingEntry = existing is Map
+        ? Map<String, dynamic>.from(existing)
+        : <String, dynamic>{};
     await _peerIdentitiesBox!.put(peerDeviceId, {
+      ...existingEntry,
       'bundle': existingBundle,
-      'status': existing is Map ? existing['status'] : null,
-      'updatedAt': existing is Map ? existing['updatedAt'] : null,
       'conflictBundle': bundle,
       'conflictAt': DateTime.now().millisecondsSinceEpoch,
     });
     return pinResultConflict;
+  }
+
+  /// Record a signed capability announcement for a pinned peer. The sequence
+  /// is monotonic: exact or older values are rejected as replays. Returns
+  /// false when the peer is unpinned, the store is unavailable, or the
+  /// announcement is stale.
+  Future<bool> recordPeerCapabilities(
+    String peerDeviceId,
+    List<String> capabilities,
+    int sequence,
+  ) async {
+    if (sequence < 0 || _peerIdentitiesBox?.isOpen != true) return false;
+    final existing = _peerIdentitiesBox!.get(peerDeviceId);
+    if (existing is! Map || existing['bundle'] == null) return false;
+    final seen = existing['capabilitySeq'];
+    final lastSequence = seen is int
+        ? seen
+        : seen is num
+            ? seen.toInt()
+            : 0;
+    if (sequence <= lastSequence) return false;
+    await _peerIdentitiesBox!.put(peerDeviceId, {
+      ...Map<String, dynamic>.from(existing),
+      'capabilities': capabilities,
+      'capabilitySeq': sequence,
+    });
+    return true;
+  }
+
+  /// True when the peer once signed encrypted-call support, even if a later
+  /// capability lookup is missing or weakened.
+  bool peerSignedEncryptedCalls(String peerDeviceId) {
+    if (_peerIdentitiesBox?.isOpen != true) return false;
+    final entry = _peerIdentitiesBox!.get(peerDeviceId);
+    if (entry is! Map) return false;
+    final capabilities = entry['capabilities'];
+    return capabilities is List && capabilities.contains('encrypted_call');
+  }
+
+  /// True when this device completed an encrypted call with the peer.
+  bool peerHasEncryptedCallHistory(String peerDeviceId) {
+    if (_peerIdentitiesBox?.isOpen != true) return false;
+    final entry = _peerIdentitiesBox!.get(peerDeviceId);
+    return entry is Map && entry['encryptedCallSeen'] == true;
+  }
+
+  /// Mark a successful encrypted handshake. This is a security floor: once a
+  /// peer has used encrypted calling, plaintext must never be silently used.
+  Future<bool> markPeerEncryptedCall(String peerDeviceId) async {
+    if (_peerIdentitiesBox?.isOpen != true) return false;
+    final existing = _peerIdentitiesBox!.get(peerDeviceId);
+    if (existing is! Map || existing['bundle'] == null) return false;
+    await _peerIdentitiesBox!.put(peerDeviceId, {
+      ...Map<String, dynamic>.from(existing),
+      'encryptedCallSeen': true,
+    });
+    return true;
+  }
+
+  /// A pinned contact may not silently downgrade to plaintext. Signed support
+  /// and completed encrypted calls also make encryption mandatory.
+  bool peerRequiresEncryptedCall(String peerDeviceId) {
+    if (pinStoreUnavailable.value || pinStoreCorrupted.value) return true;
+    return getPeerBundle(peerDeviceId) != null ||
+        peerSignedEncryptedCalls(peerDeviceId) ||
+        peerHasEncryptedCallHistory(peerDeviceId);
   }
 
   /// The conflicting bundle seen for a peer, or null. Persisted so a
@@ -877,9 +948,9 @@ class LocalStorageService extends GetxService {
     final entry = _peerIdentitiesBox!.get(peerDeviceId);
     if (entry is! Map || entry['conflictBundle'] == null) return;
     await _peerIdentitiesBox!.put(peerDeviceId, {
-      'bundle': entry['bundle'],
-      'status': entry['status'],
-      'updatedAt': entry['updatedAt'],
+      ...Map<String, dynamic>.from(entry),
+      'conflictBundle': null,
+      'conflictAt': null,
     });
   }
 
@@ -907,7 +978,7 @@ class LocalStorageService extends GetxService {
       return true;
     }
     await _peerIdentitiesBox!.put(peerDeviceId, {
-      'bundle': entry['bundle'],
+      ...Map<String, dynamic>.from(entry),
       'status': 'verified',
       'updatedAt': DateTime.now().millisecondsSinceEpoch,
     });
@@ -922,10 +993,14 @@ class LocalStorageService extends GetxService {
     if (getChat(peerDeviceId) == null) return false;
     await _ensurePeerIdentitiesBox();
     if (_peerIdentitiesBox?.isOpen != true) return false;
+    final existing = _peerIdentitiesBox!.get(peerDeviceId);
     await _peerIdentitiesBox!.put(peerDeviceId, {
+      if (existing is Map) ...Map<String, dynamic>.from(existing),
       'bundle': bundle,
       'status': 'verified',
       'updatedAt': DateTime.now().millisecondsSinceEpoch,
+      'conflictBundle': null,
+      'conflictAt': null,
     });
     return true;
   }

@@ -5,6 +5,7 @@ import 'package:cryptography/cryptography.dart';
 import 'package:flutter/foundation.dart';
 import 'package:get/get.dart';
 
+import 'feature_flag_service.dart';
 import 'identity_service.dart';
 import 'local_storage_service.dart';
 import 'socket_service.dart';
@@ -128,6 +129,23 @@ class IdentityAnnouncementService extends GetxService {
     final signature = await _identity.signAnnouncement(myId);
     if (signature == null) return;
 
+    final flags = Get.isRegistered<FeatureFlagService>()
+        ? Get.find<FeatureFlagService>()
+        : null;
+    final encryptedAvailable =
+        flags?.encryptedSignaling.value == true && _identity.hasIdentity.value;
+    final capabilities = IdentityService.canonicalCapabilities([
+      if (encryptedAvailable) 'encrypted_call',
+      if (encryptedAvailable && flags?.videoCalling.value == true) 'video_call',
+    ]);
+    final capabilitySeq = await _identity.nextCapabilitySequence();
+    final capabilitySig = await _identity.signCapabilities(
+      myId,
+      capabilitySeq,
+      capabilities,
+    );
+    if (capabilitySig == null) return;
+
     final now = DateTime.now();
     var sent = 0;
     for (final entry in _targets.entries.toList()) {
@@ -142,6 +160,9 @@ class IdentityAnnouncementService extends GetxService {
           to: to,
           bundle: bundle,
           signature: signature,
+          capabilities: capabilities,
+          capabilitySeq: capabilitySeq,
+          capabilitySig: capabilitySig,
         );
         state.attempts += 1;
         state.nextDue = now.add(_backoffFor(state.attempts));
@@ -243,7 +264,57 @@ class IdentityAnnouncementService extends GetxService {
       return;
     }
 
+    final hasCapabilityField = data.containsKey('capabilities') ||
+        data.containsKey('capabilitySeq') ||
+        data.containsKey('capabilitySig');
+    var capabilities = const <String>[];
+    var capabilitySeq = -1;
+    if (hasCapabilityField) {
+      final rawSeq = data['capabilitySeq'];
+      final capabilitySig = data['capabilitySig'];
+      final rawCapabilities = data['capabilities'];
+      capabilitySeq = rawSeq is int
+          ? rawSeq
+          : rawSeq is num
+              ? rawSeq.toInt()
+              : -1;
+      capabilities = rawCapabilities is List
+          ? IdentityService.canonicalCapabilities(
+              rawCapabilities.whereType<String>(),
+            )
+          : const <String>[];
+      final signed = capabilitySeq >= 0 &&
+          capabilitySig is String &&
+          rawCapabilities is List &&
+          await _identity.verifyCapabilities(
+            senderDeviceId: from,
+            bundleBase64: bundle,
+            sequence: capabilitySeq,
+            capabilities: capabilities,
+            signatureBase64: capabilitySig,
+          );
+      if (!signed) {
+        debugPrint('⚠️ Capability announcement signature invalid from $from');
+        await ack('rejected');
+        return;
+      }
+    }
+
     final result = await _storage.pinPeerBundle(from, bundle);
+    if (hasCapabilityField &&
+        (result == LocalStorageService.pinResultPinned ||
+            result == LocalStorageService.pinResultUnchanged)) {
+      final accepted = await _storage.recordPeerCapabilities(
+        from,
+        capabilities,
+        capabilitySeq,
+      );
+      if (!accepted) {
+        debugPrint('⚠️ Stale capability announcement rejected for $from');
+        await ack('rejected');
+        return;
+      }
+    }
     await ack(statusForPinResult(result));
     switch (result) {
       case LocalStorageService.pinResultPinned:

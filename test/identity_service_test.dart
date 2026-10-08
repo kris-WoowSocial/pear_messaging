@@ -126,6 +126,37 @@ void main() {
       );
       expect(ok, isFalse);
     });
+
+    test('signed capability fields verify and reject tampering', () async {
+      final ed = await ed25519.newKeyPair() as SimpleKeyPair;
+      final bundle = await makeBundle(ed);
+      const capabilities = ['encrypted_call', 'video_call'];
+      final sig = await ed25519.sign(
+        payload(
+          IdentityService.domainCapabilities,
+          'dev123',
+          IdentityService.capabilityMaterial(7, capabilities),
+        ),
+        keyPair: ed,
+      );
+      Future<bool> verify({
+        int sequence = 7,
+        List<String> signedCapabilities = capabilities,
+      }) =>
+          service.verifyCapabilities(
+            senderDeviceId: 'dev123',
+            bundleBase64: bundle,
+            sequence: sequence,
+            capabilities: signedCapabilities,
+            signatureBase64: base64Encode(sig.bytes),
+          );
+      expect(await verify(), isTrue);
+      expect(await verify(sequence: 6), isFalse);
+      expect(
+        await verify(signedCapabilities: const ['encrypted_call']),
+        isFalse,
+      );
+    });
   });
 
   group('recovery gating (shouldTriggerIdentityRecovery)', () {

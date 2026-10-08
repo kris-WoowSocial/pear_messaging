@@ -32,6 +32,7 @@ class IdentityService extends GetxService {
   /// Flag in SharedPreferences (NOT secure storage) so we can tell
   /// "never generated" from "generated then lost".
   static const String _prefsIdentityInitialized = 'identity_initialized';
+  static const String _prefsCapabilitySeq = 'identity_capability_seq';
 
   /// Bundle wire format (65 bytes):
   ///   [version:1][x25519 public:32][ed25519 public:32]
@@ -43,6 +44,7 @@ class IdentityService extends GetxService {
   static const String domainBind = 'vant-bind';
   static const String domainRegister = 'vant-reg';
   static const String domainAnnounce = 'vant-announce';
+  static const String domainCapabilities = 'vant-caps';
   static const String domainCall = 'vant-call';
   static const String domainCallFingerprintCaller = 'vant-call-fp-caller';
   static const String domainCallFingerprintCallee = 'vant-call-fp-callee';
@@ -319,6 +321,45 @@ class IdentityService extends GetxService {
     }
   }
 
+  /// Canonical capability list for the signed announcement. Ordering and
+  /// validation must match the server verifier exactly.
+  static List<String> canonicalCapabilities(Iterable<String>? capabilities) {
+    final values = <String>{};
+    for (final capability in capabilities ?? const <String>[]) {
+      final normalized = capability.trim().toLowerCase();
+      if (normalized.isEmpty || normalized.length > 64) continue;
+      if (!RegExp(r'^[a-z0-9_.:-]+$').hasMatch(normalized)) continue;
+      values.add(normalized);
+      if (values.length >= 16) break;
+    }
+    return values.toList()..sort();
+  }
+
+  /// Unsigned 64-bit sequence followed by length-prefixed capabilities.
+  static Uint8List capabilityMaterial(
+    int sequence,
+    Iterable<String> capabilities,
+  ) {
+    final sequenceBytes = Uint8List(8);
+    ByteData.view(sequenceBytes.buffer).setUint64(0, sequence);
+    final material = BytesBuilder()..add(sequenceBytes);
+    for (final capability in canonicalCapabilities(capabilities)) {
+      final encoded = utf8.encode(capability);
+      material.add([(encoded.length >> 8) & 0xff, encoded.length & 0xff]);
+      material.add(encoded);
+    }
+    return material.toBytes();
+  }
+
+  /// Next signed capability sequence. Persisted so reconnects and app
+  /// restarts always announce a value newer than every previous one.
+  Future<int> nextCapabilitySequence() async {
+    final prefs = await SharedPreferences.getInstance();
+    final next = (prefs.getInt(_prefsCapabilitySeq) ?? 0) + 1;
+    await prefs.setInt(_prefsCapabilitySeq, next);
+    return next;
+  }
+
   // ---------------------------------------------------------------------------
   // Signing — private keys never leave this service
   // ---------------------------------------------------------------------------
@@ -363,6 +404,22 @@ class IdentityService extends GetxService {
     return _sign(_payload(domainAnnounce, deviceId, _bundleBytes!));
   }
 
+  /// Signed call-capability announcement:
+  /// Ed25519("vant-caps"|deviceId|sequence|capabilities).
+  Future<String?> signCapabilities(
+    String deviceId,
+    int sequence,
+    Iterable<String> capabilities,
+  ) {
+    return _sign(
+      _payload(
+        domainCapabilities,
+        deviceId,
+        capabilityMaterial(sequence, capabilities),
+      ),
+    );
+  }
+
   /// Per-call signing: Ed25519("vant-call"|deviceId|material).
   Future<String?> signCallMaterial(String deviceId, List<int> material) {
     return _sign(_payload(domainCall, deviceId, material));
@@ -380,6 +437,37 @@ class IdentityService extends GetxService {
     try {
       final bundleBytes = base64Decode(bundleBase64);
       final payload = _payload(domainAnnounce, senderDeviceId, bundleBytes);
+      return await _ed25519.verify(
+        payload,
+        signature: Signature(
+          base64Decode(signatureBase64),
+          publicKey:
+              SimplePublicKey(parsed.ed25519Pub, type: KeyPairType.ed25519),
+        ),
+      );
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Verify a signed capability announcement against the Ed25519 key inside
+  /// the announced identity bundle. The caller still applies the monotonic
+  /// sequence check before updating stored capability state.
+  Future<bool> verifyCapabilities({
+    required String senderDeviceId,
+    required String bundleBase64,
+    required int sequence,
+    required Iterable<String> capabilities,
+    required String signatureBase64,
+  }) async {
+    final parsed = parseBundle(bundleBase64);
+    if (parsed == null) return false;
+    try {
+      final payload = _payload(
+        domainCapabilities,
+        senderDeviceId,
+        capabilityMaterial(sequence, capabilities),
+      );
       return await _ed25519.verify(
         payload,
         signature: Signature(

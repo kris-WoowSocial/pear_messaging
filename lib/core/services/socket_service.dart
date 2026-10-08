@@ -671,12 +671,12 @@ class SocketService extends GetxService {
   List<String> get _announcedCapabilities {
     if (!Get.isRegistered<FeatureFlagService>()) return const [];
     final flags = Get.find<FeatureFlagService>();
+    final encryptedAvailable = flags.encryptedSignaling.value &&
+        Get.isRegistered<IdentityService>() &&
+        Get.find<IdentityService>().hasIdentity.value;
     return [
-      if (flags.videoCalling.value) 'video_call',
-      if (flags.encryptedSignaling.value &&
-          Get.isRegistered<IdentityService>() &&
-          Get.find<IdentityService>().hasIdentity.value)
-        'encrypted_call',
+      if (encryptedAvailable) 'encrypted_call',
+      if (encryptedAvailable && flags.videoCalling.value) 'video_call',
     ];
   }
 
@@ -1646,12 +1646,31 @@ class SocketService extends GetxService {
     required String to,
     required String bundle,
     required String signature,
+    List<String>? capabilities,
+    int? capabilitySeq,
+    String? capabilitySig,
   }) async {
     if (_socket == null || !_socket!.connected) return false;
     final completer = Completer<bool>();
     _socket!.emitWithAck(
       'identity_announce',
-      {'to': to, 'bundle': bundle, 'signature': signature},
+      {
+        'to': to,
+        'bundle': bundle,
+        'signature': signature,
+        if (capabilities != null &&
+            capabilitySeq != null &&
+            capabilitySig != null)
+          'capabilities': capabilities,
+        if (capabilities != null &&
+            capabilitySeq != null &&
+            capabilitySig != null)
+          'capabilitySeq': capabilitySeq,
+        if (capabilities != null &&
+            capabilitySeq != null &&
+            capabilitySig != null)
+          'capabilitySig': capabilitySig,
+      },
       ack: (data) {
         completer.complete(data is Map && data['delivered'] == true);
       },

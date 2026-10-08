@@ -136,4 +136,65 @@ void main() {
     secureStore.clear();
   });
 
+  test('signed capabilities are monotonic and encrypted history survives',
+      () async {
+    await storage.saveChat(makeChat('peerCaps'));
+    await storage.pinPeerBundle('peerCaps', 'bundleCaps');
+
+    expect(
+      await storage.recordPeerCapabilities(
+        'peerCaps',
+        const ['encrypted_call', 'video_call'],
+        7,
+      ),
+      isTrue,
+    );
+    expect(storage.peerSignedEncryptedCalls('peerCaps'), isTrue);
+    expect(storage.peerRequiresEncryptedCall('peerCaps'), isTrue);
+
+    // Same and older sequences are replays/downgrades and must be rejected.
+    expect(
+      await storage.recordPeerCapabilities(
+        'peerCaps',
+        const ['video_call'],
+        7,
+      ),
+      isFalse,
+    );
+    expect(
+      await storage.recordPeerCapabilities('peerCaps', const <String>[], 6),
+      isFalse,
+    );
+    expect(storage.peerSignedEncryptedCalls('peerCaps'), isTrue);
+
+    // A later signed change may drop a capability, but a completed encrypted
+    // call still establishes a permanent no-plaintext floor.
+    expect(
+      await storage.recordPeerCapabilities('peerCaps', const <String>[], 8),
+      isTrue,
+    );
+    expect(storage.peerSignedEncryptedCalls('peerCaps'), isFalse);
+    await storage.markPeerEncryptedCall('peerCaps');
+    expect(
+      await storage.recordPeerCapabilities('peerCaps', const <String>[], 9),
+      isTrue,
+    );
+    expect(storage.peerHasEncryptedCallHistory('peerCaps'), isTrue);
+    expect(storage.peerRequiresEncryptedCall('peerCaps'), isTrue);
+  });
+
+  test(
+      'capability records do not survive silent re-pin or get accepted for '
+      'unpinned peers', () async {
+    await storage.saveChat(makeChat('peerNoPin'));
+    expect(
+      await storage.recordPeerCapabilities(
+        'peerNoPin',
+        const ['encrypted_call'],
+        1,
+      ),
+      isFalse,
+    );
+    expect(storage.peerRequiresEncryptedCall('peerNoPin'), isFalse);
+  });
 }
