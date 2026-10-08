@@ -157,4 +157,20 @@ void main() {
     expect(source, contains("'audio': false"));
     expect(source, contains("'video': constraints['video']"));
   });
+
+  test('failed encrypted handshakes never display an encrypted call', () {
+    final source =
+        File('lib/features/call/call_controller.dart').readAsStringSync();
+    final updater = source
+        .split('void _updateCallEncryptionState')
+        .last
+        .split('CallSignalingCrypto? _createSignalingCrypto')
+        .first;
+
+    expect(updater, contains('!_cryptoHandshakeReady'));
+    expect(
+      updater.indexOf('!_cryptoHandshakeReady'),
+      lessThan(updater.indexOf('encryptedUnverified')),
+    );
+  });
 }

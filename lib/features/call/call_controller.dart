@@ -711,7 +711,7 @@ class CallController extends GetxController {
       Get.find<FeatureFlagService>().encryptedSignaling.value;
 
   void _updateCallEncryptionState(String peerDeviceId) {
-    if (!_cryptoActive) {
+    if (!_cryptoActive || !_cryptoHandshakeReady) {
       callEncryptionState.value = CallEncryptionState.legacyUnencrypted;
       return;
     }
