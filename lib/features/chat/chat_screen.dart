@@ -12,6 +12,7 @@ import 'package:pear_messaging/features/chat/chat_controller.dart';
 import 'package:pear_messaging/features/chat/chat_message_bubble.dart';
 import 'package:pear_messaging/features/chat/widgets/reply_preview_bar.dart';
 import 'package:pear_messaging/features/call/call_controller.dart';
+import '../../core/services/feature_flag_service.dart';
 import '../../core/services/membership_service.dart';
 import '../../routes/app_routes.dart';
 import 'package:image_picker/image_picker.dart';
@@ -142,6 +143,17 @@ class ChatScreen extends GetView<ChatController> {
                   _startAudioCall();
                 },
                 tooltip: 'Audio Call',
+              ),
+            if (!controller.isGroup &&
+                Get.isRegistered<FeatureFlagService>() &&
+                Get.find<FeatureFlagService>().videoCalling.value)
+              IconButton(
+                icon: const Icon(Icons.videocam, color: Colors.black),
+                onPressed: () {
+                  debugPrint('📞 Video call button pressed');
+                  _startVideoCall();
+                },
+                tooltip: 'Video Call',
               ),
             IconButton(
               icon: const Icon(Icons.settings, color: Colors.black),
@@ -1223,6 +1235,36 @@ class ChatScreen extends GetView<ChatController> {
       Get.snackbar(
         'Error',
         'Failed to start call',
+        snackPosition: SnackPosition.BOTTOM,
+      );
+    }
+  }
+
+  Future<void> _startVideoCall() async {
+    try {
+      if (Get.isRegistered<MembershipService>()) {
+        final membershipService = Get.find<MembershipService>();
+        if (!membershipService.canMakeCalls) {
+          Get.toNamed(AppRoutes.stripeSubscription);
+          return;
+        }
+      }
+
+      if (!Get.isRegistered<CallController>()) {
+        Get.put(CallController());
+      }
+
+      final callController = Get.find<CallController>();
+      final success = await callController.startCall(
+        controller.recipientDeviceId,
+        isVideo: true,
+      );
+      if (success) Get.toNamed(callController.activeCallRoute);
+    } catch (e) {
+      debugPrint('❌ Failed to start video call: $e');
+      Get.snackbar(
+        'Error',
+        'Failed to start video call',
         snackPosition: SnackPosition.BOTTOM,
       );
     }

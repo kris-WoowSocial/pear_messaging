@@ -3,9 +3,11 @@ import 'dart:io';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:get/get.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 import '../../core/services/call_media_helper.dart';
 import '../../core/services/feature_flag_service.dart';
 import '../../core/services/socket_service.dart';
@@ -21,6 +23,7 @@ import '../../core/services/callkit_service.dart';
 import '../../core/services/fcm_service.dart';
 import '../../core/utils/string_utils.dart';
 import '../../storage/models/call_history_entry.dart';
+import 'call_encryption_indicator.dart';
 
 /// Call State Enum
 enum CallState {
@@ -68,7 +71,14 @@ class CallController extends GetxController {
   final RxBool isCallMinimized = false.obs;
   final RxBool isVideoCall = false.obs;
   final RxBool isCameraOn = false.obs;
+  final RxBool isFrontCamera = true.obs;
   final RxBool peerCameraOff = false.obs;
+  final RxBool isReconnecting = false.obs;
+  final RxBool hasPoorConnection = false.obs;
+  final Rxn<MediaStream> localVideoStream = Rxn<MediaStream>();
+  final Rxn<MediaStream> remoteVideoStream = Rxn<MediaStream>();
+  final Rx<CallEncryptionState> callEncryptionState =
+      CallEncryptionState.legacyUnencrypted.obs;
 
   // Proximity sensor state - managed by ProximityService
   final RxBool isNearEar = false.obs;
@@ -111,6 +121,7 @@ class CallController extends GetxController {
   // Native call event stream subscription
   StreamSubscription? _callEventSubscription;
   StreamSubscription<List<ConnectivityResult>>? _callConnectivitySubscription;
+  Worker? _videoWakelockWorker;
   List<ConnectivityResult>? _lastConnectivity;
   bool _iceRestartInFlight = false;
 
@@ -121,6 +132,13 @@ class CallController extends GetxController {
     _initializeWebrtcService();
     _setupSocketListeners();
     _setupCallConnectivityMonitor();
+    _videoWakelockWorker = ever(isVideoCall, (video) {
+      if (video) {
+        unawaited(WakelockPlus.enable());
+      } else {
+        unawaited(WakelockPlus.disable());
+      }
+    });
 
     // If the socket reconnects while we have a pending auto-accept (e.g. cold-start
     // accept where the first resync request failed), send the resync again.
@@ -289,7 +307,8 @@ class CallController extends GetxController {
 
     // Prevent duplicate UI if the call screen is already open
     if (Get.currentRoute == '/call/incoming' ||
-        Get.currentRoute == '/call/active') {
+        Get.currentRoute == '/call/active' ||
+        Get.currentRoute == '/call/video') {
       debugPrint('📞 Native call event: call screen already open, skipping');
       return;
     }
@@ -347,7 +366,9 @@ class CallController extends GetxController {
     // Get.offNamed has no navigator and silently no-ops; we must allow the
     // retry from getPendingCallAction (fired onReady) to proceed.
     if (_lastHandledNativeCallId == callId &&
-        (isInCall || Get.currentRoute == '/call/active')) {
+        (isInCall ||
+            Get.currentRoute == '/call/active' ||
+            Get.currentRoute == '/call/video')) {
       debugPrint(
         '📞 Native answer for $callId already handled, skipping duplicate',
       );
@@ -369,8 +390,11 @@ class CallController extends GetxController {
       'avatarUrl': data['avatar_url'] ?? '',
       'isVideo': data['is_video'] == 'true',
     };
-    if (Get.currentRoute != '/call/active') {
-      Get.offNamed('/call/active', arguments: callData);
+    final route = callData['isVideo'] == true && _videoCallingEnabled
+        ? '/call/video'
+        : '/call/active';
+    if (Get.currentRoute != route) {
+      Get.offNamed(route, arguments: callData);
     }
     await setPendingAutoAccept(callId);
 
@@ -507,6 +531,14 @@ class CallController extends GetxController {
     await _webrtcService.initialize();
 
     // Setup WebRTC callbacks
+    _webrtcService.onLocalStream = (stream) {
+      localVideoStream.value = stream;
+    };
+
+    _webrtcService.onRemoteStream = (stream) {
+      remoteVideoStream.value = stream;
+    };
+
     _webrtcService.onCallStateChange = (state) {
       _handleCallStateChange(state);
     };
@@ -533,6 +565,10 @@ class CallController extends GetxController {
     };
 
     _webrtcService.onIceRestartNeeded = (_) {
+      if (_videoCallingEnabled && isInCall) {
+        isReconnecting.value = true;
+        hasPoorConnection.value = true;
+      }
       unawaited(_requestIceRestart());
     };
 
@@ -622,6 +658,22 @@ class CallController extends GetxController {
       Get.isRegistered<FeatureFlagService>() &&
       Get.find<FeatureFlagService>().videoCalling.value;
 
+  bool get _encryptedSignalingEnabled =>
+      Get.isRegistered<FeatureFlagService>() &&
+      Get.find<FeatureFlagService>().encryptedSignaling.value;
+
+  void _updateCallEncryptionState(String peerDeviceId) {
+    if (!_encryptedSignalingEnabled ||
+        _storageService.getPeerBundle(peerDeviceId) == null) {
+      callEncryptionState.value = CallEncryptionState.legacyUnencrypted;
+      return;
+    }
+    callEncryptionState.value =
+        _storageService.getPeerVerificationStatus(peerDeviceId) == 'verified'
+            ? CallEncryptionState.encryptedVerified
+            : CallEncryptionState.encryptedUnverified;
+  }
+
   Future<bool> _peerSupportsVideo(String deviceId) async {
     final info = await _socketService.requestPeerCapabilities(deviceId);
     final capabilities = info?['capabilities'];
@@ -634,12 +686,12 @@ class CallController extends GetxController {
   Future<void> _requestIceRestart({bool fatalOnFailure = false}) async {
     if (!_videoCallingEnabled || !isInCall || _iceRestartInFlight) return;
     _iceRestartInFlight = true;
+    isReconnecting.value = true;
     try {
       final restarted = await _webrtcService.restartIce();
-      if (!restarted &&
-          fatalOnFailure &&
-          !_webrtcService.isIceRestartInProgress) {
-        endCall();
+      if (!restarted && !_webrtcService.isIceRestartInProgress) {
+        isReconnecting.value = false;
+        if (fatalOnFailure) endCall();
       }
     } finally {
       _iceRestartInFlight = false;
@@ -665,7 +717,10 @@ class CallController extends GetxController {
   }
 
   void _handleCallMediaUpdate(Map<String, dynamic> data) {
-    if ((data['callId'] as String?) != currentCallId.value) return;
+    if ((data['callId'] as String?) != currentCallId.value ||
+        !isVideoCall.value) {
+      return;
+    }
     peerCameraOff.value = data['video'] == 'off';
   }
 
@@ -792,8 +847,8 @@ class CallController extends GetxController {
                 callId != null &&
                 callId.isNotEmpty &&
                 currentCallId.value == callId) {
-              if (Get.currentRoute != '/call/active') {
-                Get.offAllNamed('/call/active');
+              if (Get.currentRoute != activeCallRoute) {
+                Get.offAllNamed(activeCallRoute);
               }
             }
             return;
@@ -873,8 +928,8 @@ class CallController extends GetxController {
               '📞 Notification action: return to ongoing call $callId',
             );
             if (isConnected && currentCallId.value == callId) {
-              if (Get.currentRoute != '/call/active') {
-                Get.offAllNamed('/call/active');
+              if (Get.currentRoute != activeCallRoute) {
+                Get.offAllNamed(activeCallRoute);
               }
             }
             return;
@@ -1000,8 +1055,8 @@ class CallController extends GetxController {
         extra?['roomId'] as String? ?? extra?['room_id'] as String? ?? '';
     final avatarUrl =
         extra?['avatarUrl'] as String? ?? extra?['avatar_url'] as String? ?? '';
-    final isVideo =
-        (extra?['isVideo'] as bool?) ?? (extra?['is_video'] == true);
+    final isVideo = (extra?['isVideo'] as bool?) ??
+        (extra?['is_video'] == true || extra?['is_video'] == 'true');
 
     debugPrint(
       '📞 CallKit accept: no cached SDP, setting pending auto-accept and requesting resync',
@@ -1036,7 +1091,8 @@ class CallController extends GetxController {
 
     // Skip the incoming call screen and go straight to the active call UI.
     // The resync will arrive shortly and complete the connection there.
-    Get.offNamed('/call/active', arguments: callData);
+    isVideoCall.value = isVideo == true && _videoCallingEnabled;
+    Get.offNamed(activeCallRoute, arguments: callData);
   }
 
   Future<void> _watchForPendingAcceptedCall() async {
@@ -1254,6 +1310,7 @@ class CallController extends GetxController {
       if (success) {
         isVideoCall.value = _webrtcService.isVideoCall;
         isCameraOn.value = _webrtcService.isCameraEnabled;
+        isFrontCamera.value = _webrtcService.isFrontCamera;
         unawaited(_setNativeInCall(true));
         if (Platform.isAndroid) {
           unawaited(
@@ -1379,6 +1436,7 @@ class CallController extends GetxController {
       if (success) {
         isVideoCall.value = _webrtcService.isVideoCall;
         isCameraOn.value = _webrtcService.isCameraEnabled;
+        isFrontCamera.value = _webrtcService.isFrontCamera;
       }
 
       if (!success) {
@@ -1481,10 +1539,17 @@ class CallController extends GetxController {
     }
   }
 
+  String get activeCallRoute => isVideoCall.value && _videoCallingEnabled
+      ? '/call/video'
+      : '/call/active';
+
   void restoreCallScreen() {
     isCallMinimized.value = false;
-    final route =
-        isCaller.value && isConnecting ? '/call/outgoing' : '/call/active';
+    final route = isVideoCall.value
+        ? activeCallRoute
+        : isCaller.value && isConnecting
+            ? '/call/outgoing'
+            : '/call/active';
     Get.toNamed(route);
   }
 
@@ -1506,7 +1571,11 @@ class CallController extends GetxController {
     }
   }
 
-  Future<bool> switchCamera() => _webrtcService.switchCamera();
+  Future<bool> switchCamera() async {
+    final switched = await _webrtcService.switchCamera();
+    if (switched) isFrontCamera.value = _webrtcService.isFrontCamera;
+    return switched;
+  }
 
   /// Toggle speaker
   Future<void> toggleSpeaker() async {
@@ -1807,6 +1876,8 @@ class CallController extends GetxController {
       case 'connected':
         _ringtoneService.stopRingtone();
         callState.value = CallState.connected;
+        isReconnecting.value = false;
+        hasPoorConnection.value = false;
         _wasConnected = true;
         unawaited(_setNativeInCall(true));
 
@@ -1822,8 +1893,8 @@ class CallController extends GetxController {
 
         // Start duration update timer to sync with WebRTC service
         _startDurationUpdateTimer();
-        // Start proximity sensor for screen off during call
-        _setupProximitySensor();
+        // Proximity blanking is voice-only; video calls keep the display awake.
+        if (!isVideoCall.value) _setupProximitySensor();
         // Start native ongoing-call foreground notification with live duration
         if (Platform.isAndroid) {
           try {
@@ -1859,7 +1930,13 @@ class CallController extends GetxController {
         }
         // Navigate caller to active call screen (callee navigates from incoming screen)
         if (isCaller.value && !isCallMinimized.value) {
-          Get.offNamed('/call/active');
+          Get.offNamed(activeCallRoute);
+        }
+        break;
+      case 'disconnected':
+        if (isConnected) {
+          isReconnecting.value = _videoCallingEnabled;
+          hasPoorConnection.value = true;
         }
         break;
       case 'ended':
@@ -1867,6 +1944,8 @@ class CallController extends GetxController {
         _ringtoneService.stopRingtone();
         callState.value = CallState.ended;
         isCallMinimized.value = false;
+        isReconnecting.value = false;
+        hasPoorConnection.value = false;
         _stopDurationUpdateTimer();
         // Make sure we leave the call screen so the app doesn't get stuck
         // (e.g. after a cold-start accept from a notification)
@@ -1939,6 +2018,7 @@ class CallController extends GetxController {
 
   /// Resolve display name for a device ID (username or @user_ fallback)
   Future<void> _resolveDisplayName(String deviceId) async {
+    _updateCallEncryptionState(deviceId);
     // First check locally saved contact name (what the user named them in chat)
     final savedChat = _storageService.getChat(deviceId);
     if (savedChat != null &&
@@ -2009,13 +2089,20 @@ class CallController extends GetxController {
     isSpeakerOn.value = false;
     isVideoCall.value = false;
     isCameraOn.value = false;
+    isFrontCamera.value = true;
     peerCameraOff.value = false;
+    isReconnecting.value = false;
+    hasPoorConnection.value = false;
+    localVideoStream.value = null;
+    remoteVideoStream.value = null;
+    callEncryptionState.value = CallEncryptionState.legacyUnencrypted;
     callDuration.value = '00:00';
     remoteDeviceId.value = '';
     remoteDisplayName.value = '';
     currentCallId.value = '';
     isCaller.value = false;
     _latestIncomingCallData = null;
+    _iceRestartInFlight = false;
     _stopDurationUpdateTimer();
     _stopProximitySensor();
     _setCallScreenVisible(false);
@@ -2049,6 +2136,8 @@ class CallController extends GetxController {
 
   /// Cleanup resources
   void _cleanup() {
+    _videoWakelockWorker?.dispose();
+    unawaited(WakelockPlus.disable());
     _stopProximitySensor();
     _stopDurationUpdateTimer();
     _webrtcService.dispose();
@@ -2112,7 +2201,7 @@ class CallController extends GetxController {
       status: status,
       timestamp: _callStartTime!,
       durationSeconds: _wasConnected ? _durationSeconds : 0,
-      callType: 'audio',
+      callType: isVideoCall.value ? 'video' : 'audio',
     );
 
     // Save to history
@@ -2198,7 +2287,9 @@ class CallController extends GetxController {
 
     // Avoid duplicate UI if the incoming call screen is already open
     final currentRoute = Get.currentRoute;
-    if (currentRoute == '/call/incoming' || currentRoute == '/call/active') {
+    if (currentRoute == '/call/incoming' ||
+        currentRoute == '/call/active' ||
+        currentRoute == '/call/video') {
       debugPrint(
         '📞 Incoming call screen already open ($currentRoute), skipping',
       );
@@ -2392,6 +2483,7 @@ class CallController extends GetxController {
       if (success) {
         isVideoCall.value = _webrtcService.isVideoCall;
         isCameraOn.value = _webrtcService.isCameraEnabled;
+        isFrontCamera.value = _webrtcService.isFrontCamera;
         debugPrint('📞 Resync accept successful, navigating to active call');
         callState.value = CallState.ringing;
         // Clear pending auto-accept since we successfully accepted
@@ -2401,8 +2493,8 @@ class CallController extends GetxController {
           CallKitService().setCallConnected(callId);
         }
         // Only navigate if not already on the active call screen
-        if (Get.currentRoute != '/call/active') {
-          Get.offNamed('/call/active');
+        if (Get.currentRoute != activeCallRoute) {
+          Get.offNamed(activeCallRoute);
         }
       } else {
         debugPrint('❌ Resync accept failed');

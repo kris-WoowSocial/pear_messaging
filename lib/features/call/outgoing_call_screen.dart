@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:get/get.dart';
 import 'call_controller.dart';
+import 'call_encryption_indicator.dart';
 
 /// Outgoing Call Screen - Full-screen overlay for outgoing audio calls
 class OutgoingCallScreen extends StatelessWidget {
@@ -72,6 +73,12 @@ class OutgoingCallScreen extends StatelessWidget {
                             color: Colors.white70,
                             fontSize: 16,
                           ),
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      Obx(
+                        () => CallEncryptionIndicator(
+                          state: controller.callEncryptionState.value,
                         ),
                       ),
                     ],

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:get/get.dart';
 import 'call_controller.dart';
+import 'call_encryption_indicator.dart';
 
 /// Active Call Screen - Full-screen overlay for connected audio calls
 class ActiveCallScreen extends StatelessWidget {
@@ -84,20 +85,10 @@ class ActiveCallScreen extends StatelessWidget {
                   ),
                   const SizedBox(height: 8),
                   // E2EE indicator
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      const Icon(Icons.lock, size: 16, color: Colors.green),
-                      const SizedBox(width: 4),
-                      const Text(
-                        'End-to-End Encrypted',
-                        style: TextStyle(
-                          color: Colors.green,
-                          fontSize: 14,
-                          fontWeight: FontWeight.w500,
-                        ),
-                      ),
-                    ],
+                  Obx(
+                    () => CallEncryptionIndicator(
+                      state: controller.callEncryptionState.value,
+                    ),
                   ),
                   const SizedBox(height: 24),
                   // Call duration

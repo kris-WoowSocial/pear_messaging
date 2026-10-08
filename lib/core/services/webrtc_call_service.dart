@@ -34,6 +34,7 @@ class WebRTCCallService {
   bool _isSpeakerOn = false;
   bool _isVideoCall = false;
   bool _isCameraEnabled = false;
+  bool _isFrontCamera = true;
   bool _iceRestartInProgress = false;
   String? _localSdp;
   String? _remoteSdp;
@@ -407,6 +408,7 @@ class WebRTCCallService {
   /// Get local media stream with hardware optimization
   Future<MediaStream?> _getUserMedia({bool video = false}) async {
     try {
+      if (video) _isFrontCamera = true;
       final stream = await navigator.mediaDevices.getUserMedia(
         CallMediaHelper.mediaConstraints(video: video),
       );
@@ -612,7 +614,9 @@ class WebRTCCallService {
     final tracks = _localStream?.getVideoTracks() ?? const [];
     if (tracks.isEmpty) return false;
     try {
-      return await Helper.switchCamera(tracks.first);
+      final switched = await Helper.switchCamera(tracks.first);
+      if (switched) _isFrontCamera = !_isFrontCamera;
+      return switched;
     } catch (e) {
       debugPrint('⚠️ Failed to switch camera: $e');
       return false;
@@ -724,6 +728,7 @@ class WebRTCCallService {
     _isMuted = false;
     _isVideoCall = false;
     _isCameraEnabled = false;
+    _isFrontCamera = true;
     _iceRestartInProgress = false;
     _localSdp = null;
     _remoteSdp = null;
@@ -821,6 +826,7 @@ class WebRTCCallService {
   bool get isSpeakerOn => _isSpeakerOn;
   bool get isVideoCall => _isVideoCall;
   bool get isCameraEnabled => _isCameraEnabled;
+  bool get isFrontCamera => _isFrontCamera;
   bool get isIceRestartInProgress => _iceRestartInProgress;
   bool get isInCall => _peerConnection != null;
   String? get currentCallId => _currentCallId;
