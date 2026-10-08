@@ -1,5 +1,6 @@
 package com.vant.chat
 
+import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -7,6 +8,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.media.AudioAttributes
 import android.media.AudioManager
@@ -20,6 +22,7 @@ import android.os.Vibrator
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
+import androidx.core.content.ContextCompat
 
 /**
  * Foreground service for incoming call ringing.
@@ -188,11 +191,17 @@ class CallForegroundService : Service() {
     }
 
     private fun startOngoingCall(intent: Intent?) {
+        val nextCallId = intent?.getStringExtra("call_id") ?: ""
+        val existingStart = if (isOngoingCall && ongoingCallId == nextCallId) {
+            ongoingStartTime
+        } else {
+            System.currentTimeMillis()
+        }
         isOngoingCall = true
-        ongoingCallId = intent?.getStringExtra("call_id") ?: ""
+        ongoingCallId = nextCallId
         ongoingCallerName = intent?.getStringExtra("caller_name") ?: "Unknown"
         ongoingIsVideo = intent?.getBooleanExtra("is_video", false) ?: false
-        ongoingStartTime = System.currentTimeMillis()
+        ongoingStartTime = existingStart
 
         stopRinging()
 
@@ -210,7 +219,11 @@ class CallForegroundService : Service() {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
                 var serviceType = ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE or
                     ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL
-                if (ongoingIsVideo) {
+                val hasCameraPermission = ContextCompat.checkSelfPermission(
+                    this,
+                    Manifest.permission.CAMERA
+                ) == PackageManager.PERMISSION_GRANTED
+                if (ongoingIsVideo && hasCameraPermission) {
                     serviceType = serviceType or ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
                 }
                 ServiceCompat.startForeground(
@@ -222,7 +235,7 @@ class CallForegroundService : Service() {
                 Log.d(
                     TAG,
                     "Started ongoing foreground (microphone, phoneCall" +
-                        "${if (ongoingIsVideo) ", camera" else ""})"
+                        "${if (ongoingIsVideo && hasCameraPermission) ", camera" else ""})"
                 )
             } else {
                 startForeground(ONGOING_NOTIFICATION_ID, notification)
