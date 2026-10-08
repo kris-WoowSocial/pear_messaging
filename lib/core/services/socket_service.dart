@@ -5,7 +5,9 @@ import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:socket_io_client/socket_io_client.dart' as IO;
+import 'call_media_helper.dart';
 import 'encryption_service.dart';
+import 'feature_flag_service.dart';
 import 'fcm_service.dart';
 import 'block_service.dart';
 import 'connection_request_service.dart';
@@ -53,6 +55,7 @@ class SocketService extends GetxService {
   Function(Map<String, dynamic>)? onIceCandidate;
   Function(Map<String, dynamic>)? onPeerRinging;
   Function(Map<String, dynamic>)? onIceRestart;
+  Function(Map<String, dynamic>)? onCallMediaUpdate;
   Function(Map<String, dynamic>)? onCallResync;
   Function(Map<String, dynamic>)? onCalleeConnecting;
 
@@ -513,6 +516,14 @@ class SocketService extends GetxService {
       }
     });
 
+    // WebRTC Call: remote camera state update
+    _socket?.on('call_media_update', (data) {
+      debugPrint('📞 Call media update: $data');
+      if (onCallMediaUpdate != null && data != null) {
+        onCallMediaUpdate!(Map<String, dynamic>.from(data));
+      }
+    });
+
     // WebRTC Call: Call resync - server resends SDP offer after cold-start accept
     _socket?.on('call_resync', (data) {
       debugPrint('📞 Call resync: $data');
@@ -636,6 +647,7 @@ class SocketService extends GetxService {
       'platform': platform,
       'isForeground': _isInForeground,
       'clientVersion': _clientVersion,
+      'capabilities': _announcedCapabilities,
       'identityBundle': bundle,
       'identitySig': identitySig,
       'registerSig': registerSig,
@@ -647,6 +659,13 @@ class SocketService extends GetxService {
   /// Client version reported to the server for rollout gating.
   String get _clientVersion => _cachedClientVersion;
   String _cachedClientVersion = 'unknown';
+
+  List<String> get _announcedCapabilities {
+    if (!Get.isRegistered<FeatureFlagService>()) return const [];
+    return Get.find<FeatureFlagService>().videoCalling.value
+        ? const ['video_call']
+        : const [];
+  }
 
   /// Identity bundle for the new identityBundle register field.
   /// Null when IdentityService is unavailable or has no keys — the server
@@ -1337,18 +1356,21 @@ class SocketService extends GetxService {
     required String calleeId,
     required String sdpOffer,
     String? callerName,
+    bool isVideo = false,
   }) {
     if (!isConnected.value) {
       debugPrint('❌ Cannot initiate call: not connected');
       return;
     }
 
-    _socket?.emit('call_initiate', buildCallInitiatePayload(
+    final payload = buildCallInitiatePayload(
       callerId: callerId,
       calleeId: calleeId,
       sdpOffer: sdpOffer,
       callerName: callerName,
-    ));
+    );
+    if (isVideo) payload['isVideo'] = true;
+    _socket?.emit('call_initiate', payload);
     debugPrint('📞 Call initiated: $callerId -> $calleeId');
   }
 
@@ -1498,6 +1520,8 @@ class SocketService extends GetxService {
   void requestIceRestart({
     required String callId,
     required String targetDeviceId,
+    String? sdpOffer,
+    String? sdpAnswer,
   }) {
     if (!isConnected.value) {
       debugPrint('❌ Cannot request ICE restart: not connected');
@@ -1507,8 +1531,46 @@ class SocketService extends GetxService {
     _socket?.emit('ice_restart', {
       'callId': callId,
       'targetDeviceId': targetDeviceId,
+      if (sdpOffer != null) 'sdpOffer': sdpOffer,
+      if (sdpAnswer != null) 'sdpAnswer': sdpAnswer,
     });
     debugPrint('📞 ICE restart requested');
+  }
+
+  /// Notify the peer that local camera transmission changed.
+  void sendCallMediaUpdate({
+    required String callId,
+    required bool video,
+  }) {
+    if (!isConnected.value) {
+      debugPrint('❌ Cannot send call media update: not connected');
+      return;
+    }
+    _socket?.emit(
+      'call_media_update',
+      CallMediaHelper.mediaUpdatePayload(callId: callId, video: video),
+    );
+  }
+
+  /// Ask the server for a peer's rollout capabilities.
+  Future<Map<String, dynamic>?> requestPeerCapabilities(
+    String deviceId,
+  ) async {
+    if (!isConnected.value || _socket == null) return null;
+    final completer = Completer<Map<String, dynamic>?>();
+    _socket!.emitWithAck(
+      'peer_capability',
+      {'deviceId': deviceId},
+      ack: (data) {
+        completer.complete(
+          data is Map ? Map<String, dynamic>.from(data) : null,
+        );
+      },
+    );
+    return completer.future.timeout(
+      const Duration(seconds: 5),
+      onTimeout: () => null,
+    );
   }
 
   /// Send an identity announcement (self-signed bundle) to a contact.

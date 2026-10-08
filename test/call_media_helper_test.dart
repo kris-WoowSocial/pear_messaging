@@ -1,0 +1,92 @@
+import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:pear_messaging/core/services/call_media_helper.dart';
+
+void main() {
+  test('video constraints preserve audio processing and request front 720p30',
+      () {
+    final constraints = CallMediaHelper.mediaConstraints(video: true);
+    final audio = constraints['audio'] as Map;
+    final video = constraints['video'] as Map;
+
+    expect(audio['echoCancellation'], true);
+    expect(audio['noiseSuppression'], true);
+    expect(audio['autoGainControl'], true);
+    expect(video['facingMode'], 'user');
+    expect(video['width'], {'ideal': 1280});
+    expect(video['height'], {'ideal': 720});
+    expect(video['frameRate'], {'ideal': 30});
+  });
+
+  test('peer video capability requires flag capability and 1.8+', () {
+    expect(
+      CallMediaHelper.peerSupportsVideo(
+        clientVersion: '1.8.0+180',
+        capabilities: const ['video_call'],
+      ),
+      true,
+    );
+    expect(
+      CallMediaHelper.peerSupportsVideo(
+        clientVersion: '1.7.1+71',
+        capabilities: const ['video_call'],
+      ),
+      false,
+    );
+    expect(
+      CallMediaHelper.peerSupportsVideo(
+        clientVersion: '1.8.0+180',
+        capabilities: const [],
+      ),
+      false,
+    );
+  });
+
+  test('media update uses compact callId/video wire shape', () {
+    expect(
+      CallMediaHelper.mediaUpdatePayload(callId: 'c1', video: true),
+      {'callId': 'c1', 'video': 'on'},
+    );
+    expect(
+      CallMediaHelper.mediaUpdatePayload(callId: 'c1', video: false),
+      {'callId': 'c1', 'video': 'off'},
+    );
+  });
+
+  test('wifi/mobile transitions are detected without false positives', () {
+    expect(
+      CallMediaHelper.wifiMobileSwitch(
+        before: const [ConnectivityResult.wifi],
+        after: const [ConnectivityResult.mobile],
+      ),
+      true,
+    );
+    expect(
+      CallMediaHelper.wifiMobileSwitch(
+        before: const [ConnectivityResult.mobile],
+        after: const [ConnectivityResult.wifi],
+      ),
+      true,
+    );
+    expect(
+      CallMediaHelper.wifiMobileSwitch(
+        before: const [ConnectivityResult.wifi],
+        after: const [ConnectivityResult.wifi, ConnectivityResult.mobile],
+      ),
+      false,
+    );
+  });
+
+  test('ICE fingerprints normalize case and reject changed fingerprint', () {
+    const first =
+        'v=0\r\na=fingerprint:SHA-256 aa:bb:Cc\r\na=fingerprint:sha-384 11:22\r\n';
+    const same =
+        'v=0\r\na=fingerprint:sha-256 AA:BB:CC\r\na=fingerprint:SHA-384 11:22\r\n';
+    const changed =
+        'v=0\r\na=fingerprint:SHA-256 AA:BB:CC\r\na=fingerprint:sha-384 11:23\r\n';
+
+    expect(CallMediaHelper.sameDtlsFingerprints(first, same), true);
+    expect(CallMediaHelper.sameDtlsFingerprints(first, changed), false);
+    expect(CallMediaHelper.dtlsFingerprints('v=0'), isEmpty);
+  });
+}

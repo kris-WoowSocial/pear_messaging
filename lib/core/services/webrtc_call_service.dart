@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'call_foreground_service.dart';
+import 'call_media_helper.dart';
 
 /// WebRTC Call Service - Manages peer-to-peer audio calls with E2EE
 class WebRTCCallService {
@@ -31,6 +32,11 @@ class WebRTCCallService {
   bool _isCaller = false;
   bool _isMuted = false;
   bool _isSpeakerOn = false;
+  bool _isVideoCall = false;
+  bool _isCameraEnabled = false;
+  bool _iceRestartInProgress = false;
+  String? _localSdp;
+  String? _remoteSdp;
 
   // Call duration
   Timer? _durationTimer;
@@ -50,6 +56,9 @@ class WebRTCCallService {
   onIceCandidate;
   Function(String)? onCallStateChange;
   Function(String)? onLocalDescription; // Callback for SDP offer/answer
+  Function(String sdp, bool isOffer)? onIceRestartDescription;
+  Function(String reason)? onIceRestartNeeded;
+  Function()? onCameraPermissionDenied;
 
   // ICE servers configuration
   // Direct P2P is tried first (STUN), TURN is used only as a fallback when
@@ -93,10 +102,12 @@ class WebRTCCallService {
   Future<bool> startCall({
     required String calleeDeviceId,
     required String callerDeviceId,
+    bool isVideo = false,
   }) async {
     try {
       _remoteDeviceId = calleeDeviceId;
       _isCaller = true;
+      _isVideoCall = isVideo;
       _currentCallId = 'call_${DateTime.now().millisecondsSinceEpoch}';
 
       debugPrint('📞 Starting call to $calleeDeviceId');
@@ -106,6 +117,11 @@ class WebRTCCallService {
       if (!hasPermission) {
         debugPrint('❌ Microphone permission denied');
         return false;
+      }
+
+      if (isVideo && !await _requestCameraPermission()) {
+        _isVideoCall = false;
+        onCameraPermissionDenied?.call();
       }
 
       // Create peer connection
@@ -120,7 +136,7 @@ class WebRTCCallService {
       // Get local audio stream with hardware optimization
       // On iOS, audio session is configured by flutter_webrtc during getUserMedia.
       // We'll configure speaker routing AFTER the stream is captured (on connection).
-      _localStream = await _getUserMedia();
+      _localStream = await _getUserMedia(video: _isVideoCall);
       if (_localStream == null) {
         debugPrint('❌ Failed to get local stream');
         return false;
@@ -130,6 +146,7 @@ class WebRTCCallService {
       await _forceAudioDevice();
 
       onLocalStream?.call(_localStream!);
+      _isCameraEnabled = _localStream!.getVideoTracks().isNotEmpty;
 
       // Add local stream to peer connection
       // CRITICAL FIX: Use for loop instead of forEach - forEach doesn't await async callbacks
@@ -143,6 +160,7 @@ class WebRTCCallService {
       debugPrint(
         '📞 Active senders before createOffer: ${sendersBeforeOffer.length}',
       );
+      await _applyVideoBitrateCap();
 
       // Create offer
       final offer = await _peerConnection!.createOffer();
@@ -150,6 +168,7 @@ class WebRTCCallService {
 
       // Notify caller of the SDP offer
       if (offer.sdp != null) {
+        _localSdp = offer.sdp;
         onLocalDescription?.call(offer.sdp!);
       }
 
@@ -169,11 +188,13 @@ class WebRTCCallService {
     required String callerDeviceId,
     required String calleeDeviceId,
     required String sdpOffer,
+    bool isVideo = false,
   }) async {
     try {
       _currentCallId = callId;
       _remoteDeviceId = callerDeviceId;
       _isCaller = false;
+      _isVideoCall = isVideo;
 
       debugPrint('📞 Accepting call from $callerDeviceId');
 
@@ -182,6 +203,11 @@ class WebRTCCallService {
       if (!hasPermission) {
         debugPrint('❌ Microphone permission denied');
         return false;
+      }
+
+      if (isVideo && !await _requestCameraPermission()) {
+        _isVideoCall = false;
+        onCameraPermissionDenied?.call();
       }
 
       // Create peer connection
@@ -205,7 +231,7 @@ class WebRTCCallService {
       // Get local audio stream with hardware optimization
       // On iOS, audio session is configured by flutter_webrtc during getUserMedia.
       // We'll configure speaker routing AFTER the stream is captured (on connection).
-      _localStream = await _getUserMedia();
+      _localStream = await _getUserMedia(video: _isVideoCall);
       if (_localStream == null) {
         debugPrint('❌ Failed to get local stream');
         return false;
@@ -216,6 +242,7 @@ class WebRTCCallService {
       await _forceAudioDevice();
 
       onLocalStream?.call(_localStream!);
+      _isCameraEnabled = _localStream!.getVideoTracks().isNotEmpty;
 
       // Add local stream to peer connection
       // CRITICAL FIX: Use for loop instead of forEach - forEach doesn't await async callbacks
@@ -228,6 +255,7 @@ class WebRTCCallService {
       debugPrint(
         '📞 Active senders before createAnswer: ${sendersBeforeAnswer.length}',
       );
+      await _applyVideoBitrateCap();
 
       // Force mode AGAIN right before setRemoteDescription, because this is the
       // call that triggers onAddTrack → playout AudioTrack creation on a worker
@@ -235,6 +263,7 @@ class WebRTCCallService {
       await _forceAudioDevice();
 
       // Set remote description (offer)
+      _remoteSdp = sdpOffer;
       await _peerConnection!.setRemoteDescription(
         RTCSessionDescription(sdpOffer, 'offer'),
       );
@@ -249,6 +278,7 @@ class WebRTCCallService {
       // Send the answer immediately (trickle ICE). Candidates are exchanged
       // separately via signaling, so we must NOT block on ICE gathering here.
       if (answer.sdp != null) {
+        _localSdp = answer.sdp;
         onLocalDescription?.call(answer.sdp!);
       }
 
@@ -302,6 +332,10 @@ class WebRTCCallService {
     // Handle ICE connection state changes
     _peerConnection!.onIceConnectionState = (state) {
       debugPrint('📞 ICE connection state: $state');
+      if (state == RTCIceConnectionState.RTCIceConnectionStateDisconnected ||
+          state == RTCIceConnectionState.RTCIceConnectionStateFailed) {
+        onIceRestartNeeded?.call(state.toString());
+      }
     };
 
     // Handle connection state changes
@@ -355,19 +389,18 @@ class WebRTCCallService {
     };
   }
 
-  /// Get local audio stream with hardware optimization
-  Future<MediaStream?> _getUserMedia() async {
+  /// Get local media stream with hardware optimization
+  Future<MediaStream?> _getUserMedia({bool video = false}) async {
     try {
-      final stream = await navigator.mediaDevices.getUserMedia({
-        'audio': {
-          'echoCancellation': true,
-          'noiseSuppression': true,
-          'autoGainControl': true,
-        },
-        'video': false,
-      });
+      final stream = await navigator.mediaDevices.getUserMedia(
+        CallMediaHelper.mediaConstraints(video: video),
+      );
 
-      debugPrint('📞 Local audio stream captured with hardware optimization');
+      debugPrint(
+        video
+            ? '📞 Local audio/video stream captured with hardware optimization'
+            : '📞 Local audio stream captured with hardware optimization',
+      );
       return stream;
     } catch (e) {
       debugPrint('❌ Failed to get user media: $e');
@@ -381,6 +414,7 @@ class WebRTCCallService {
       await _peerConnection?.setRemoteDescription(
         RTCSessionDescription(sdp, type),
       );
+      _remoteSdp = sdp;
       _remoteDescriptionSet = true;
       debugPrint('📞 Remote description set: $type');
       // Add any candidates that arrived before the remote description was ready
@@ -445,6 +479,87 @@ class WebRTCCallService {
     );
   }
 
+  /// Create and apply an ICE-restart offer. The SDP is returned through
+  /// [onIceRestartDescription] instead of the normal call signaling callback.
+  Future<bool> restartIce() async {
+    if (_peerConnection == null || _iceRestartInProgress) return false;
+    try {
+      _iceRestartInProgress = true;
+      final offer = await _peerConnection!.createOffer({'iceRestart': true});
+      if (offer.sdp == null ||
+          _localSdp == null ||
+          !CallMediaHelper.sameDtlsFingerprints(_localSdp!, offer.sdp!)) {
+        _iceRestartInProgress = false;
+        debugPrint('❌ ICE restart aborted: DTLS fingerprint changed');
+        return false;
+      }
+      await _peerConnection!.setLocalDescription(offer);
+      _localSdp = offer.sdp;
+      onIceRestartDescription?.call(offer.sdp!, true);
+      return true;
+    } catch (e) {
+      _iceRestartInProgress = false;
+      debugPrint('❌ ICE restart failed: $e');
+      return false;
+    }
+  }
+
+  /// Handle a remote ICE-restart offer and return its SDP answer through
+  /// [onIceRestartDescription].
+  Future<bool> handleIceRestartOffer(String sdp) async {
+    if (_peerConnection == null) return false;
+    if (_iceRestartInProgress) {
+      debugPrint('📞 Ignoring remote ICE restart offer during local restart');
+      return false;
+    }
+    if (_remoteSdp != null &&
+        !CallMediaHelper.sameDtlsFingerprints(_remoteSdp!, sdp)) {
+      debugPrint('❌ Remote ICE restart rejected: DTLS fingerprint changed');
+      return false;
+    }
+    try {
+      await _peerConnection!.setRemoteDescription(
+        RTCSessionDescription(sdp, 'offer'),
+      );
+      _remoteSdp = sdp;
+      final answer = await _peerConnection!.createAnswer();
+      if (answer.sdp == null ||
+          _localSdp == null ||
+          !CallMediaHelper.sameDtlsFingerprints(_localSdp!, answer.sdp!)) {
+        debugPrint('❌ ICE restart answer aborted: DTLS fingerprint changed');
+        return false;
+      }
+      await _peerConnection!.setLocalDescription(answer);
+      _localSdp = answer.sdp;
+      _iceRestartInProgress = false;
+      onIceRestartDescription?.call(answer.sdp!, false);
+      return true;
+    } catch (e) {
+      debugPrint('❌ Remote ICE restart handling failed: $e');
+      return false;
+    }
+  }
+
+  Future<bool> handleIceRestartAnswer(String sdp) async {
+    if (_peerConnection == null || !_iceRestartInProgress) return false;
+    if (_remoteSdp != null &&
+        !CallMediaHelper.sameDtlsFingerprints(_remoteSdp!, sdp)) {
+      debugPrint('❌ Remote ICE answer rejected: DTLS fingerprint changed');
+      return false;
+    }
+    try {
+      await _peerConnection!.setRemoteDescription(
+        RTCSessionDescription(sdp, 'answer'),
+      );
+      _remoteSdp = sdp;
+      _iceRestartInProgress = false;
+      return true;
+    } catch (e) {
+      debugPrint('❌ Remote ICE answer handling failed: $e');
+      return false;
+    }
+  }
+
   /// Toggle mute
   void toggleMute() {
     if (_localStream != null) {
@@ -464,6 +579,56 @@ class WebRTCCallService {
         track.enabled = !muted;
       });
       debugPrint('📞 Mute set to: $muted');
+    }
+  }
+
+  /// Toggle the local camera without renegotiating the call.
+  Future<void> setCameraEnabled(bool enabled) async {
+    final tracks = _localStream?.getVideoTracks() ?? const [];
+    for (final track in tracks) {
+      track.enabled = enabled;
+    }
+    _isCameraEnabled = enabled && tracks.isNotEmpty;
+    debugPrint('📞 Camera set to: $_isCameraEnabled');
+  }
+
+  /// Switch between front and rear cameras when a video track is active.
+  Future<bool> switchCamera() async {
+    final tracks = _localStream?.getVideoTracks() ?? const [];
+    if (tracks.isEmpty) return false;
+    try {
+      return await Helper.switchCamera(tracks.first);
+    } catch (e) {
+      debugPrint('⚠️ Failed to switch camera: $e');
+      return false;
+    }
+  }
+
+  /// Cap outbound video bitrate through RTP sender parameters.
+  Future<void> _applyVideoBitrateCap() async {
+    if (!_isVideoCall || _peerConnection == null) return;
+    try {
+      final senders = await _peerConnection!.getSenders();
+      for (final sender in senders) {
+        if (sender.track?.kind != 'video') continue;
+        final parameters = sender.parameters;
+        final encodings = parameters.encodings;
+        if (encodings == null || encodings.isEmpty) {
+          parameters.encodings = [
+            RTCRtpEncoding(maxBitrate: CallMediaHelper.videoBitrateCapBps),
+          ];
+        } else {
+          for (final encoding in encodings) {
+            encoding.maxBitrate = CallMediaHelper.videoBitrateCapBps;
+          }
+        }
+        await sender.setParameters(parameters);
+      }
+      debugPrint(
+        '📞 Video bitrate capped at ${CallMediaHelper.videoBitrateCapBps}bps',
+      );
+    } catch (e) {
+      debugPrint('⚠️ Failed to apply video bitrate cap: $e');
     }
   }
 
@@ -542,6 +707,11 @@ class WebRTCCallService {
     _remoteDeviceId = null;
     _isCaller = false;
     _isMuted = false;
+    _isVideoCall = false;
+    _isCameraEnabled = false;
+    _iceRestartInProgress = false;
+    _localSdp = null;
+    _remoteSdp = null;
     _callDurationSeconds = 0;
 
     debugPrint('📞 Call ended and cleaned up');
@@ -619,9 +789,23 @@ class WebRTCCallService {
     return false;
   }
 
+  /// Request camera permission only when a video call is starting.
+  Future<bool> _requestCameraPermission() async {
+    final status = await Permission.camera.request();
+    if (status.isGranted) return true;
+    debugPrint(
+      status.isPermanentlyDenied
+          ? '❌ Camera permission permanently denied'
+          : '❌ Camera permission denied — falling back to audio',
+    );
+    return false;
+  }
+
   /// Getters
   bool get isMuted => _isMuted;
   bool get isSpeakerOn => _isSpeakerOn;
+  bool get isVideoCall => _isVideoCall;
+  bool get isCameraEnabled => _isCameraEnabled;
   bool get isInCall => _peerConnection != null;
   String? get currentCallId => _currentCallId;
   String? get remoteDeviceId => _remoteDeviceId;

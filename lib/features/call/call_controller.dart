@@ -1,10 +1,13 @@
 import 'dart:async';
 import 'dart:io';
+import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:get/get.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../../core/services/call_media_helper.dart';
+import '../../core/services/feature_flag_service.dart';
 import '../../core/services/socket_service.dart';
 import '../../core/services/webrtc_call_service.dart';
 import '../../core/services/local_storage_service.dart';
@@ -63,6 +66,9 @@ class CallController extends GetxController {
   final RxBool isCaller = false.obs;
   final RxString callerDisplayName = ''.obs;
   final RxBool isCallMinimized = false.obs;
+  final RxBool isVideoCall = false.obs;
+  final RxBool isCameraOn = false.obs;
+  final RxBool peerCameraOff = false.obs;
 
   // Proximity sensor state - managed by ProximityService
   final RxBool isNearEar = false.obs;
@@ -104,6 +110,9 @@ class CallController extends GetxController {
 
   // Native call event stream subscription
   StreamSubscription? _callEventSubscription;
+  StreamSubscription<List<ConnectivityResult>>? _callConnectivitySubscription;
+  List<ConnectivityResult>? _lastConnectivity;
+  bool _iceRestartInFlight = false;
 
   @override
   void onInit() {
@@ -111,6 +120,7 @@ class CallController extends GetxController {
     debugPrint('📞 CallController onInit called');
     _initializeWebrtcService();
     _setupSocketListeners();
+    _setupCallConnectivityMonitor();
 
     // If the socket reconnects while we have a pending auto-accept (e.g. cold-start
     // accept where the first resync request failed), send the resync again.
@@ -482,6 +492,8 @@ class CallController extends GetxController {
     _pendingAcceptedCallWatchTimer = null;
     _callEventSubscription?.cancel();
     _callEventSubscription = null;
+    _callConnectivitySubscription?.cancel();
+    _callConnectivitySubscription = null;
     // Only cleanup if not in an active call
     // This prevents call from ending when navigating between screens
     if (!isInCall) {
@@ -509,6 +521,30 @@ class CallController extends GetxController {
 
     _webrtcService.onLocalDescription = (sdp) {
       _handleLocalDescription(sdp);
+    };
+
+    _webrtcService.onIceRestartDescription = (sdp, isOffer) {
+      _socketService.requestIceRestart(
+        callId: currentCallId.value,
+        targetDeviceId: remoteDeviceId.value,
+        sdpOffer: isOffer ? sdp : null,
+        sdpAnswer: isOffer ? null : sdp,
+      );
+    };
+
+    _webrtcService.onIceRestartNeeded = (_) {
+      unawaited(_requestIceRestart());
+    };
+
+    _webrtcService.onCameraPermissionDenied = () {
+      isVideoCall.value = false;
+      isCameraOn.value = false;
+      Get.snackbar(
+        'Camera unavailable',
+        'Camera permission was denied. Continuing with audio only.',
+        snackPosition: SnackPosition.BOTTOM,
+        duration: const Duration(seconds: 4),
+      );
     };
   }
 
@@ -546,9 +582,78 @@ class CallController extends GetxController {
       _handlePeerRinging(data);
     };
 
+    _socketService.onIceRestart = (data) {
+      _handleIceRestart(data);
+    };
+
+    _socketService.onCallMediaUpdate = (data) {
+      _handleCallMediaUpdate(data);
+    };
+
     _socketService.onCallResync = (data) {
       _handleCallResync(data);
     };
+  }
+
+  void _setupCallConnectivityMonitor() {
+    Connectivity().checkConnectivity().then((results) {
+      _lastConnectivity = results;
+    });
+    _callConnectivitySubscription =
+        Connectivity().onConnectivityChanged.listen((results) {
+      final switched = CallMediaHelper.wifiMobileSwitch(
+        before: _lastConnectivity,
+        after: results,
+      );
+      _lastConnectivity = results;
+      if (switched) unawaited(_requestIceRestart());
+    });
+  }
+
+  bool get _videoCallingEnabled =>
+      Get.isRegistered<FeatureFlagService>() &&
+      Get.find<FeatureFlagService>().videoCalling.value;
+
+  Future<bool> _peerSupportsVideo(String deviceId) async {
+    final info = await _socketService.requestPeerCapabilities(deviceId);
+    final capabilities = info?['capabilities'];
+    return CallMediaHelper.peerSupportsVideo(
+      clientVersion: info?['clientVersion'] as String?,
+      capabilities: capabilities is List ? capabilities.cast<String>() : null,
+    );
+  }
+
+  Future<void> _requestIceRestart() async {
+    if (!_videoCallingEnabled || !isInCall || _iceRestartInFlight) return;
+    _iceRestartInFlight = true;
+    try {
+      await _webrtcService.restartIce();
+    } finally {
+      _iceRestartInFlight = false;
+    }
+  }
+
+  Future<void> _handleIceRestart(Map<String, dynamic> data) async {
+    if ((data['callId'] as String?) != currentCallId.value ||
+        !_videoCallingEnabled) {
+      return;
+    }
+    final offer = data['sdpOffer'] as String?;
+    final answer = data['sdpAnswer'] as String?;
+    if (offer != null && offer.isNotEmpty) {
+      await _webrtcService.handleIceRestartOffer(offer);
+      return;
+    }
+    if (answer != null && answer.isNotEmpty) {
+      await _webrtcService.handleIceRestartAnswer(answer);
+      return;
+    }
+    await _requestIceRestart();
+  }
+
+  void _handleCallMediaUpdate(Map<String, dynamic> data) {
+    if ((data['callId'] as String?) != currentCallId.value) return;
+    peerCameraOff.value = data['video'] == 'off';
   }
 
   /// Setup proximity sensor using actual hardware proximity sensor
@@ -1086,11 +1191,22 @@ class CallController extends GetxController {
   }
 
   /// Start an outgoing call
-  Future<bool> startCall(String calleeDeviceId) async {
+  Future<bool> startCall(String calleeDeviceId, {bool isVideo = false}) async {
     try {
       final callerDeviceId = _storageService.deviceId;
       if (callerDeviceId == null) {
         debugPrint('❌ Cannot start call: No device ID');
+        return false;
+      }
+
+      final wantsVideo = isVideo && _videoCallingEnabled;
+      if (wantsVideo && !await _peerSupportsVideo(calleeDeviceId)) {
+        Get.snackbar(
+          'Video unavailable',
+          'Ask them to update Vant to use video calls.',
+          snackPosition: SnackPosition.BOTTOM,
+          duration: const Duration(seconds: 4),
+        );
         return false;
       }
 
@@ -1104,6 +1220,9 @@ class CallController extends GetxController {
       // Store callee ID for when SDP is ready
       remoteDeviceId.value = calleeDeviceId;
       isCaller.value = true;
+      isVideoCall.value = wantsVideo;
+      isCameraOn.value = wantsVideo;
+      peerCameraOff.value = false;
       _callStartTime = DateTime.now();
       _wasConnected = false;
       _durationSeconds = 0;
@@ -1116,9 +1235,12 @@ class CallController extends GetxController {
       final success = await _webrtcService.startCall(
         calleeDeviceId: calleeDeviceId,
         callerDeviceId: callerDeviceId,
+        isVideo: wantsVideo,
       );
 
       if (success) {
+        isVideoCall.value = _webrtcService.isVideoCall;
+        isCameraOn.value = _webrtcService.isCameraEnabled;
         unawaited(_setNativeInCall(true));
         if (Platform.isAndroid) {
           unawaited(
@@ -1127,6 +1249,7 @@ class CallController extends GetxController {
               'calleeName': remoteDisplayName.value.isNotEmpty
                   ? remoteDisplayName.value
                   : StringUtils.generateFriendlyName(calleeDeviceId),
+              'isVideo': isVideoCall.value,
             }),
           );
         }
@@ -1198,6 +1321,17 @@ class CallController extends GetxController {
         return false;
       }
 
+      final incomingVideo = callData['isVideo'] == true;
+      if (incomingVideo && !_videoCallingEnabled) {
+        _socketService.rejectCall(
+          callId: callId,
+          callerId: callerId,
+          reason: 'peer_update_required',
+        );
+        _resetCallState();
+        return false;
+      }
+
       // Check microphone permission before accepting call
       final hasPermission = await _checkMicrophonePermission();
       if (!hasPermission) {
@@ -1210,6 +1344,9 @@ class CallController extends GetxController {
       currentCallId.value = callId;
       remoteDeviceId.value = callerId;
       isCaller.value = false;
+      isVideoCall.value = incomingVideo;
+      isCameraOn.value = incomingVideo;
+      peerCameraOff.value = false;
       _resolveDisplayName(callerId);
 
       // CRITICAL: Initialize audio mode before accepting call
@@ -1223,7 +1360,13 @@ class CallController extends GetxController {
         callerDeviceId: callerId,
         calleeDeviceId: calleeDeviceId,
         sdpOffer: sdpOffer,
+        isVideo: incomingVideo,
       );
+
+      if (success) {
+        isVideoCall.value = _webrtcService.isVideoCall;
+        isCameraOn.value = _webrtcService.isCameraEnabled;
+      }
 
       if (!success) {
         // Show user-friendly error message
@@ -1337,6 +1480,20 @@ class CallController extends GetxController {
     _webrtcService.toggleMute();
     isMuted.value = _webrtcService.isMuted;
   }
+
+  /// Enable or disable the local video track without renegotiation.
+  Future<void> setCameraEnabled(bool enabled) async {
+    await _webrtcService.setCameraEnabled(enabled);
+    isCameraOn.value = _webrtcService.isCameraEnabled;
+    if (_videoCallingEnabled && currentCallId.value.isNotEmpty) {
+      _socketService.sendCallMediaUpdate(
+        callId: currentCallId.value,
+        video: isCameraOn.value,
+      );
+    }
+  }
+
+  Future<bool> switchCamera() => _webrtcService.switchCamera();
 
   /// Toggle speaker
   Future<void> toggleSpeaker() async {
@@ -1597,6 +1754,7 @@ class CallController extends GetxController {
           callerName: callerDisplayName.value.isNotEmpty
               ? callerDisplayName.value
               : null,
+          isVideo: isVideoCall.value && _videoCallingEnabled,
         );
         debugPrint(
           '📞 SDP offer sent to socket with callerName: ${callerDisplayName.value}',
@@ -1662,7 +1820,7 @@ class CallController extends GetxController {
                 'callerName': remoteDisplayName.value.isNotEmpty
                     ? remoteDisplayName.value
                     : 'Unknown',
-                'isVideo': false,
+                'isVideo': isVideoCall.value,
               }),
             );
             debugPrint(
@@ -1836,6 +1994,9 @@ class CallController extends GetxController {
     isCallMinimized.value = false;
     isMuted.value = false;
     isSpeakerOn.value = false;
+    isVideoCall.value = false;
+    isCameraOn.value = false;
+    peerCameraOff.value = false;
     callDuration.value = '00:00';
     remoteDeviceId.value = '';
     remoteDisplayName.value = '';
@@ -1991,6 +2152,15 @@ class CallController extends GetxController {
 
     if (incomingCallId == null || incomingCallId.isEmpty) {
       debugPrint('❌ Incoming call received with no callId, ignoring');
+      return;
+    }
+
+    if (data['isVideo'] == true && !_videoCallingEnabled) {
+      _socketService.rejectCall(
+        callId: incomingCallId,
+        callerId: data['callerId'] as String? ?? '',
+        reason: 'peer_update_required',
+      );
       return;
     }
 
@@ -2159,6 +2329,17 @@ class CallController extends GetxController {
         return;
       }
 
+      final incomingVideo = data['isVideo'] == true;
+      if (incomingVideo && !_videoCallingEnabled) {
+        _socketService.rejectCall(
+          callId: callId,
+          callerId: callerId,
+          reason: 'peer_update_required',
+        );
+        _resetCallState();
+        return;
+      }
+
       // Check microphone permission before accepting call
       final hasPermission = await _checkMicrophonePermission();
       if (!hasPermission) {
@@ -2171,6 +2352,9 @@ class CallController extends GetxController {
       currentCallId.value = callId;
       remoteDeviceId.value = callerId;
       isCaller.value = false;
+      isVideoCall.value = incomingVideo;
+      isCameraOn.value = incomingVideo;
+      peerCameraOff.value = false;
       _callStartTime = DateTime.now(); // Set call start time for history
       _wasConnected = false;
       _durationSeconds = 0;
@@ -2189,9 +2373,12 @@ class CallController extends GetxController {
         callerDeviceId: callerId,
         calleeDeviceId: calleeDeviceId,
         sdpOffer: sdpOffer,
+        isVideo: incomingVideo,
       );
 
       if (success) {
+        isVideoCall.value = _webrtcService.isVideoCall;
+        isCameraOn.value = _webrtcService.isCameraEnabled;
         debugPrint('📞 Resync accept successful, navigating to active call');
         callState.value = CallState.ringing;
         // Clear pending auto-accept since we successfully accepted
