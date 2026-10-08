@@ -18,7 +18,11 @@ void main() {
     final edData = await ed.extract() as SimpleKeyPairData;
     return base64Encode(
       Uint8List.fromList(
-        [IdentityService.bundleVersion, ...xPub.bytes, ...edData.publicKey.bytes],
+        [
+          IdentityService.bundleVersion,
+          ...xPub.bytes,
+          ...edData.publicKey.bytes
+        ],
       ),
     );
   }
@@ -162,11 +166,9 @@ void main() {
   group('recovery gating (shouldTriggerIdentityRecovery)', () {
     test('only conflict-class reasons may mint a new ID', () {
       // Permitted — user confirmation still required before minting.
-      expect(
-          IdentityService.shouldTriggerIdentityRecovery('identity_required'),
+      expect(IdentityService.shouldTriggerIdentityRecovery('identity_required'),
           isTrue);
-      expect(
-          IdentityService.shouldTriggerIdentityRecovery('identity_conflict'),
+      expect(IdentityService.shouldTriggerIdentityRecovery('identity_conflict'),
           isTrue);
 
       // Everything else leaves the device ID alone — including reasons that
@@ -189,7 +191,8 @@ void main() {
   });
 
   group('announcement ack status mapping', () {
-    test('unchanged must ack unchanged (dequeues) — regression for the '
+    test(
+        'unchanged must ack unchanged (dequeues) — regression for the '
         'infinite-retry bug', () {
       expect(
           IdentityAnnouncementService.statusForPinResult(
@@ -241,10 +244,8 @@ void main() {
       final service = IdentityService();
       final a = await service.generateEphemeralKeyPair();
       final b = await service.generateEphemeralKeyPair();
-      final aPub =
-          (await a.extract() as SimpleKeyPairData).publicKey.bytes;
-      final bPub =
-          (await b.extract() as SimpleKeyPairData).publicKey.bytes;
+      final aPub = (await a.extract() as SimpleKeyPairData).publicKey.bytes;
+      final bPub = (await b.extract() as SimpleKeyPairData).publicKey.bytes;
       final sA = await service.sharedSecret(
         myKeyPair: a,
         peerPublicKey: Uint8List.fromList(bPub),

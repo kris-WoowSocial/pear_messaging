@@ -14,8 +14,7 @@ void main() {
   late LocalStorageService storage;
 
   // Mock flutter_secure_storage; `throwOnRead` simulates keystore failure.
-  const channel =
-      MethodChannel('plugins.it_nomads.com/flutter_secure_storage');
+  const channel = MethodChannel('plugins.it_nomads.com/flutter_secure_storage');
   final secureStore = <String, String>{};
   var throwOnRead = false;
 

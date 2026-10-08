@@ -47,11 +47,8 @@ class IdentityAnnouncementService extends GetxService {
   /// sha256(utf8 bundleBase64) hex — attached to acks so the sender can match
   /// the ack to the exact bundle it announced.
   static Future<String> bundleHash(String bundleBase64) async {
-    final digest =
-        await Sha256().hash(utf8.encode(bundleBase64));
-    return digest.bytes
-        .map((b) => b.toRadixString(16).padLeft(2, '0'))
-        .join();
+    final digest = await Sha256().hash(utf8.encode(bundleBase64));
+    return digest.bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
   }
 
   /// Map a pin result to the wire ack status. 'unchanged' must stay
@@ -182,9 +179,8 @@ class IdentityAnnouncementService extends GetxService {
     final shift = attempts.clamp(0, 20);
     final ms = _baseBackoff.inMilliseconds << shift;
     return Duration(
-      milliseconds: ms > _maxBackoff.inMilliseconds
-          ? _maxBackoff.inMilliseconds
-          : ms,
+      milliseconds:
+          ms > _maxBackoff.inMilliseconds ? _maxBackoff.inMilliseconds : ms,
     );
   }
 
