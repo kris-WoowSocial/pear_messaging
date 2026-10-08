@@ -7,6 +7,7 @@ import android.telecom.ConnectionService
 import android.telecom.DisconnectCause
 import android.telecom.PhoneAccountHandle
 import android.telecom.TelecomManager
+import android.telecom.VideoProfile
 import android.util.Log
 
 /**
@@ -48,10 +49,19 @@ class VantConnectionService : ConnectionService() {
             // Hold support is declared on the Connection (not the PhoneAccount —
             // PhoneAccount capabilities use different bit values and mixing them
             // makes registerPhoneAccount throw SecurityException).
-            connectionCapabilities = Connection.CAPABILITY_HOLD or
+            var capabilities = Connection.CAPABILITY_HOLD or
                 Connection.CAPABILITY_SUPPORT_HOLD
+            if (isVideo) {
+                capabilities = capabilities or
+                    Connection.CAPABILITY_SUPPORTS_VT_LOCAL_BIDIRECTIONAL or
+                    Connection.CAPABILITY_SUPPORTS_VT_REMOTE_BIDIRECTIONAL
+            }
+            connectionCapabilities = capabilities
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 setAudioModeIsVoip(true)
+            }
+            if (isVideo) {
+                setVideoState(VideoProfile.STATE_BIDIRECTIONAL)
             }
             setConnectionExtra("caller_name", callerName)
             setConnectionExtra("caller_id", callerId)
@@ -85,18 +95,29 @@ class VantConnectionService : ConnectionService() {
         val extras = request?.extras
         val calleeName = extras?.getString("caller_name") ?: "Unknown"
         val calleeId = extras?.getString("caller_id") ?: ""
+        val isVideo = extras?.getBoolean("is_video", false) ?: false
         val connection = VantConnection(applicationContext).apply {
             setCallerDisplayName(calleeName, TelecomManager.PRESENTATION_ALLOWED)
             connectionProperties = Connection.PROPERTY_SELF_MANAGED
-            connectionCapabilities = Connection.CAPABILITY_HOLD or
+            var capabilities = Connection.CAPABILITY_HOLD or
                 Connection.CAPABILITY_SUPPORT_HOLD
+            if (isVideo) {
+                capabilities = capabilities or
+                    Connection.CAPABILITY_SUPPORTS_VT_LOCAL_BIDIRECTIONAL or
+                    Connection.CAPABILITY_SUPPORTS_VT_REMOTE_BIDIRECTIONAL
+            }
+            connectionCapabilities = capabilities
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 setAudioModeIsVoip(true)
+            }
+            if (isVideo) {
+                setVideoState(VideoProfile.STATE_BIDIRECTIONAL)
             }
             setInitializing()
             setDialing()
             setConnectionExtra("caller_name", calleeName)
             setConnectionExtra("caller_id", calleeId)
+            setConnectionExtra("is_video", isVideo)
         }
         VantCallManager.activeConnection = connection
         return connection

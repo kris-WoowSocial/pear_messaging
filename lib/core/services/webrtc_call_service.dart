@@ -110,6 +110,7 @@ class WebRTCCallService {
       _remoteDeviceId = calleeDeviceId;
       _isCaller = true;
       _isVideoCall = isVideo;
+      _isSpeakerOn = isVideo;
       _currentCallId = 'call_${DateTime.now().millisecondsSinceEpoch}';
 
       debugPrint('📞 Starting call to $calleeDeviceId');
@@ -123,6 +124,7 @@ class WebRTCCallService {
 
       if (isVideo && !await _requestCameraPermission()) {
         _isVideoCall = false;
+        _isSpeakerOn = false;
         onCameraPermissionDenied?.call();
       }
 
@@ -197,6 +199,7 @@ class WebRTCCallService {
       _remoteDeviceId = callerDeviceId;
       _isCaller = false;
       _isVideoCall = isVideo;
+      _isSpeakerOn = isVideo;
 
       debugPrint('📞 Accepting call from $callerDeviceId');
 
@@ -209,6 +212,7 @@ class WebRTCCallService {
 
       if (isVideo && !await _requestCameraPermission()) {
         _isVideoCall = false;
+        _isSpeakerOn = false;
         onCameraPermissionDenied?.call();
       }
 

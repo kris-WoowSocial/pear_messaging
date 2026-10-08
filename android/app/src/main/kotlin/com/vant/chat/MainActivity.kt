@@ -182,7 +182,15 @@ class MainActivity : FlutterFragmentActivity() {
                 "reportOutgoingTelecomCall" -> {
                     val calleeId = call.argument<String>("calleeId") ?: ""
                     val calleeName = call.argument<String>("calleeName") ?: "Unknown"
-                    result.success(VantCallManager.reportOutgoingCall(this, calleeName, calleeId))
+                    val isVideo = call.argument<Boolean>("isVideo") ?: false
+                    result.success(
+                        VantCallManager.reportOutgoingCall(
+                            this,
+                            calleeName,
+                            calleeId,
+                            isVideo
+                        )
+                    )
                 }
                 "markTelecomCallActive" -> {
                     VantCallManager.markActiveCall(call.argument<String>("callId") ?: "")
@@ -213,10 +221,12 @@ class MainActivity : FlutterFragmentActivity() {
                 "setInCall" -> {
                     val inCall = call.argument<Boolean>("inCall") ?: false
                     val callId = call.argument<String>("callId") ?: ""
+                    val isVideo = call.argument<Boolean>("isVideo") ?: false
                     val prefs = getSharedPreferences("vant_chat_prefs", Context.MODE_PRIVATE)
                     prefs.edit()
                         .putBoolean("vant_in_active_call", inCall)
                         .putString("vant_active_call_id", callId)
+                        .putBoolean("vant_active_call_is_video", inCall && isVideo)
                         .apply()
                     result.success(null)
                 }

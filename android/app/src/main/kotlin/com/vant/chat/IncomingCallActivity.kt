@@ -9,6 +9,7 @@ import android.media.AudioManager
 import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
+import android.telecom.CallAudioState
 import android.util.Log
 import android.view.WindowManager
 import android.widget.ImageView
@@ -135,6 +136,13 @@ class IncomingCallActivity : AppCompatActivity() {
             connection.setActive()
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 connection.setAudioModeIsVoip(true)
+            }
+            if (isVideo && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                try {
+                    connection.setAudioRoute(CallAudioState.ROUTE_SPEAKER)
+                } catch (e: Exception) {
+                    Log.e("IncomingCallActivity", "Failed to route video call to speaker", e)
+                }
             }
             Log.d("IncomingCallActivity", "🔊 Telecom connection set to ACTIVE + VoIP mode")
         }

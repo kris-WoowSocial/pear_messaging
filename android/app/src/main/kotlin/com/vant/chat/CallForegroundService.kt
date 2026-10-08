@@ -30,8 +30,9 @@ import androidx.core.app.ServiceCompat
  * - `shortService` has no special permission requirements, can run ~3 min (enough for ringing),
  *   and can be started from background (FCM message handler)
  *
- * The microphone foreground service type is only needed when the call is actually answered
- * and WebRTC starts capturing audio — that is handled by flutter_background_service, not here.
+ * The microphone foreground-service type is used while an answered call is active.
+ * Video calls additionally use the camera foreground-service type so capture can
+ * continue while the app is minimized.
  */
 class CallForegroundService : Service() {
 
@@ -207,14 +208,22 @@ class CallForegroundService : Service() {
         val notification = buildOngoingNotification()
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                var serviceType = ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE or
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL
+                if (ongoingIsVideo) {
+                    serviceType = serviceType or ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
+                }
                 ServiceCompat.startForeground(
                     this,
                     ONGOING_NOTIFICATION_ID,
                     notification,
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE or
-                        ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL
+                    serviceType
                 )
-                Log.d(TAG, "Started ongoing foreground with MICROPHONE and PHONE_CALL types")
+                Log.d(
+                    TAG,
+                    "Started ongoing foreground (microphone, phoneCall" +
+                        "${if (ongoingIsVideo) ", camera" else ""})"
+                )
             } else {
                 startForeground(ONGOING_NOTIFICATION_ID, notification)
                 Log.d(TAG, "Started ongoing foreground (pre-API 34)")

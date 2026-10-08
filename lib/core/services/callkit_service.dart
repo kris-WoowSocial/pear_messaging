@@ -98,6 +98,16 @@ class CallKitService {
     return _getCallIdFromUuid(body['id'] as String?);
   }
 
+  bool _extractIsVideo(Map<dynamic, dynamic> body) {
+    bool decode(dynamic value) =>
+        value == true || value == 'true' || value == 1;
+    final extra = body['extra'];
+    if (extra is Map) {
+      return decode(extra['isVideo']) || decode(extra['is_video']);
+    }
+    return decode(body['isVideo']) || decode(body['is_video']);
+  }
+
   /// Initialize CallKit listeners
   /// Must be called from main.dart after Firebase initialization
   Future<void> initialize() async {
@@ -148,6 +158,7 @@ class CallKitService {
     required String callId,
     required String callerId,
     required String callerName,
+    bool isVideo = false,
   }) async {
     debugPrint('📞 CallKitService: Showing incoming call from $callerName');
 
@@ -188,13 +199,14 @@ class CallKitService {
         appName: 'Vant Chat',
         avatar: '',
         handle: callerId,
-        type: 0, // 0 = audio call, 1 = video call
+        type: isVideo ? 1 : 0, // 0 = audio call, 1 = video call
         textAccept: 'Accept',
         textDecline: 'Decline',
         duration: 30000, // Ring for 30 seconds
         extra: <String, dynamic>{
           'callerId': callerId,
           'callId': callId,
+          'isVideo': isVideo,
           // sdpOffer intentionally excluded for security
         },
         headers: <String, dynamic>{
@@ -226,13 +238,13 @@ class CallKitService {
           missedCallNotificationChannelName: 'Missed Call',
           isShowFullLockedScreen: true, // Wake screen when device is locked
         ),
-        ios: const IOSParams(
+        ios: IOSParams(
           iconName: '',
           handleType: 'generic',
-          supportsVideo: false,
+          supportsVideo: isVideo,
           maximumCallGroups: 2,
           maximumCallsPerCallGroup: 1,
-          audioSessionMode: 'voiceChat',
+          audioSessionMode: isVideo ? 'videoChat' : 'voiceChat',
           audioSessionActive: true,
           audioSessionPreferredSampleRate: 44100.0,
           audioSessionPreferredIOBufferDuration: 0.005,
@@ -372,6 +384,10 @@ class CallKitService {
           try {
             final prefs = await SharedPreferences.getInstance();
             await prefs.setString('pendingAcceptedCallId', acceptedCallId);
+            await prefs.setBool(
+              'pendingAcceptedCallIsVideo',
+              _extractIsVideo(event.body),
+            );
             await prefs.setBool('launchedForCall', true);
             debugPrint(
               '📞 CallKitService: persisted iOS accept for cold-start: $acceptedCallId',
@@ -549,6 +565,7 @@ class CallKitService {
       final callId = data['callId'];
       final callerId = data['callerId'];
       final callerName = data['callerName'] ?? 'Unknown';
+      final isVideo = data['isVideo'] == 'true' || data['is_video'] == 'true';
 
       if (callId == null || callerId == null) {
         debugPrint('❌ CallKitService: Missing required call data');
@@ -562,6 +579,7 @@ class CallKitService {
         callId: callId,
         callerId: callerId,
         callerName: callerName,
+        isVideo: isVideo,
       );
 
       // Listen for accept/decline from the CallKit UI in this background isolate
@@ -574,7 +592,10 @@ class CallKitService {
           debugPrint(
             '📞 CallKitService [bg]: User accepted call $callId via native UI',
           );
-          await _handleBackgroundAccept(callId);
+          await _handleBackgroundAccept(
+            callId,
+            isVideo: CallKitService()._extractIsVideo(event.body),
+          );
         } else if (event.event == Event.actionCallDecline) {
           debugPrint(
             '📞 CallKitService [bg]: User declined call $callId via native UI',
@@ -591,7 +612,10 @@ class CallKitService {
 
   /// Called from background isolate when user taps Accept on CallKit UI
   /// Uses REST (not socket) — reliable in headless isolates
-  static Future<void> _handleBackgroundAccept(String callId) async {
+  static Future<void> _handleBackgroundAccept(
+    String callId, {
+    bool isVideo = false,
+  }) async {
     try {
       // Read device ID from SharedPreferences (used for authentication)
       final prefs = await SharedPreferences.getInstance();
@@ -608,6 +632,7 @@ class CallKitService {
         // Only store pending accepted call ID if REST accept succeeded
         if (success) {
           await prefs.setString('pendingAcceptedCallId', callId);
+          await prefs.setBool('pendingAcceptedCallIsVideo', isVideo);
           await prefs.setBool('launchedForCall', true);
           debugPrint(
             '📞 CallKitService: Stored pendingAcceptedCallId = $callId (launchedForCall=true)',

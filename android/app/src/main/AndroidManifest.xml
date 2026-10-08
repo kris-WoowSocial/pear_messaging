@@ -35,8 +35,9 @@
     <uses-permission android:name="com.huawei.android.launcher.permission.READ_SETTINGS" />
     <uses-permission android:name="com.huawei.android.launcher.permission.WRITE_SETTINGS" />
 
-    <!-- Audio call permissions -->
+    <!-- Audio/video call permissions -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <!-- Gallery/photo permissions for Android 13+ -->
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
@@ -51,11 +52,11 @@
     <!-- Foreground service to keep call alive when app is backgrounded -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_PHONE_CALL" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SHORT_SERVICE" />
     <!-- Self-managed ConnectionService: allows full-screen incoming call UI over lock screen -->
     <uses-permission android:name="android.permission.MANAGE_OWN_CALLS" />
-    <!-- <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" /> -->
     <!-- Proximity sensor wake lock for screen off during calls -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     
@@ -236,7 +237,7 @@
             android:name=".CallForegroundService"
             android:enabled="true"
             android:exported="false"
-            android:foregroundServiceType="shortService|microphone|phoneCall" />
+            android:foregroundServiceType="shortService|microphone|camera|phoneCall" />
 
         <!-- Boot receiver for Samsung devices to restart services after device restart -->
         <receiver

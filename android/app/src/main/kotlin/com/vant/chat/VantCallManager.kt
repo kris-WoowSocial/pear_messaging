@@ -56,7 +56,10 @@ object VantCallManager {
             val handle = getPhoneAccountHandle(context)
 
             val account = PhoneAccount.builder(handle, "Vant Chat Calls")
-                .setCapabilities(PhoneAccount.CAPABILITY_SELF_MANAGED)
+                .setCapabilities(
+                    PhoneAccount.CAPABILITY_SELF_MANAGED or
+                        PhoneAccount.CAPABILITY_SUPPORTS_VIDEO_CALLING
+                )
                 .setSupportedUriSchemes(listOf(PhoneAccount.SCHEME_SIP))
                 .build()
 
@@ -279,7 +282,12 @@ object VantCallManager {
         )
     }
 
-    fun reportOutgoingCall(context: Context, calleeName: String, calleeId: String): Boolean {
+    fun reportOutgoingCall(
+        context: Context,
+        calleeName: String,
+        calleeId: String,
+        isVideo: Boolean
+    ): Boolean {
         return try {
             ensurePhoneAccountRegistered(context)
             disconnectActiveCall()
@@ -289,6 +297,7 @@ object VantCallManager {
                 putParcelable(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE, handle)
                 putString("caller_name", calleeName)
                 putString("caller_id", calleeId)
+                putBoolean("is_video", isVideo)
             }
             val telecomManager = context.getSystemService(Context.TELECOM_SERVICE) as TelecomManager
             telecomManager.placeCall(Uri.fromParts(PhoneAccount.SCHEME_SIP, calleeId, null), extras)

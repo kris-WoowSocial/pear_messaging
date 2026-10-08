@@ -115,6 +115,10 @@ class CallController extends GetxController {
   // Tracks if the app was launched from killed state for this call (so we close the app on call end)
   bool _launchedForCall = false;
 
+  // Tracks camera state while Android Telecom / iOS CallKit holds the call
+  bool _nativeCallHeld = false;
+  bool _cameraWasOnBeforeNativeHold = false;
+
   // Prevents duplicate handling of the same native answer/decline action
   String? _lastHandledNativeCallId;
 
@@ -289,16 +293,30 @@ class CallController extends GetxController {
   /// Called when Telecom puts the Vant call on hold (e.g. user answered a
   /// regular phone call or WhatsApp call while on a Vant call).
   void _handleCallHeld() {
-    debugPrint('📞 Vant call held by Telecom (external call answered)');
+    debugPrint('📞 Vant call held by Telecom/CallKit (external call answered)');
+    if (_nativeCallHeld) return;
+    _nativeCallHeld = true;
+    _cameraWasOnBeforeNativeHold = isVideoCall.value && isCameraOn.value;
     _webrtcService.setMuted(true);
-    // Keep the call state as connected — the Telecom connection is on hold,
-    // not ended. The call UI continues to show; audio is just muted.
+    if (_cameraWasOnBeforeNativeHold) {
+      unawaited(setCameraEnabled(false));
+    }
+    // Keep the call state as connected — the native connection is on hold,
+    // not ended. Audio is muted and video capture is paused until resumed.
   }
 
   /// Called when Telecom resumes the Vant call after the external call ends.
   void _handleCallUnheld() {
-    debugPrint('📞 Vant call unheld by Telecom (external call ended)');
+    debugPrint('📞 Vant call unheld by Telecom/CallKit (external call ended)');
     _webrtcService.setMuted(false);
+    if (_nativeCallHeld &&
+        _cameraWasOnBeforeNativeHold &&
+        isVideoCall.value &&
+        isInCall) {
+      unawaited(setCameraEnabled(true));
+    }
+    _nativeCallHeld = false;
+    _cameraWasOnBeforeNativeHold = false;
   }
 
   void _handleNativeShowFlutterCall(Map<String, dynamic> data) {
@@ -336,6 +354,7 @@ class CallController extends GetxController {
       await _callChannel.invokeMethod('setInCall', {
         'inCall': inCall,
         'callId': currentCallId.value,
+        'isVideo': inCall && isVideoCall.value,
       });
     } catch (e) {
       debugPrint('⚠️ Failed to sync in-call state to native: $e');
@@ -854,7 +873,11 @@ class CallController extends GetxController {
             return;
           }
 
-          if (action == 'answer') {
+          if (action == 'call_held') {
+            _handleCallHeld();
+          } else if (action == 'call_unheld') {
+            _handleCallUnheld();
+          } else if (action == 'answer') {
             await _handleNativeAnswer({
               'call_id': callId ?? '',
               'caller_id': callerId ?? '',
@@ -1139,6 +1162,12 @@ class CallController extends GetxController {
 
         if (pendingCallId != null && pendingCallId.isNotEmpty) {
           debugPrint('📞 Found pending accepted call: $pendingCallId');
+          final pendingCallIsVideo =
+              prefs.getBool('pendingAcceptedCallIsVideo') ?? false;
+          if (pendingCallIsVideo && _videoCallingEnabled) {
+            isVideoCall.value = true;
+            isCameraOn.value = true;
+          }
 
           // If this app instance was launched from killed state for this call,
           // remember it so we can close the app instead of returning to chat list.
@@ -1165,6 +1194,7 @@ class CallController extends GetxController {
 
             // Clear the pending call ID
             await prefs.remove('pendingAcceptedCallId');
+            await prefs.remove('pendingAcceptedCallIsVideo');
             debugPrint('📞 Cleared pendingAcceptedCallId');
             return; // Success, exit retry loop
           } else {
@@ -1311,6 +1341,7 @@ class CallController extends GetxController {
         isVideoCall.value = _webrtcService.isVideoCall;
         isCameraOn.value = _webrtcService.isCameraEnabled;
         isFrontCamera.value = _webrtcService.isFrontCamera;
+        isSpeakerOn.value = _webrtcService.isSpeakerOn;
         unawaited(_setNativeInCall(true));
         if (Platform.isAndroid) {
           unawaited(
@@ -1437,6 +1468,7 @@ class CallController extends GetxController {
         isVideoCall.value = _webrtcService.isVideoCall;
         isCameraOn.value = _webrtcService.isCameraEnabled;
         isFrontCamera.value = _webrtcService.isFrontCamera;
+        isSpeakerOn.value = _webrtcService.isSpeakerOn;
       }
 
       if (!success) {
@@ -2102,6 +2134,8 @@ class CallController extends GetxController {
     currentCallId.value = '';
     isCaller.value = false;
     _latestIncomingCallData = null;
+    _nativeCallHeld = false;
+    _cameraWasOnBeforeNativeHold = false;
     _iceRestartInFlight = false;
     _stopDurationUpdateTimer();
     _stopProximitySensor();
@@ -2484,6 +2518,7 @@ class CallController extends GetxController {
         isVideoCall.value = _webrtcService.isVideoCall;
         isCameraOn.value = _webrtcService.isCameraEnabled;
         isFrontCamera.value = _webrtcService.isFrontCamera;
+        isSpeakerOn.value = _webrtcService.isSpeakerOn;
         debugPrint('📞 Resync accept successful, navigating to active call');
         callState.value = CallState.ringing;
         // Clear pending auto-accept since we successfully accepted

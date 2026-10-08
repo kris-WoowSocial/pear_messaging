@@ -48,7 +48,7 @@
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>NSCameraUsageDescription</key>
-	<string>This app needs camera access for Face ID authentication and scan qr code to start chat</string>
+	<string>This app needs camera access for video calls, Face ID authentication, and QR code scanning</string>
 	<key>NSFaceIDUsageDescription</key>
 	<string>This app uses Face ID for secure authentication to protect your messages</string>
 	<key>NSMicrophoneUsageDescription</key>

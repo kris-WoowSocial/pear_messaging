@@ -477,7 +477,10 @@ import CommonCrypto
       return
     }
 
+    let extra = call.data.extra as? [String: Any] ?? [:]
+    let isVideo = (extra["isVideo"] as? Bool) ?? ((extra["isVideo"] as? String) == "true")
     UserDefaults.standard.set(callId, forKey: "flutter.pendingAcceptedCallId")
+    UserDefaults.standard.set(isVideo, forKey: "flutter.pendingAcceptedCallIsVideo")
     UserDefaults.standard.set(true, forKey: "flutter.launchedForCall")
     UserDefaults.standard.synchronize()
   }
@@ -534,6 +537,15 @@ import CommonCrypto
 
   // MARK: - Audio session interruption / route-change recovery
 
+  private func notifyFlutterCallLifecycle(_ action: String) {
+    DispatchQueue.main.async { [weak self] in
+      self?.callStateChannel?.invokeMethod(
+        "onCallAction",
+        arguments: ["action": action]
+      )
+    }
+  }
+
   private func setupAudioSessionObservers() {
     guard !audioSessionObserversRegistered else { return }
     audioSessionObserversRegistered = true
@@ -560,8 +572,12 @@ import CommonCrypto
     switch type {
     case .began:
       print("🔊 Audio session interruption began (inCall=\(isInCall))")
+      if isInCall {
+        notifyFlutterCallLifecycle("call_held")
+      }
     case .ended:
       guard isInCall else { return }
+      notifyFlutterCallLifecycle("call_unheld")
       if let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt {
         let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
         if options.contains(.shouldResume) {
