@@ -536,6 +536,14 @@ class CallController extends GetxController {
       unawaited(_requestIceRestart());
     };
 
+    _webrtcService.onConnectionFailed = (_) {
+      if (!_videoCallingEnabled) {
+        endCall();
+        return;
+      }
+      unawaited(_requestIceRestart(fatalOnFailure: true));
+    };
+
     _webrtcService.onCameraPermissionDenied = () {
       isVideoCall.value = false;
       isCameraOn.value = false;
@@ -623,11 +631,16 @@ class CallController extends GetxController {
     );
   }
 
-  Future<void> _requestIceRestart() async {
+  Future<void> _requestIceRestart({bool fatalOnFailure = false}) async {
     if (!_videoCallingEnabled || !isInCall || _iceRestartInFlight) return;
     _iceRestartInFlight = true;
     try {
-      await _webrtcService.restartIce();
+      final restarted = await _webrtcService.restartIce();
+      if (!restarted &&
+          fatalOnFailure &&
+          !_webrtcService.isIceRestartInProgress) {
+        endCall();
+      }
     } finally {
       _iceRestartInFlight = false;
     }

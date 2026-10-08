@@ -58,6 +58,7 @@ class WebRTCCallService {
   Function(String)? onLocalDescription; // Callback for SDP offer/answer
   Function(String sdp, bool isOffer)? onIceRestartDescription;
   Function(String reason)? onIceRestartNeeded;
+  Function(String reason)? onConnectionFailed;
   Function()? onCameraPermissionDenied;
 
   // ICE servers configuration
@@ -374,9 +375,23 @@ class WebRTCCallService {
           });
           break;
         case RTCPeerConnectionState.RTCPeerConnectionStateFailed:
-          debugPrint('📞 WebRTC FAILED - ending call');
-          onCallStateChange?.call('ended');
-          _endCall();
+          debugPrint('📞 WebRTC FAILED - attempting ICE restart');
+          onIceRestartNeeded?.call('connection_failed');
+          if (onConnectionFailed != null) {
+            onConnectionFailed!('failed');
+            Future.delayed(const Duration(seconds: 10), () {
+              if (_peerConnection != null &&
+                  _peerConnection!.connectionState ==
+                      RTCPeerConnectionState.RTCPeerConnectionStateFailed) {
+                debugPrint('📞 Still failed after 10 seconds, ending call');
+                onCallStateChange?.call('ended');
+                _endCall();
+              }
+            });
+          } else {
+            onCallStateChange?.call('ended');
+            _endCall();
+          }
           break;
         case RTCPeerConnectionState.RTCPeerConnectionStateClosed:
           debugPrint('📞 WebRTC CLOSED');
@@ -806,6 +821,7 @@ class WebRTCCallService {
   bool get isSpeakerOn => _isSpeakerOn;
   bool get isVideoCall => _isVideoCall;
   bool get isCameraEnabled => _isCameraEnabled;
+  bool get isIceRestartInProgress => _iceRestartInProgress;
   bool get isInCall => _peerConnection != null;
   String? get currentCallId => _currentCallId;
   String? get remoteDeviceId => _remoteDeviceId;
