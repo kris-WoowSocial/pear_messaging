@@ -78,7 +78,8 @@ class CallSignalingCrypto {
       IdentityService.domainCallFingerprintCaller;
   static const String calleeFpDomain =
       IdentityService.domainCallFingerprintCallee;
-  static const int replayWindowBits = 64;
+  // Keep <= 63: Dart shifts are masked to 6 bits on 64-bit ints.
+  static const int replayWindowBits = 63;
   static const int maxCounter = 1 << 31; // hard cap — never wrap
 
   final _x25519 = X25519();
@@ -191,7 +192,14 @@ class CallSignalingCrypto {
     for (final line in sdp.split(RegExp(r'\r?\n'))) {
       final l = line.trim();
       if (l.startsWith('a=fingerprint:')) {
-        fps.add(l.substring('a=fingerprint:'.length).trim());
+        final raw = l.substring('a=fingerprint:'.length).trim();
+        final match =
+            RegExp(r'^([A-Za-z0-9-]+)\s+([0-9A-Fa-f:]+)$').firstMatch(raw);
+        if (match == null) {
+          throw const CallSignalingCryptoException('invalid_dtls_fingerprint');
+        }
+        fps.add(
+            '${match.group(1)!.toLowerCase()} ${match.group(2)!.toUpperCase()}');
       }
     }
     if (fps.isEmpty) {
@@ -779,6 +787,8 @@ class CallSignalingCrypto {
     if (counter >= maxCounter) {
       throw const CallSignalingCryptoException('counter_exhausted');
     }
+    // Reserve the counter before the first await: concurrent encrypt calls
+    // therefore receive distinct counters even though GCM encryption is async.
     _sendCounters[direction] = counter + 1;
     final nonce = _randomNonce();
     final box = await _gcm.encrypt(

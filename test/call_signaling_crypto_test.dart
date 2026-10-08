@@ -159,6 +159,20 @@ void main() {
       );
     });
 
+    test('SDP fingerprints normalize hash name and hex case', () {
+      final extracted = CallSignalingCrypto.extractDtlsFingerprints(
+          'v=0\r\na=fingerprint:SHA-256 aa:bb:Cc\r\n'
+          'a=fingerprint:sha-256 AA:BB:CC\r\nm=audio\r\n');
+      expect(extracted, hasLength(1));
+      expect(utf8.decode(extracted.single), 'sha-256 AA:BB:CC');
+      expect(
+        () => CallSignalingCrypto.extractDtlsFingerprints(
+            'a=fingerprint:sha-256 AA:BB\r\n'
+            'a=fingerprint:sha-384 AA:BB\r\n'),
+        throwsCrypto('sdp_fingerprint_mismatch'),
+      );
+    });
+
     test('fingerprint signatures use counted lists and role domains', () async {
       final a = await _mk(), b = await _mk();
       final bundleA = await a.bundle();
@@ -322,7 +336,7 @@ void main() {
           encrypted: await caller.encryptOffer(offerSdp));
       // Callee signs an answer with a DIFFERENT dtls fingerprint.
       final evilAnswerFps = CallSignalingCrypto.extractDtlsFingerprints(
-          'v=0\r\na=fingerprint:sha-256 ZZ:ZZ:ZZ\r\nm=audio\r\n');
+          'v=0\r\na=fingerprint:sha-256 11:22:33\r\nm=audio\r\n');
       final ans = await callee.beginAnswer(
           peerId: 'devA',
           callerSig: begin.fp,
@@ -1034,6 +1048,20 @@ void main() {
             event: 'ice_candidate', encrypted: fromCallee),
         'from-callee',
       );
+    });
+
+    test('100 concurrent encrypts reserve unique counters', () async {
+      final (caller, _, __, ___) = await _handshake();
+      final records = await Future.wait(List.generate(
+          100,
+          (i) => caller.encryptMessage(
+              event: 'ice_candidate', plaintext: 'candidate-$i')));
+      expect(records.map((r) => r['k']).toSet(), hasLength(100));
+      expect(records.map((r) => r['n']).toSet(), hasLength(100));
+    });
+
+    test('replay window bound stays within signed 64-bit shifts', () {
+      expect(CallSignalingCrypto.replayWindowBits, lessThanOrEqualTo(63));
     });
 
     test('replay windows are independent per direction', () async {
