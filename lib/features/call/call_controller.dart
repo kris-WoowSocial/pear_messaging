@@ -1621,11 +1621,25 @@ class CallController extends GetxController {
       final wantsVideo = isVideo && _videoCallingEnabled;
       final encryptionRequired =
           wantsVideo || _peerRequiresEncryptedCall(calleeDeviceId);
+      debugPrint(
+        '📞 Starting ${wantsVideo ? 'video' : 'audio'} call to $calleeDeviceId',
+      );
       final peerInfo =
           wantsVideo || _encryptedSignalingEnabled || encryptionRequired
               ? await _socketService.requestPeerCapabilities(calleeDeviceId)
               : null;
+      if (peerInfo == null) {
+        debugPrint('⚠️ Peer capability lookup returned no data for $calleeDeviceId');
+      } else {
+        debugPrint(
+          '📞 Peer capabilities for $calleeDeviceId: '
+          'clientVersion=${peerInfo['clientVersion']}, '
+          'capabilities=${peerInfo['capabilities']}, '
+          'hasIdentityBundle=${peerInfo['identityBundle'] != null}',
+        );
+      }
       if (wantsVideo && !await _peerSupportsVideo(calleeDeviceId, peerInfo)) {
+        debugPrint('❌ Video call blocked: peer does not advertise video_call');
         Get.snackbar(
           'Video unavailable',
           'Ask them to update Vant to use video calls.',
@@ -1642,6 +1656,7 @@ class CallController extends GetxController {
       );
       if (encryptedSetup == _EncryptedCallSetup.requiredUnavailable ||
           (wantsVideo && encryptedSetup != _EncryptedCallSetup.ready)) {
+        debugPrint('❌ Video/secure call blocked: setup=$encryptedSetup');
         Get.snackbar(
           'Secure call unavailable',
           wantsVideo
