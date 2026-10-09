@@ -136,12 +136,6 @@ class IdentityAnnouncementService extends GetxService {
       if (encryptedAvailable && flags?.videoCalling.value == true) 'video_call',
     ]);
     final capabilitySeq = await _identity.nextCapabilitySequence();
-    final capabilitySig = await _identity.signCapabilities(
-      myId,
-      capabilitySeq,
-      capabilities,
-    );
-    if (capabilitySig == null) return;
 
     final now = DateTime.now();
     var sent = 0;
@@ -151,6 +145,13 @@ class IdentityAnnouncementService extends GetxService {
       final state = entry.value;
       if (state.nextDue.isAfter(now)) continue; // backing off
       try {
+        final capabilitySig = await _identity.signCapabilities(
+          myId,
+          to,
+          capabilitySeq,
+          capabilities,
+        );
+        if (capabilitySig == null) continue;
         // Server ack = relayed only; target stays queued for the recipient's
         // terminal ack (matched by bundleHash).
         await _socket.sendIdentityAnnounce(
@@ -224,6 +225,7 @@ class IdentityAnnouncementService extends GetxService {
 
   Future<void> _handleAnnouncement(Map<String, dynamic> data) async {
     final from = data['from'] as String?;
+    final to = data['to'] as String?;
     final bundle = data['bundle'] as String?;
     final signature = data['signature'] as String?;
     if (from == null || bundle == null || signature == null) return;
@@ -234,6 +236,11 @@ class IdentityAnnouncementService extends GetxService {
         status: status,
         bundleHash: await bundleHash(bundle),
       );
+    }
+
+    if (to == null || to != _storage.deviceId) {
+      await ack('rejected');
+      return;
     }
 
     // Only accept announcements from ACCEPTED contacts. A pending connection
@@ -284,6 +291,7 @@ class IdentityAnnouncementService extends GetxService {
           rawCapabilities is List &&
           await _identity.verifyCapabilities(
             senderDeviceId: from,
+            targetDeviceId: to,
             bundleBase64: bundle,
             sequence: capabilitySeq,
             capabilities: capabilities,

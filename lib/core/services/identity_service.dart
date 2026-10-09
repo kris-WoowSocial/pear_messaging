@@ -49,6 +49,7 @@ class IdentityService extends GetxService {
   static const String domainCallFingerprintCaller = 'vant-call-fp-caller';
   static const String domainCallFingerprintCallee = 'vant-call-fp-callee';
   static const Set<String> signingDomainAllowList = {
+    domainCapabilities,
     domainCallFingerprintCaller,
     domainCallFingerprintCallee,
   };
@@ -335,14 +336,24 @@ class IdentityService extends GetxService {
     return values.toList()..sort();
   }
 
-  /// Unsigned 64-bit sequence followed by length-prefixed capabilities.
+  /// Length-prefixed target, unsigned 64-bit sequence, then length-prefixed
+  /// capabilities. Binding the target blocks a signed announcement made for
+  /// one contact from being replayed to another contact.
   static Uint8List capabilityMaterial(
+    String targetDeviceId,
     int sequence,
     Iterable<String> capabilities,
   ) {
+    final targetBytes = utf8.encode(targetDeviceId);
+    if (targetBytes.isEmpty || targetBytes.length > 0xffff || sequence < 0) {
+      return Uint8List(0);
+    }
     final sequenceBytes = Uint8List(8);
     ByteData.view(sequenceBytes.buffer).setUint64(0, sequence);
-    final material = BytesBuilder()..add(sequenceBytes);
+    final material = BytesBuilder()
+      ..add([(targetBytes.length >> 8) & 0xff, targetBytes.length & 0xff])
+      ..add(targetBytes)
+      ..add(sequenceBytes);
     for (final capability in canonicalCapabilities(capabilities)) {
       final encoded = utf8.encode(capability);
       material.add([(encoded.length >> 8) & 0xff, encoded.length & 0xff]);
@@ -405,17 +416,19 @@ class IdentityService extends GetxService {
   }
 
   /// Signed call-capability announcement:
-  /// Ed25519("vant-caps"|deviceId|sequence|capabilities).
+  /// Ed25519("vant-caps"|deviceId|targetId|sequence|capabilities).
   Future<String?> signCapabilities(
     String deviceId,
+    String targetDeviceId,
     int sequence,
     Iterable<String> capabilities,
   ) {
+    if (targetDeviceId.isEmpty || sequence < 0) return Future.value(null);
     return _sign(
       _payload(
         domainCapabilities,
         deviceId,
-        capabilityMaterial(sequence, capabilities),
+        capabilityMaterial(targetDeviceId, sequence, capabilities),
       ),
     );
   }
@@ -455,18 +468,20 @@ class IdentityService extends GetxService {
   /// sequence check before updating stored capability state.
   Future<bool> verifyCapabilities({
     required String senderDeviceId,
+    required String targetDeviceId,
     required String bundleBase64,
     required int sequence,
     required Iterable<String> capabilities,
     required String signatureBase64,
   }) async {
+    if (targetDeviceId.isEmpty || sequence < 0) return false;
     final parsed = parseBundle(bundleBase64);
     if (parsed == null) return false;
     try {
       final payload = _payload(
         domainCapabilities,
         senderDeviceId,
-        capabilityMaterial(sequence, capabilities),
+        capabilityMaterial(targetDeviceId, sequence, capabilities),
       );
       return await _ed25519.verify(
         payload,

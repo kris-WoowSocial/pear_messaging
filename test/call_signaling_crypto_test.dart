@@ -1237,6 +1237,7 @@ void main() {
         throwsA(isA<ArgumentError>()),
       );
       for (final domain in [
+        IdentityService.domainCapabilities,
         IdentityService.domainCallFingerprintCaller,
         IdentityService.domainCallFingerprintCallee,
       ]) {

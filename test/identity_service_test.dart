@@ -139,16 +139,22 @@ void main() {
         payload(
           IdentityService.domainCapabilities,
           'dev123',
-          IdentityService.capabilityMaterial(7, capabilities),
+          IdentityService.capabilityMaterial(
+            '1810000001234',
+            7,
+            capabilities,
+          ),
         ),
         keyPair: ed,
       );
       Future<bool> verify({
         int sequence = 7,
         List<String> signedCapabilities = capabilities,
+        String target = '1810000001234',
       }) =>
           service.verifyCapabilities(
             senderDeviceId: 'dev123',
+            targetDeviceId: target,
             bundleBase64: bundle,
             sequence: sequence,
             capabilities: signedCapabilities,
@@ -156,6 +162,7 @@ void main() {
           );
       expect(await verify(), isTrue);
       expect(await verify(sequence: 6), isFalse);
+      expect(await verify(target: '1810000009999'), isFalse);
       expect(
         await verify(signedCapabilities: const ['encrypted_call']),
         isFalse,
