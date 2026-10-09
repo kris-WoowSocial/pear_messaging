@@ -35,6 +35,11 @@ class IdentityAnnouncementService extends GetxService {
   /// Exposed so the UI can surface a key-changed warning.
   final RxSet<String> keyChangedConflicts = <String>{}.obs;
 
+  /// Contacts whose signed capability sequence went backwards while their
+  /// identity bundle stayed unchanged. This can mean a reinstall/reset or a
+  /// replay attempt, so the UI must ask for explicit re-verification.
+  final RxSet<String> capabilityResetContacts = <String>{}.obs;
+
   static const Duration _retryTick = Duration(seconds: 30);
   static const Duration _baseBackoff = Duration(minutes: 1);
   static const Duration _maxBackoff = Duration(hours: 6);
@@ -73,9 +78,10 @@ class IdentityAnnouncementService extends GetxService {
     _socket.onIdentityAnnounce = _handleAnnouncement;
     _socket.onIdentityAnnounceAcked = _handleAnnounceAck;
 
-    // Restore persisted key-changed conflicts — a restart must never drop
-    // the warning, and the sender stops retrying after a 'conflict' ack.
+    // Restore persisted security warnings — a restart must never drop them,
+    // and a sender stops retrying after a 'conflict' ack.
     keyChangedConflicts.addAll(_storage.peersWithConflict());
+    capabilityResetContacts.addAll(_storage.peersWithCapabilityReset());
 
     // Re-announce whenever the socket registers — reconnect resets backoff
     // so fresh connections retry immediately.
@@ -312,12 +318,23 @@ class IdentityAnnouncementService extends GetxService {
         from,
         capabilities,
         capabilitySeq,
+        bundleBase64: bundle,
       );
       if (!accepted) {
+        if (_storage.hasPeerCapabilityReset(from)) {
+          capabilityResetContacts.add(from);
+          Get.snackbar(
+            'Contact security reset?',
+            'Their secure-call state rolled back. Re-verify this contact before calling.',
+            snackPosition: SnackPosition.BOTTOM,
+            duration: const Duration(seconds: 6),
+          );
+        }
         debugPrint('⚠️ Stale capability announcement rejected for $from');
         await ack('rejected');
         return;
       }
+      capabilityResetContacts.remove(from);
     }
     await ack(statusForPinResult(result));
     switch (result) {
@@ -338,6 +355,13 @@ class IdentityAnnouncementService extends GetxService {
   void dismissConflict(String deviceId) {
     keyChangedConflicts.remove(deviceId);
     _storage.clearPeerConflict(deviceId);
+  }
+
+  /// Clear a capability rollback warning after explicit re-verification or
+  /// user acknowledgment. Verification also clears persisted state.
+  void clearCapabilityReset(String deviceId) {
+    capabilityResetContacts.remove(deviceId);
+    _storage.clearPeerCapabilityReset(deviceId);
   }
 
   @override

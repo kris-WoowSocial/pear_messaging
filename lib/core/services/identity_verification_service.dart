@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 import 'package:get/get.dart';
 
 import '../utils/safety_code.dart';
+import 'identity_announcement_service.dart';
 import 'identity_service.dart';
 import 'local_storage_service.dart';
 import 'socket_service.dart';
@@ -139,6 +140,9 @@ class IdentityVerificationService extends GetxService {
     if (peerId == null || _secretSpent) return false;
     _secretSpent = true;
     final ok = await _storage.markPeerVerified(peerId);
+    if (ok && Get.isRegistered<IdentityAnnouncementService>()) {
+      Get.find<IdentityAnnouncementService>().clearCapabilityReset(peerId);
+    }
     pendingScannerId.value = null;
     return ok;
   }
@@ -242,6 +246,9 @@ class IdentityVerificationService extends GetxService {
       // caller shows both safety codes + replace-pin confirmation
       return (scanMismatch, idA, bundleA);
     }
+    if (Get.isRegistered<IdentityAnnouncementService>()) {
+      Get.find<IdentityAnnouncementService>().clearCapabilityReset(idA);
+    }
 
     // Bounce the secret back so the displayer learns who scanned.
     await _sendEcho(to: idA, secret: secret);
@@ -255,7 +262,11 @@ class IdentityVerificationService extends GetxService {
   /// User confirmed "replace pin with the scanned key" after seeing both
   /// safety codes. Called only from the mismatch confirmation dialog.
   Future<bool> confirmReplacePin(String peerId, String scannedBundle) async {
-    return _storage.replacePeerPinVerified(peerId, scannedBundle);
+    final ok = await _storage.replacePeerPinVerified(peerId, scannedBundle);
+    if (ok && Get.isRegistered<IdentityAnnouncementService>()) {
+      Get.find<IdentityAnnouncementService>().clearCapabilityReset(peerId);
+    }
+    return ok;
   }
 
   /// Safety code from the SCANNER's perspective: scanned bundle vs our own.

@@ -855,14 +855,15 @@ class LocalStorageService extends GetxService {
   }
 
   /// Record a signed capability announcement for a pinned peer. The sequence
-  /// is monotonic: exact or older values are rejected as replays. Returns
-  /// false when the peer is unpinned, the store is unavailable, or the
-  /// announcement is stale.
+  /// is monotonic: exact or older values are rejected as replays. A strictly
+  /// older sequence for the unchanged bundle records a reset warning so the
+  /// user can re-verify instead of silently accepting rolled-back state.
   Future<bool> recordPeerCapabilities(
     String peerDeviceId,
     List<String> capabilities,
-    int sequence,
-  ) async {
+    int sequence, {
+    required String bundleBase64,
+  }) async {
     if (sequence < 0 || _peerIdentitiesBox?.isOpen != true) return false;
     final existing = _peerIdentitiesBox!.get(peerDeviceId);
     if (existing is! Map || existing['bundle'] == null) return false;
@@ -872,7 +873,18 @@ class LocalStorageService extends GetxService {
         : seen is num
             ? seen.toInt()
             : 0;
-    if (sequence <= lastSequence) return false;
+    if (sequence <= lastSequence) {
+      if (sequence < lastSequence && existing['bundle'] == bundleBase64) {
+        await _peerIdentitiesBox!.put(peerDeviceId, {
+          ...Map<String, dynamic>.from(existing),
+          'capabilityReset': true,
+          'capabilityResetSeq': sequence,
+          'capabilityResetCapabilities': capabilities,
+          'capabilityResetAt': DateTime.now().millisecondsSinceEpoch,
+        });
+      }
+      return false;
+    }
     final retained = capabilities.toSet();
     final previous = existing['capabilities'];
     if (previous is List && previous.contains('encrypted_call')) {
@@ -882,8 +894,45 @@ class LocalStorageService extends GetxService {
       ...Map<String, dynamic>.from(existing),
       'capabilities': retained.toList()..sort(),
       'capabilitySeq': sequence,
+      'capabilityReset': null,
+      'capabilityResetSeq': null,
+      'capabilityResetCapabilities': null,
+      'capabilityResetAt': null,
     });
     return true;
+  }
+
+  /// A lower sequence for the unchanged bundle needs visible re-verification.
+  bool hasPeerCapabilityReset(String peerDeviceId) {
+    if (_peerIdentitiesBox?.isOpen != true) return false;
+    final entry = _peerIdentitiesBox!.get(peerDeviceId);
+    return entry is Map && entry['capabilityReset'] == true;
+  }
+
+  /// Peers whose reset warning must survive app restart.
+  List<String> peersWithCapabilityReset() {
+    if (_peerIdentitiesBox?.isOpen != true) return [];
+    return _peerIdentitiesBox!.keys
+        .where((key) {
+          final entry = _peerIdentitiesBox!.get(key);
+          return entry is Map && entry['capabilityReset'] == true;
+        })
+        .map((key) => key as String)
+        .toList();
+  }
+
+  /// Clear a capability reset warning after acknowledgment/verification.
+  Future<void> clearPeerCapabilityReset(String peerDeviceId) async {
+    if (_peerIdentitiesBox?.isOpen != true) return;
+    final entry = _peerIdentitiesBox!.get(peerDeviceId);
+    if (entry is! Map || entry['capabilityReset'] != true) return;
+    await _peerIdentitiesBox!.put(peerDeviceId, {
+      ...Map<String, dynamic>.from(entry),
+      'capabilityReset': null,
+      'capabilityResetSeq': null,
+      'capabilityResetCapabilities': null,
+      'capabilityResetAt': null,
+    });
   }
 
   /// True when the peer once signed encrypted-call support, even if a later
@@ -979,13 +1028,37 @@ class LocalStorageService extends GetxService {
     await _ensurePeerIdentitiesBox();
     final entry = _peerIdentitiesBox!.get(peerDeviceId);
     if (entry is! Map || entry['bundle'] == null) return false;
-    if (entry['status'] == 'verified' && entry['conflictBundle'] == null) {
+    if (entry['status'] == 'verified' &&
+        entry['conflictBundle'] == null &&
+        entry['capabilityReset'] != true) {
       return true;
+    }
+    final resetSequence = entry['capabilityResetSeq'];
+    final acceptingReset = entry['capabilityReset'] == true &&
+        resetSequence is num;
+    final resetCapabilities = <String>{};
+    if (acceptingReset) {
+      final announced = entry['capabilityResetCapabilities'];
+      if (announced is List) {
+        resetCapabilities.addAll(announced.whereType<String>());
+      }
+      final previous = entry['capabilities'];
+      if (previous is List && previous.contains('encrypted_call')) {
+        resetCapabilities.add('encrypted_call');
+      }
     }
     await _peerIdentitiesBox!.put(peerDeviceId, {
       ...Map<String, dynamic>.from(entry),
       'status': 'verified',
       'updatedAt': DateTime.now().millisecondsSinceEpoch,
+      if (acceptingReset) ...{
+        'capabilities': resetCapabilities.toList()..sort(),
+        'capabilitySeq': resetSequence.toInt(),
+      },
+      'capabilityReset': null,
+      'capabilityResetSeq': null,
+      'capabilityResetCapabilities': null,
+      'capabilityResetAt': null,
     });
     return true;
   }
@@ -1006,6 +1079,10 @@ class LocalStorageService extends GetxService {
       'updatedAt': DateTime.now().millisecondsSinceEpoch,
       'conflictBundle': null,
       'conflictAt': null,
+      'capabilityReset': null,
+      'capabilityResetSeq': null,
+      'capabilityResetCapabilities': null,
+      'capabilityResetAt': null,
     });
     return true;
   }

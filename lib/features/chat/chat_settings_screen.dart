@@ -5,6 +5,7 @@ import '../../core/constants/app_colors.dart';
 import '../../core/constants/app_sizes.dart';
 import '../../core/utils/string_utils.dart';
 import '../../core/services/feature_flag_service.dart';
+import '../../core/services/identity_announcement_service.dart';
 import '../../core/services/local_storage_service.dart';
 import 'chat_controller.dart';
 import 'verify_contact_screen.dart';
@@ -71,21 +72,35 @@ class ChatSettingsScreen extends GetView<ChatController> {
       final peerId = controller.recipientDeviceId;
       final storage = Get.find<LocalStorageService>();
       final status = storage.getPeerVerificationStatus(peerId);
-      final conflict =
-          storage.getPeerConflictBundle(peerId) != null;
+      final announcements = Get.isRegistered<IdentityAnnouncementService>()
+          ? Get.find<IdentityAnnouncementService>()
+          : null;
+      final conflict = storage.getPeerConflictBundle(peerId) != null ||
+          announcements?.keyChangedConflicts.contains(peerId) == true;
+      final reset = storage.hasPeerCapabilityReset(peerId) ||
+          announcements?.capabilityResetContacts.contains(peerId) == true;
+      final warning = conflict || reset;
       return ListTile(
         leading: Icon(
-          conflict ? Icons.warning_amber_rounded : Icons.verified_user_outlined,
-          color: conflict ? Colors.red : (status == 'verified' ? Colors.green : Colors.grey),
+          warning ? Icons.warning_amber_rounded : Icons.verified_user_outlined,
+          color: warning
+              ? Colors.red
+              : (status == 'verified' ? Colors.green : Colors.grey),
         ),
         title: Text(
-          conflict
-              ? 'Identity key changed — verify again'
-              : status == 'verified'
-                  ? 'Identity key verified'
-                  : 'Identity key not verified',
+          reset
+              ? 'Contact security reset — verify again'
+              : conflict
+                  ? 'Identity key changed — verify again'
+                  : status == 'verified'
+                      ? 'Identity key verified'
+                      : 'Identity key not verified',
         ),
-        subtitle: const Text('Compare safety codes or scan a QR'),
+        subtitle: Text(
+          warning
+              ? 'Re-verify identity before continuing secure calls'
+              : 'Compare safety codes or scan a QR',
+        ),
         onTap: () => Get.to(() => VerifyContactScreen(peerId: peerId)),
       );
     });

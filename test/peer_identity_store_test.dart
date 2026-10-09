@@ -145,41 +145,119 @@ void main() {
         'peerCaps',
         const ['encrypted_call', 'video_call'],
         7,
+        bundleBase64: 'bundleCaps',
       ),
       isTrue,
     );
     expect(storage.peerSignedEncryptedCalls('peerCaps'), isTrue);
     expect(storage.peerRequiresEncryptedCall('peerCaps'), isTrue);
 
-    // Same and older sequences are replays/downgrades and must be rejected.
+    // An identical sequence is only a replay and does not create a reset
+    // warning. A strictly older sequence for the unchanged bundle does.
     expect(
       await storage.recordPeerCapabilities(
         'peerCaps',
         const ['video_call'],
         7,
+        bundleBase64: 'bundleCaps',
       ),
       isFalse,
     );
+    expect(storage.hasPeerCapabilityReset('peerCaps'), isFalse);
     expect(
-      await storage.recordPeerCapabilities('peerCaps', const <String>[], 6),
+      await storage.recordPeerCapabilities(
+        'peerCaps',
+        const <String>[],
+        6,
+        bundleBase64: 'bundleCaps',
+      ),
       isFalse,
     );
+    expect(storage.hasPeerCapabilityReset('peerCaps'), isTrue);
     expect(storage.peerSignedEncryptedCalls('peerCaps'), isTrue);
 
     // A later signed change may drop video, but encrypted_call is retained as
     // the permanent signed no-plaintext floor.
     expect(
-      await storage.recordPeerCapabilities('peerCaps', const <String>[], 8),
+      await storage.recordPeerCapabilities(
+        'peerCaps',
+        const <String>[],
+        8,
+        bundleBase64: 'bundleCaps',
+      ),
       isTrue,
     );
+    expect(storage.hasPeerCapabilityReset('peerCaps'), isFalse);
     expect(storage.peerSignedEncryptedCalls('peerCaps'), isTrue);
     await storage.markPeerEncryptedCall('peerCaps');
     expect(
-      await storage.recordPeerCapabilities('peerCaps', const <String>[], 9),
+      await storage.recordPeerCapabilities(
+        'peerCaps',
+        const <String>[],
+        9,
+        bundleBase64: 'bundleCaps',
+      ),
       isTrue,
     );
     expect(storage.peerHasEncryptedCallHistory('peerCaps'), isTrue);
     expect(storage.peerRequiresEncryptedCall('peerCaps'), isTrue);
+
+    // A stale sequence attached to a different bundle is a key conflict, not
+    // an unchanged-identity reset path.
+    expect(
+      await storage.recordPeerCapabilities(
+        'peerCaps',
+        const <String>[],
+        5,
+        bundleBase64: 'differentBundle',
+      ),
+      isFalse,
+    );
+    expect(storage.hasPeerCapabilityReset('peerCaps'), isFalse);
+  });
+
+  test('capability reset is explicit until the contact is re-verified',
+      () async {
+    await storage.saveChat(makeChat('peerReset'));
+    await storage.pinPeerBundle('peerReset', 'bundleReset');
+    await storage.recordPeerCapabilities(
+      'peerReset',
+      const ['encrypted_call'],
+      9,
+      bundleBase64: 'bundleReset',
+    );
+
+    expect(
+      await storage.recordPeerCapabilities(
+        'peerReset',
+        const <String>[],
+        8,
+        bundleBase64: 'bundleReset',
+      ),
+      isFalse,
+    );
+    expect(storage.hasPeerCapabilityReset('peerReset'), isTrue);
+    expect(
+      storage.peersWithCapabilityReset(),
+      contains('peerReset'),
+    );
+
+    expect(await storage.markPeerVerified('peerReset'), isTrue);
+    expect(storage.hasPeerCapabilityReset('peerReset'), isFalse);
+    expect(storage.getPeerVerificationStatus('peerReset'), 'verified');
+    // Re-trust accepts the reset's lower sequence as the new monotonic
+    // baseline while retaining the signed encrypted-call floor.
+    expect(storage.peerSignedEncryptedCalls('peerReset'), isTrue);
+    expect(
+      await storage.recordPeerCapabilities(
+        'peerReset',
+        const <String>[],
+        9,
+        bundleBase64: 'bundleReset',
+      ),
+      isTrue,
+    );
+    expect(storage.hasPeerCapabilityReset('peerReset'), isFalse);
   });
 
   test(
@@ -191,9 +269,25 @@ void main() {
         'peerNoPin',
         const ['encrypted_call'],
         1,
+        bundleBase64: 'bundleNoPin',
       ),
       isFalse,
     );
     expect(storage.peerRequiresEncryptedCall('peerNoPin'), isFalse);
+  });
+
+  test('capability rollback surfaces a visible re-verification path', () {
+    final announcementSource = File(
+      'lib/core/services/identity_announcement_service.dart',
+    ).readAsStringSync();
+    final settingsSource = File(
+      'lib/features/chat/chat_settings_screen.dart',
+    ).readAsStringSync();
+
+    expect(announcementSource, contains('capabilityResetContacts'));
+    expect(announcementSource, contains('Contact security reset?'));
+    expect(announcementSource, contains('Re-verify this contact'));
+    expect(settingsSource, contains('Contact security reset — verify again'));
+    expect(settingsSource, contains('VerifyContactScreen(peerId: peerId)'));
   });
 }
