@@ -873,9 +873,14 @@ class LocalStorageService extends GetxService {
             ? seen.toInt()
             : 0;
     if (sequence <= lastSequence) return false;
+    final retained = capabilities.toSet();
+    final previous = existing['capabilities'];
+    if (previous is List && previous.contains('encrypted_call')) {
+      retained.add('encrypted_call');
+    }
     await _peerIdentitiesBox!.put(peerDeviceId, {
       ...Map<String, dynamic>.from(existing),
-      'capabilities': capabilities,
+      'capabilities': retained.toList()..sort(),
       'capabilitySeq': sequence,
     });
     return true;

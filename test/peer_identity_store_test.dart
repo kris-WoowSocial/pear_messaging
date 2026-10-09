@@ -166,13 +166,13 @@ void main() {
     );
     expect(storage.peerSignedEncryptedCalls('peerCaps'), isTrue);
 
-    // A later signed change may drop a capability, but a completed encrypted
-    // call still establishes a permanent no-plaintext floor.
+    // A later signed change may drop video, but encrypted_call is retained as
+    // the permanent signed no-plaintext floor.
     expect(
       await storage.recordPeerCapabilities('peerCaps', const <String>[], 8),
       isTrue,
     );
-    expect(storage.peerSignedEncryptedCalls('peerCaps'), isFalse);
+    expect(storage.peerSignedEncryptedCalls('peerCaps'), isTrue);
     await storage.markPeerEncryptedCall('peerCaps');
     expect(
       await storage.recordPeerCapabilities('peerCaps', const <String>[], 9),
