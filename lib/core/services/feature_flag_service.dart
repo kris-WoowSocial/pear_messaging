@@ -28,7 +28,10 @@ class FeatureFlagService extends GetxService {
       _rc = FirebaseRemoteConfig.instance;
       await _rc!.setConfigSettings(RemoteConfigSettings(
         fetchTimeout: const Duration(seconds: 10),
-        minimumFetchInterval: const Duration(hours: 1),
+        // Debug builds must see freshly published values while device testing.
+        // Release keeps a one-hour interval to avoid a Remote Config fetch storm.
+        minimumFetchInterval:
+            kDebugMode ? Duration.zero : const Duration(hours: 1),
       ));
       // Safe defaults baked in — remote values only ever tighten control.
       await _rc!.setDefaults({
@@ -62,7 +65,8 @@ class FeatureFlagService extends GetxService {
     videoCalling.value = _rc!.getBool(kVideoCalling);
     debugPrint(
       '🎛️ Feature flags: verification=${verificationUi.value}, '
-      'encrypted=${encryptedSignaling.value}, video=${videoCalling.value}',
+      'encrypted=${encryptedSignaling.value}, video=${videoCalling.value} '
+      '(fetch=${_rc!.lastFetchStatus}, at=${_rc!.lastFetchTime})',
     );
   }
 }

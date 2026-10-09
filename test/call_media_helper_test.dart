@@ -196,6 +196,18 @@ void main() {
     );
   });
 
+  test('debug builds bypass Remote Config fetch cache', () {
+    final source = File(
+      'lib/core/services/feature_flag_service.dart',
+    ).readAsStringSync();
+
+    expect(source, contains('minimumFetchInterval:'));
+    expect(
+      source,
+      contains('kDebugMode ? Duration.zero : const Duration(hours: 1)'),
+    );
+  });
+
   test('server-offered bundles pin only after the accepted call handshakes',
       () {
     final source =
