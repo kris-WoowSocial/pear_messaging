@@ -144,17 +144,21 @@ class ChatScreen extends GetView<ChatController> {
                 },
                 tooltip: 'Audio Call',
               ),
-            if (!controller.isGroup &&
-                Get.isRegistered<FeatureFlagService>() &&
-                Get.find<FeatureFlagService>().videoCalling.value)
-              IconButton(
+            Obx(() {
+              if (controller.isGroup ||
+                  !Get.isRegistered<FeatureFlagService>() ||
+                  !Get.find<FeatureFlagService>().videoCalling.value) {
+                return const SizedBox.shrink();
+              }
+              return IconButton(
                 icon: const Icon(Icons.videocam, color: Colors.black),
                 onPressed: () {
                   debugPrint('📞 Video call button pressed');
                   _startVideoCall();
                 },
                 tooltip: 'Video Call',
-              ),
+              );
+            }),
             IconButton(
               icon: const Icon(Icons.settings, color: Colors.black),
               onPressed: () {

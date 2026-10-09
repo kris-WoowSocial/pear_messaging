@@ -174,6 +174,28 @@ void main() {
     );
   });
 
+  test('video action observes Remote Config values that arrive after build',
+      () {
+    final source =
+        File('lib/features/chat/chat_screen.dart').readAsStringSync();
+    final actions = source.substring(
+      source.indexOf('actions: ['),
+      source.indexOf('body: Column('),
+    );
+    final startup = File('lib/main_prod.dart').readAsStringSync();
+
+    expect(actions, contains('Obx(()'));
+    expect(
+      actions.indexOf('Obx(()'),
+      lessThan(actions.indexOf('videoCalling.value')),
+    );
+    expect(actions, contains('Icon(Icons.videocam'));
+    expect(
+      startup.indexOf('Get.put(FeatureFlagService(), permanent: true)'),
+      lessThan(startup.indexOf('earlySocketService.init(deviceId)')),
+    );
+  });
+
   test('server-offered bundles pin only after the accepted call handshakes',
       () {
     final source =

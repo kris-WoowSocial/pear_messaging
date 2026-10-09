@@ -138,6 +138,11 @@ Future<void> initializeCriticalServices() async {
     deviceId = await _recoverWithNewDeviceId(storageService, identityService);
   }
 
+  // Register the flag service before the first UI build. The fetch itself
+  // still runs in non-critical startup, but the reactive OFF state lets
+  // screens subscribe and update as soon as remote values arrive.
+  Get.put(FeatureFlagService(), permanent: true);
+
   final earlySocketService = Get.put(SocketService());
   earlySocketService.init(deviceId);
 
@@ -508,10 +513,15 @@ void initializeNonCriticalServices() async {
   // Feature flags — Remote Config, all new capabilities default OFF.
   futures.add(Future(() async {
     try {
-      await Get.putAsync(() => FeatureFlagService().init());
+      final flags = Get.isRegistered<FeatureFlagService>()
+          ? Get.find<FeatureFlagService>()
+          : Get.put(FeatureFlagService(), permanent: true);
+      await flags.init();
     } catch (e) {
       debugPrint('❌ FeatureFlagService init failed: $e');
-      Get.put(FeatureFlagService()); // defaults stay off
+      if (!Get.isRegistered<FeatureFlagService>()) {
+        Get.put(FeatureFlagService(), permanent: true); // defaults stay off
+      }
     }
   }));
 

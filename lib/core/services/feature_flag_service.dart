@@ -60,5 +60,9 @@ class FeatureFlagService extends GetxService {
     verificationUi.value = _rc!.getBool(kVerificationUi);
     encryptedSignaling.value = _rc!.getBool(kEncryptedSignaling);
     videoCalling.value = _rc!.getBool(kVideoCalling);
+    debugPrint(
+      '🎛️ Feature flags: verification=${verificationUi.value}, '
+      'encrypted=${encryptedSignaling.value}, video=${videoCalling.value}',
+    );
   }
 }
