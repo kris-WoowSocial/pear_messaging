@@ -1,11 +1,31 @@
+import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
+import 'package:cryptography/cryptography.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:get/get.dart';
 import 'package:hive/hive.dart';
+import 'package:pear_messaging/core/services/identity_announcement_service.dart';
+import 'package:pear_messaging/core/services/identity_service.dart';
 import 'package:pear_messaging/core/services/local_storage_service.dart';
+import 'package:pear_messaging/core/services/socket_service.dart';
 import 'package:pear_messaging/storage/models/chat_entity.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
+class _RecordingSocketService extends SocketService {
+  final List<String> acknowledgeStatuses = <String>[];
+
+  @override
+  void sendIdentityAnnounceAck({
+    required String to,
+    required String status,
+    String? bundleHash,
+  }) {
+    acknowledgeStatuses.add(status);
+  }
+}
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -261,6 +281,93 @@ void main() {
   });
 
   test(
+      'five signed capability rollbacks warn once and preserve encrypted floor',
+      () async {
+    const localId = 'local-reset';
+    const peerId = 'peer-five-replays';
+    await storage.setDeviceId(localId);
+
+    final ed = Ed25519();
+    final peerKeys = await ed.newKeyPair();
+    final peerPublic = await peerKeys.extractPublicKey();
+    final bundle = Uint8List.fromList([
+      IdentityService.bundleVersion,
+      ...List<int>.generate(32, (i) => i + 1),
+      ...peerPublic.bytes,
+    ]);
+    final bundleBase64 = base64Encode(bundle);
+
+    Future<String> signPayload(String domain, List<int> material) async {
+      final payload = BytesBuilder()
+        ..add(utf8.encode(domain))
+        ..add(utf8.encode('|'))
+        ..add(utf8.encode(peerId))
+        ..add(utf8.encode('|'))
+        ..add(material);
+      final signature = await ed.sign(
+        payload.toBytes(),
+        keyPair: peerKeys,
+      );
+      return base64Encode(signature.bytes);
+    }
+
+    await storage.saveChat(makeChat(peerId));
+    await storage.pinPeerBundle(peerId, bundleBase64);
+    expect(
+      await storage.recordPeerCapabilities(
+        peerId,
+        const ['encrypted_call'],
+        10,
+        bundleBase64: bundleBase64,
+      ),
+      isTrue,
+    );
+
+    final socket = _RecordingSocketService();
+    Get.put<SocketService>(socket);
+    Get.put(IdentityService());
+    Get.put<LocalStorageService>(storage);
+    final announcements = IdentityAnnouncementService()..onInit();
+    final alerts = <String>[];
+    announcements.capabilityResetAlert = alerts.add;
+    try {
+      final stale = <String, dynamic>{
+        'from': peerId,
+        'to': localId,
+        'bundle': bundleBase64,
+        'signature': await signPayload(IdentityService.domainAnnounce, bundle),
+        'capabilities': const <String>[],
+        'capabilitySeq': 5,
+        'capabilitySig': await signPayload(
+          IdentityService.domainCapabilities,
+          IdentityService.capabilityMaterial(localId, 5, const []),
+        ),
+      };
+
+      for (var i = 0; i < 5; i++) {
+        await announcements.handleAnnouncementForTest(stale);
+      }
+
+      expect(storage.hasPeerCapabilityReset(peerId), isTrue);
+      expect(alerts, [peerId]);
+      expect(
+        socket.acknowledgeStatuses,
+        List<String>.filled(5, 'unchanged'),
+      );
+      expect(announcements.capabilityResetContacts, hasLength(1));
+      expect(announcements.capabilityResetContacts, contains(peerId));
+      expect(storage.peerSignedEncryptedCalls(peerId), isTrue);
+      expect(storage.getPeerBundle(peerId), bundleBase64);
+    } finally {
+      announcements.onClose();
+      Get.delete<IdentityAnnouncementService>(force: true);
+      Get.delete<SocketService>(force: true);
+      Get.delete<IdentityService>(force: true);
+      Get.delete<LocalStorageService>(force: true);
+    }
+  });
+
+  test(
       'capability records do not survive silent re-pin or get accepted for '
       'unpinned peers', () async {
     await storage.saveChat(makeChat('peerNoPin'));
@@ -286,7 +393,8 @@ void main() {
 
     expect(announcementSource, contains('capabilityResetContacts'));
     expect(announcementSource, contains('Contact security reset?'));
-    expect(announcementSource, contains('Re-verify this contact'));
+    expect(announcementSource, contains('Verify again to clear this warning'));
+    expect(announcementSource, contains('capabilityResetContacts.add(from)'));
     expect(settingsSource, contains('Contact security reset — verify again'));
     expect(settingsSource, contains('VerifyContactScreen(peerId: peerId)'));
   });

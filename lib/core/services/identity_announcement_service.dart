@@ -40,6 +40,10 @@ class IdentityAnnouncementService extends GetxService {
   /// replay attempt, so the UI must ask for explicit re-verification.
   final RxSet<String> capabilityResetContacts = <String>{}.obs;
 
+  /// Test seam for counting UI alerts without creating a snackbar.
+  @visibleForTesting
+  void Function(String peerId)? capabilityResetAlert;
+
   static const Duration _retryTick = Duration(seconds: 30);
   static const Duration _baseBackoff = Duration(minutes: 1);
   static const Duration _maxBackoff = Duration(hours: 6);
@@ -229,6 +233,11 @@ class IdentityAnnouncementService extends GetxService {
     }();
   }
 
+  @visibleForTesting
+  Future<void> handleAnnouncementForTest(Map<String, dynamic> data) {
+    return _handleAnnouncement(data);
+  }
+
   Future<void> _handleAnnouncement(Map<String, dynamic> data) async {
     final from = data['from'] as String?;
     final to = data['to'] as String?;
@@ -321,20 +330,24 @@ class IdentityAnnouncementService extends GetxService {
         bundleBase64: bundle,
       );
       if (!accepted) {
-        if (_storage.hasPeerCapabilityReset(from)) {
-          capabilityResetContacts.add(from);
-          Get.snackbar(
-            'Contact security reset?',
-            'Their secure-call state rolled back. Re-verify this contact before calling.',
-            snackPosition: SnackPosition.BOTTOM,
-            duration: const Duration(seconds: 6),
-          );
+        if (_storage.hasPeerCapabilityReset(from) &&
+            capabilityResetContacts.add(from)) {
+          final alert = capabilityResetAlert;
+          if (alert != null) {
+            alert(from);
+          } else {
+            Get.snackbar(
+              'Contact security reset?',
+              'Their secure-call state rolled back. Verify again to clear this warning.',
+              snackPosition: SnackPosition.BOTTOM,
+              duration: const Duration(seconds: 6),
+            );
+          }
         }
-        debugPrint('⚠️ Stale capability announcement rejected for $from');
-        await ack('rejected');
-        return;
+        debugPrint('⚠️ Stale capability announcement ignored for $from');
+      } else {
+        capabilityResetContacts.remove(from);
       }
-      capabilityResetContacts.remove(from);
     }
     await ack(statusForPinResult(result));
     switch (result) {

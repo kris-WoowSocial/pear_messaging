@@ -98,7 +98,7 @@ class ChatSettingsScreen extends GetView<ChatController> {
         ),
         subtitle: Text(
           warning
-              ? 'Re-verify identity before continuing secure calls'
+              ? 'Re-verify identity; encrypted-call protections stay enforced'
               : 'Compare safety codes or scan a QR',
         ),
         onTap: () => Get.to(() => VerifyContactScreen(peerId: peerId)),
