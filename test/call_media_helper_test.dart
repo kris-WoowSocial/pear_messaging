@@ -173,4 +173,44 @@ void main() {
       lessThan(updater.indexOf('encryptedUnverified')),
     );
   });
+
+  test('server-offered bundles pin only after the accepted call handshakes',
+      () {
+    final source =
+        File('lib/features/call/call_controller.dart').readAsStringSync();
+    final prepare = source.substring(
+      source.indexOf('Future<_EncryptedCallSetup> _prepareEncryptedCaller'),
+      source.indexOf('Future<void> _requestIceRestart'),
+    );
+
+    // peer_capability only selects the ephemeral crypto bundle. It is not a
+    // trust root and cannot create a contact pin by itself.
+    expect(prepare, contains('pinnedBundle ?? serverBundle'));
+    expect(prepare.contains('pinPeerBundle'), isFalse);
+
+    final accepted = source.substring(
+      source.indexOf('Future<void> _handleCallAccepted'),
+    );
+    expect(
+      accepted.indexOf('completeHandshakeFirstContact'),
+      lessThan(accepted.indexOf('pinPeerBundle')),
+    );
+
+    final localDescription = source.substring(
+      source.indexOf('Future<void> _handleLocalDescription'),
+    );
+    expect(
+      localDescription.indexOf('beginAnswer'),
+      lessThan(localDescription.indexOf('pinPeerBundle')),
+    );
+    expect(source, contains('await _webrtcService.acceptCall('));
+
+    final storageSource = File(
+      'lib/core/services/local_storage_service.dart',
+    ).readAsStringSync();
+    expect(
+      storageSource.indexOf('getChat(peerDeviceId) == null'),
+      lessThan(storageSource.indexOf("'bundle': bundle")),
+    );
+  });
 }
