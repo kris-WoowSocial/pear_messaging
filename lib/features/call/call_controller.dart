@@ -2576,6 +2576,7 @@ class CallController extends GetxController {
           plaintext: sdp,
         );
         _cryptoHandshakeReady = true;
+        _updateCallEncryptionState(remoteDeviceId.value);
         _socketService.acceptCall(
           callId: currentCallId.value,
           callerId: remoteDeviceId.value,
