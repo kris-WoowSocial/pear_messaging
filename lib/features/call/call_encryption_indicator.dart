@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 enum CallEncryptionState {
+  securing,
   encryptedVerified,
   encryptedUnverified,
   legacyUnencrypted,
@@ -14,6 +15,11 @@ class CallEncryptionIndicator extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final (icon, text, color) = switch (state) {
+      CallEncryptionState.securing => (
+          Icons.lock_outline,
+          'Securing call…',
+          const Color(0xFF64B5F6),
+        ),
       CallEncryptionState.encryptedVerified => (
           Icons.verified_user,
           'Encrypted and verified',

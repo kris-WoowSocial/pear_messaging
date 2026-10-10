@@ -73,9 +73,7 @@ class ActiveCallScreen extends StatelessWidget {
                   // Contact name
                   Obx(
                     () => Text(
-                      controller.remoteDisplayName.value.isNotEmpty
-                          ? controller.remoteDisplayName.value
-                          : 'Unknown',
+                      controller.remoteDisplayLabel,
                       style: const TextStyle(
                         color: Colors.white,
                         fontSize: 32,

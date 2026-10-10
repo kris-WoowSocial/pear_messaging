@@ -54,9 +54,7 @@ class OutgoingCallScreen extends StatelessWidget {
                       // Callee name
                       Obx(
                         () => Text(
-                          controller.remoteDisplayName.value.isNotEmpty
-                              ? controller.remoteDisplayName.value
-                              : '@user_...',
+                          controller.remoteDisplayLabel,
                           style: const TextStyle(
                             color: Colors.white,
                             fontSize: 28,

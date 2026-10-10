@@ -263,9 +263,7 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
 
   Widget _buildTopOverlay() {
     return Obx(() {
-      final name = _controller.remoteDisplayName.value.isNotEmpty
-          ? _controller.remoteDisplayName.value
-          : 'Unknown';
+      final name = _controller.remoteDisplayLabel;
       return SafeArea(
         child: AnimatedOpacity(
           opacity: _controlsVisible ? 1 : 0,

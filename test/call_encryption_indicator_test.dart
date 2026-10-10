@@ -11,6 +11,14 @@ void main() {
     );
   }
 
+  testWidgets('shows securing state while the encrypted handshake runs',
+      (tester) async {
+    await tester.pumpWidget(subject(CallEncryptionState.securing));
+
+    expect(find.byIcon(Icons.lock_outline), findsOne);
+    expect(find.text('Securing call…'), findsOne);
+  });
+
   testWidgets('shows encrypted and verified state', (tester) async {
     await tester.pumpWidget(subject(CallEncryptionState.encryptedVerified));
 

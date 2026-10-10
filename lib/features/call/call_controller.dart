@@ -702,6 +702,20 @@ class CallController extends GetxController {
     });
   }
 
+  String get remoteDisplayLabel {
+    final name = remoteDisplayName.value.trim();
+    if (name.isNotEmpty &&
+        name != 'Unknown' &&
+        name != 'Incoming Call' &&
+        name != remoteDeviceId.value) {
+      return name;
+    }
+    final deviceId = remoteDeviceId.value;
+    return deviceId.isNotEmpty
+        ? StringUtils.generateFriendlyName(deviceId)
+        : 'Unknown';
+  }
+
   bool get _videoCallingEnabled =>
       Get.isRegistered<FeatureFlagService>() &&
       Get.find<FeatureFlagService>().videoCalling.value;
@@ -711,8 +725,12 @@ class CallController extends GetxController {
       Get.find<FeatureFlagService>().encryptedSignaling.value;
 
   void _updateCallEncryptionState(String peerDeviceId) {
-    if (!_cryptoActive || !_cryptoHandshakeReady) {
+    if (!_cryptoActive) {
       callEncryptionState.value = CallEncryptionState.legacyUnencrypted;
+      return;
+    }
+    if (!_cryptoHandshakeReady) {
+      callEncryptionState.value = CallEncryptionState.securing;
       return;
     }
     callEncryptionState.value =
@@ -1629,7 +1647,8 @@ class CallController extends GetxController {
               ? await _socketService.requestPeerCapabilities(calleeDeviceId)
               : null;
       if (peerInfo == null) {
-        debugPrint('⚠️ Peer capability lookup returned no data for $calleeDeviceId');
+        debugPrint(
+            '⚠️ Peer capability lookup returned no data for $calleeDeviceId');
       } else {
         debugPrint(
           '📞 Peer capabilities for $calleeDeviceId: '

@@ -21,7 +21,10 @@ class StringUtils {
   /// Format: @user_[last 5 chars of device ID]
   /// Example: @user_abc12
   static String generateFriendlyName(String deviceId) {
-    return '@user_${deviceId.substring(deviceId.length - 5)}';
+    final suffix = deviceId.length >= 5
+        ? deviceId.substring(deviceId.length - 5)
+        : deviceId;
+    return '@user_$suffix';
   }
 
   /// Formats a device ID for display in UI
