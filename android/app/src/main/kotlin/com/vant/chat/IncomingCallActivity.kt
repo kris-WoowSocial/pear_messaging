@@ -92,11 +92,12 @@ class IncomingCallActivity : AppCompatActivity() {
         if (avatarUrl.isNotEmpty()) {
             Glide.with(this)
                 .load(avatarUrl)
-                .placeholder(R.drawable.vant_logo)
+                .placeholder(R.mipmap.launcher_icon)
+                .error(R.mipmap.launcher_icon)
                 .circleCrop()
                 .into(ivAvatar)
         } else {
-            ivAvatar.setImageResource(R.drawable.vant_logo)
+            ivAvatar.setImageResource(R.mipmap.launcher_icon)
         }
 
         btnAnswer.setOnClickListener { answerCall() }
