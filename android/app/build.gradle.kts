@@ -37,8 +37,8 @@ android {
     defaultConfig {
         applicationId = "com.vant.chat"
         
-        // 3. Increased minSdk to 23 for mobile_scanner compatibility
-        minSdk = 23 
+        // 3. Increased minSdk to 24 for Play automatic protection compatibility
+        minSdk = 24 
         
         // 4. Target SDK should match or be lower than compileSdk
         targetSdk = 36 
