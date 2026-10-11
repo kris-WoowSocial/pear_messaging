@@ -36,11 +36,6 @@ class WebRTCCallService {
   bool _isCameraEnabled = false;
   bool _isFrontCamera = true;
   bool _iceRestartInProgress = false;
-  bool _deferredVideoRequested = false;
-  MediaStream? _localVideoPreviewStream;
-  Future<bool>? _localVideoPreviewFuture;
-  RTCRtpTransceiver? _videoTransceiver;
-  RTCRtpSender? _videoSender;
   String? _localSdp;
   String? _remoteSdp;
 
@@ -127,7 +122,6 @@ class WebRTCCallService {
     required String calleeDeviceId,
     required String callerDeviceId,
     bool isVideo = false,
-    bool deferVideoTransmission = false,
   }) async {
     try {
       _remoteDeviceId = calleeDeviceId;
@@ -146,10 +140,11 @@ class WebRTCCallService {
         return false;
       }
 
-      _deferredVideoRequested = isVideo && deferVideoTransmission;
-      if (isVideo &&
-          !deferVideoTransmission &&
-          !await _requestCameraPermission()) {
+      // Request camera permission and capture the local video track now so it
+      // is included in the initial offer's SSRC/msid lines. This matches the
+      // pre-regression behaviour and avoids replaceTrack on a sender created
+      // from an empty transceiver.
+      if (isVideo && !await _requestCameraPermission()) {
         _isVideoCall = false;
         _isSpeakerOn = false;
         onCameraPermissionDenied?.call();
@@ -165,12 +160,9 @@ class WebRTCCallService {
       await _forceAudioDevice();
       await Future.delayed(const Duration(milliseconds: 100));
 
-      // Get local audio stream with hardware optimization
-      // On iOS, audio session is configured by flutter_webrtc during getUserMedia.
-      // We'll configure speaker routing AFTER the stream is captured (on connection).
-      _localStream = await _getUserMedia(
-        video: _isVideoCall && !deferVideoTransmission,
-      );
+      // Get local audio/video stream. For video calls the camera is captured
+      // here and added to the peer connection before createOffer.
+      _localStream = await _getUserMedia(video: _isVideoCall);
       if (_localStream == null || _currentCallId != callId) {
         debugPrint('❌ Failed to get local stream or call was cancelled');
         final staleStream = _localStream;
@@ -186,14 +178,10 @@ class WebRTCCallService {
       onLocalStream?.call(_localStream!);
       _isCameraEnabled = _localStream!.getVideoTracks().isNotEmpty;
 
-      // Add local audio to the peer connection. The camera stream stays
-      // separate so it can render locally before the signed answer arrives.
-      for (final track in _localStream!.getAudioTracks()) {
+      // Add every local track to the peer connection before creating the offer.
+      // CRITICAL FIX: Use for loop instead of forEach - forEach doesn't await async callbacks
+      for (final track in _localStream!.getTracks()) {
         await _peerConnection!.addTrack(track, _localStream!);
-      }
-      if (_deferredVideoRequested) {
-        await _reserveVideoTransceiver();
-        unawaited(_startLocalVideoPreview());
       }
       if (_currentCallId != callId) return false;
 
@@ -232,7 +220,6 @@ class WebRTCCallService {
     required String calleeDeviceId,
     required String sdpOffer,
     bool isVideo = false,
-    bool deferVideoTransmission = false,
   }) async {
     try {
       _currentCallId = callId;
@@ -250,10 +237,9 @@ class WebRTCCallService {
         return false;
       }
 
-      _deferredVideoRequested = isVideo && deferVideoTransmission;
-      if (isVideo &&
-          !deferVideoTransmission &&
-          !await _requestCameraPermission()) {
+      // Request camera permission and capture the local video track now so it
+      // is included in the initial answer.
+      if (isVideo && !await _requestCameraPermission()) {
         _isVideoCall = false;
         _isSpeakerOn = false;
         onCameraPermissionDenied?.call();
@@ -278,12 +264,9 @@ class WebRTCCallService {
       // Force the mode one more time right before getUserMedia
       await _forceAudioDevice();
 
-      // Get local audio stream with hardware optimization
-      // On iOS, audio session is configured by flutter_webrtc during getUserMedia.
-      // We'll configure speaker routing AFTER the stream is captured (on connection).
-      _localStream = await _getUserMedia(
-        video: _isVideoCall && !deferVideoTransmission,
-      );
+      // Get local audio/video stream. For video calls the camera is captured
+      // here and added to the peer connection before createAnswer.
+      _localStream = await _getUserMedia(video: _isVideoCall);
       if (_localStream == null || _currentCallId != callId) {
         debugPrint('❌ Failed to get local stream or call was cancelled');
         final staleStream = _localStream;
@@ -300,13 +283,8 @@ class WebRTCCallService {
       onLocalStream?.call(_localStream!);
       _isCameraEnabled = _localStream!.getVideoTracks().isNotEmpty;
 
-      final localVideoPreview = _deferredVideoRequested
-          ? _startLocalVideoPreview()
-          : Future<bool>.value(false);
-
-      // Add local audio to the peer connection. Camera preview remains local
-      // until the signed offer has been decrypted and verified.
-      for (final track in _localStream!.getAudioTracks()) {
+      // Add every local track to the peer connection before creating the answer.
+      for (final track in _localStream!.getTracks()) {
         await _peerConnection!.addTrack(track, _localStream!);
       }
       if (_currentCallId != callId) return false;
@@ -332,12 +310,6 @@ class WebRTCCallService {
       // Add any candidates that arrived before the remote description was ready
       await _flushPendingRemoteIceCandidates();
       if (_currentCallId != callId) return false;
-
-      if (_deferredVideoRequested &&
-          CallMediaHelper.hasVideoMediaSection(sdpOffer)) {
-        await localVideoPreview;
-        await prepareDeferredVideo();
-      }
 
       // Create answer
       final answer = await _peerConnection!.createAnswer();
@@ -566,160 +538,355 @@ class WebRTCCallService {
     );
   }
 
-  /// Captures the camera for a local-only preview. The stream is deliberately
-  /// kept outside [_localStream] and is not attached to the peer connection
-  /// until the signed call description has been verified.
-  Future<bool> _startLocalVideoPreview() {
-    final pending = _localVideoPreviewFuture;
-    if (pending != null) return pending;
-    final future = _captureLocalVideoPreview();
-    _localVideoPreviewFuture = future;
-    future.whenComplete(() {
-      if (identical(_localVideoPreviewFuture, future)) {
-        _localVideoPreviewFuture = null;
+  /// Toggle mute
+  void toggleMute() {
+    if (_localStream != null) {
+      _isMuted = !_isMuted;
+      _localStream!.getAudioTracks().forEach((track) {
+        track.enabled = !_isMuted;
+      });
+      debugPrint('📞 Mute toggled: $_isMuted');
+    }
+  }
+
+  /// Set mute state explicitly (e.g. when Telecom holds/unholds the call)
+  void setMuted(bool muted) {
+    if (_localStream != null && _isMuted != muted) {
+      _isMuted = muted;
+      _localStream!.getAudioTracks().forEach((track) {
+        track.enabled = !muted;
+      });
+      debugPrint('📞 Mute set to: $muted');
+    }
+  }
+
+  /// Toggle the local camera without renegotiating the call.
+  Future<void> setCameraEnabled(bool enabled) async {
+    final tracks = _localStream?.getVideoTracks() ?? const [];
+    for (final track in tracks) {
+      track.enabled = enabled;
+    }
+    _isCameraEnabled = enabled && tracks.isNotEmpty;
+    debugPrint('📞 Camera set to: $_isCameraEnabled');
+    await _logVideoSenderState('after setCameraEnabled($enabled)');
+  }
+
+  /// Switch between front and rear cameras when a video track is active.
+  Future<bool> switchCamera() async {
+    final tracks = _localStream?.getVideoTracks() ?? const [];
+    if (tracks.isEmpty) return false;
+    try {
+      final switched = await Helper.switchCamera(tracks.first);
+      if (switched) _isFrontCamera = !_isFrontCamera;
+      return switched;
+    } catch (e) {
+      debugPrint('⚠️ Failed to switch camera: $e');
+      return false;
+    }
+  }
+
+  /// Cap outbound video bitrate through RTP sender parameters.
+  Future<void> _applyVideoBitrateCap() async {
+    if (!_isVideoCall || _peerConnection == null) return;
+    try {
+      final senders = await _peerConnection!.getSenders();
+      for (final sender in senders) {
+        if (sender.track?.kind != 'video') continue;
+        final parameters = sender.parameters;
+        final encodings = parameters.encodings;
+        if (encodings == null || encodings.isEmpty) {
+          parameters.encodings = [
+            RTCRtpEncoding(maxBitrate: CallMediaHelper.videoBitrateCapBps),
+          ];
+        } else {
+          for (final encoding in encodings) {
+            encoding.maxBitrate = CallMediaHelper.videoBitrateCapBps;
+          }
+        }
+        await sender.setParameters(parameters);
+      }
+      debugPrint(
+        '📞 Video bitrate capped at ${CallMediaHelper.videoBitrateCapBps}bps',
+      );
+    } catch (e) {
+      debugPrint('⚠️ Failed to apply video bitrate cap: $e');
+    }
+  }
+
+  /// Toggle speaker
+  Future<void> toggleSpeaker() async {
+    final newState = !_isSpeakerOn;
+    _isSpeakerOn = newState;
+    await _configureAudioSession(speakerOn: newState);
+    debugPrint('📞 Speaker toggled: $_isSpeakerOn');
+  }
+
+  /// Set speaker to specific state (useful for restoring state after app resume)
+  Future<void> setSpeaker(bool speakerOn) async {
+    _isSpeakerOn = speakerOn;
+    await _configureAudioSession(speakerOn: speakerOn);
+    debugPrint('📞 Speaker set to: $speakerOn');
+  }
+
+  /// Start call duration timer
+  void _startDurationTimer() {
+    _durationTimer?.cancel();
+    _callDurationSeconds = 0;
+
+    _durationTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      _callDurationSeconds++;
+    });
+
+    debugPrint('📞 Call duration timer started');
+  }
+
+  /// Get call duration formatted as MM:SS
+  String getCallDuration() {
+    final minutes = _callDurationSeconds ~/ 60;
+    final seconds = _callDurationSeconds % 60;
+    return '${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}';
+  }
+
+  /// End the call
+  void endCall() {
+    debugPrint('📞 Ending call');
+    _endCall();
+  }
+
+  /// Internal cleanup
+  Future<void> _endCall() async {
+    _durationTimer?.cancel();
+    _durationTimer = null;
+
+    _statsTimer?.cancel();
+    _statsTimer = null;
+
+    _localStream?.getTracks().forEach((track) {
+      track.stop();
+    });
+    _localStream?.dispose();
+    _localStream = null;
+
+    _remoteStream?.dispose();
+    _remoteStream = null;
+
+    _peerConnection?.close();
+    _peerConnection?.dispose();
+    _peerConnection = null;
+    _remoteDescriptionSet = false;
+    _pendingRemoteIceCandidates.clear();
+
+    // Reset speakerphone to earpiece when the call ends
+    await _configureAudioSession(speakerOn: false);
+    _isSpeakerOn = false;
+
+    onCallEnded?.call(_currentCallId ?? '');
+
+    if (Platform.isAndroid) CallForegroundService().stop();
+
+    _currentCallId = null;
+    _remoteDeviceId = null;
+    _isCaller = false;
+    _isMuted = false;
+    _isVideoCall = false;
+    _isCameraEnabled = false;
+    _isFrontCamera = true;
+    _iceRestartInProgress = false;
+    _localSdp = null;
+    _remoteSdp = null;
+    _callDurationSeconds = 0;
+
+    debugPrint('📞 Call ended and cleaned up');
+  }
+
+  /// Configure audio session after call connects.
+  /// On iOS, audio session is already configured by flutter_webrtc during getUserMedia.
+  /// This method controls speaker routing (earpiece vs speaker) after connection.
+  ///
+  /// IMPORTANT (Android): When a self-managed Telecom Connection is active,
+  /// the framework owns the audio route and AudioManager/AudioSwitch requests
+  /// may be ignored. We therefore notify Telecom via
+  /// Connection.setAudioRoute(ROUTE_SPEAKER/ROUTE_EARPIECE) first, then keep
+  /// flutter_webrtc's AudioSwitch state in sync with Helper.setSpeakerphoneOn.
+  Future _configureAudioSession({bool speakerOn = false}) async {
+    try {
+      if (Platform.isAndroid) {
+        await _audioChannel.invokeMethod('setTelecomAudioRoute', {
+          'speakerOn': speakerOn,
+        });
+      }
+      await Helper.setSpeakerphoneOn(speakerOn);
+      debugPrint('📞 Audio session configured: speaker=$speakerOn');
+    } catch (e) {
+      debugPrint('⚠️ Audio session config failed: $e');
+    }
+  }
+
+  /// Force audio device selection to prevent flutter_webrtc from interfering
+  Future<void> _forceAudioDevice() async {
+    if (Platform.isAndroid) {
+      try {
+        // Force audio mode to communication mode before WebRTC takes over
+        await _audioChannel.invokeMethod('setAudioMode', {
+          'mode': 'MODE_IN_COMMUNICATION',
+        });
+        debugPrint('📞 Audio mode forced to MODE_IN_COMMUNICATION');
+      } catch (e) {
+        debugPrint('⚠️ Failed to force audio mode: $e');
+      }
+    }
+  }
+
+  /// Stop any active ringing and force MODE_IN_COMMUNICATION atomically.
+  /// Must be called BEFORE getUserMedia so WebRTC's AudioTrack is created under
+  /// the correct audio mode instead of MODE_RINGTONE.
+  Future<void> _stopRingingAndSetAudioMode() async {
+    if (!Platform.isAndroid) return;
+    try {
+      await _audioChannel.invokeMethod('stopRingingAndSetAudioMode');
+      debugPrint('📞 Ringing stopped and audio mode set atomically');
+    } catch (e) {
+      // Fallback: the method may not exist on older builds, just force audio mode
+      debugPrint('⚠️ stopRingingAndSetAudioMode not available, using fallback');
+      await _forceAudioDevice();
+    }
+  }
+
+  /// Request microphone permission
+  Future<bool> _requestMicrophonePermission() async {
+    final status = await Permission.microphone.request();
+
+    if (status.isGranted) {
+      return true;
+    }
+
+    if (status.isPermanentlyDenied) {
+      debugPrint(
+        '❌ Microphone permission permanently denied - need to open settings',
+      );
+    } else if (status.isDenied) {
+      debugPrint('❌ Microphone permission denied by user');
+    }
+
+    return false;
+  }
+
+  /// Request camera permission only when a video call is starting.
+  Future<bool> _requestCameraPermission() async {
+    final status = await Permission.camera.request();
+    if (status.isGranted) return true;
+    debugPrint(
+      status.isPermanentlyDenied
+          ? '❌ Camera permission permanently denied'
+          : '❌ Camera permission denied — falling back to audio',
+    );
+    return false;
+  }
+
+  /// Getters
+  bool get isMuted => _isMuted;
+  bool get isSpeakerOn => _isSpeakerOn;
+  bool get isVideoCall => _isVideoCall;
+  bool get isCameraEnabled => _isCameraEnabled;
+  bool get isFrontCamera => _isFrontCamera;
+  bool get isIceRestartInProgress => _iceRestartInProgress;
+  bool get isInCall => _peerConnection != null;
+  String? get currentCallId => _currentCallId;
+  String? get remoteDeviceId => _remoteDeviceId;
+  bool get isCaller => _isCaller;
+
+  /// Debug helper: print only the m=video section and its direction lines.
+  void _logSdpVideoDirections(String label, String? sdp) {
+    if (sdp == null) return;
+    final lines = sdp.split('\n');
+    var inVideo = false;
+    final buffer = StringBuffer()..writeln('🧪 $label SDP video m-line:');
+    for (final raw in lines) {
+      final line = raw.trim();
+      if (line.startsWith('m=video')) {
+        inVideo = true;
+        buffer.writeln('  $line');
+      } else if (line.startsWith('m=')) {
+        inVideo = false;
+      } else if (inVideo &&
+          RegExp(r'^a=(sendrecv|recvonly|sendonly|inactive)\s*$')
+              .hasMatch(line)) {
+        buffer.writeln('  $line');
+      }
+    }
+    debugPrint(buffer.toString().trimRight());
+  }
+
+  /// Debug helper: print current video sender track IDs and directions.
+  Future<void> _logVideoSenderState(String label) async {
+    if (_peerConnection == null) return;
+    try {
+      final senders = await _peerConnection!.getSenders();
+      final transceivers = await _peerConnection!.getTransceivers();
+      for (final sender in senders) {
+        if (sender.track?.kind != 'video') continue;
+        final tx = transceivers.cast<RTCRtpTransceiver?>().firstWhere(
+              (t) => t?.sender == sender,
+              orElse: () => null,
+            );
+        debugPrint(
+          '🧪 $label video sender trackId=${sender.track?.id} '
+          'hasTransceiver=${tx != null}',
+        );
+      }
+    } catch (e) {
+      debugPrint('⚠️ $label sender state log failed: $e');
+    }
+  }
+
+  /// Start periodic stats logging for diagnostic purposes
+  void _startStatsLogger() {
+    _statsTimer?.cancel();
+    _statsTimer = Timer.periodic(const Duration(seconds: 2), (timer) async {
+      if (_peerConnection == null) {
+        timer.cancel();
+        return;
+      }
+      try {
+        final stats = await _peerConnection!.getStats();
+        for (final report in stats) {
+          if ((report.type == 'outbound-rtp' ||
+                  report.type == 'inbound-rtp') &&
+              (report.values['kind'] == 'video')) {
+            final id = report.values['id'];
+            final bytesSent = report.values['bytesSent'];
+            final bytesReceived = report.values['bytesReceived'];
+            final framesSent = report.values['framesSent'];
+            final framesReceived = report.values['framesReceived'];
+            final frameWidth = report.values['frameWidth'];
+            final frameHeight = report.values['frameHeight'];
+            if (report.type == 'outbound-rtp' && bytesSent != null) {
+              debugPrint(
+                '📊 VIDEO OUT id=$id bytes=$bytesSent '
+                'frames=$framesSent ${frameWidth}x$frameHeight',
+              );
+            }
+            if (report.type == 'inbound-rtp' && bytesReceived != null) {
+              debugPrint(
+                '📊 VIDEO IN id=$id bytes=$bytesReceived '
+                'frames=$framesReceived ${frameWidth}x$frameHeight',
+              );
+            }
+          }
+        }
+      } catch (e) {
+        debugPrint('❌ Error getting stats: $e');
       }
     });
-    return future;
+    debugPrint('📊 Stats logger started (2s video-only)');
   }
 
-  Future<bool> _captureLocalVideoPreview() async {
-    if (!_isVideoCall ||
-        !_deferredVideoRequested ||
-        _localVideoPreviewStream != null) {
-      return _localVideoPreviewStream != null;
-    }
-
-    try {
-      final hasCameraPermission = await _requestCameraPermission();
-      if (!_deferredVideoRequested || _peerConnection == null) return false;
-      if (!hasCameraPermission) {
-        _deferredVideoRequested = false;
-        _isVideoCall = false;
-        _isSpeakerOn = false;
-        onCameraPermissionDenied?.call();
-        return false;
-      }
-
-      final constraints = CallMediaHelper.mediaConstraints(video: true);
-      final videoStream = await navigator.mediaDevices.getUserMedia({
-        'audio': false,
-        'video': constraints['video'],
-      });
-      final videoTracks = videoStream.getVideoTracks();
-      if (videoTracks.isEmpty) {
-        _deferredVideoRequested = false;
-        _isVideoCall = false;
-        _isSpeakerOn = false;
-        await videoStream.dispose();
-        return false;
-      }
-
-      // The user may have cancelled while the permission prompt/camera capture
-      // was in flight. Release the camera immediately instead of leaking it.
-      if (!_deferredVideoRequested || _peerConnection == null) {
-        for (final track in videoTracks) {
-          track.stop();
-        }
-        await videoStream.dispose();
-        return false;
-      }
-
-      _localVideoPreviewStream = videoStream;
-      _isFrontCamera = true;
-      _isCameraEnabled = true;
-      onLocalStream?.call(videoStream);
-      return true;
-    } catch (e) {
-      debugPrint('❌ Local video preview failed: $e');
-      _deferredVideoRequested = false;
-      _isVideoCall = false;
-      _isSpeakerOn = false;
-      onCameraPermissionDenied?.call();
-      return false;
-    }
+  /// Stop the stats logger
+  void _stopStatsLogger() {
+    _statsTimer?.cancel();
+    _statsTimer = null;
+    debugPrint('📊 Stats logger stopped');
   }
-
-  Future<void> _reserveVideoTransceiver() async {
-    if (_peerConnection == null || _videoTransceiver != null) return;
-    try {
-      _videoTransceiver = await _peerConnection!.addTransceiver(
-        kind: RTCRtpMediaType.RTCRtpMediaTypeVideo,
-        init: RTCRtpTransceiverInit(direction: TransceiverDirection.SendRecv),
-      );
-      _videoSender = _videoTransceiver!.sender;
-      debugPrint('📞 Reserved send/receive video m-line in offer');
-    } catch (e) {
-      debugPrint('⚠️ Unable to reserve video transceiver: $e');
-    }
-  }
-
-  Future<RTCRtpTransceiver?> _findVideoTransceiver() async {
-    final peerConnection = _peerConnection;
-    if (peerConnection == null) return null;
-    try {
-      final transceivers = await peerConnection.getTransceivers();
-      for (final transceiver in transceivers) {
-        if (transceiver.receiver.track?.kind == 'video' ||
-            transceiver.sender.track?.kind == 'video') {
-          return transceiver;
-        }
-      }
-    } catch (e) {
-      debugPrint('⚠️ Unable to inspect video transceivers: $e');
-    }
-    return null;
-  }
-
-  /// Attaches the local-only preview track to the negotiated video m-line.
-  /// On the caller this must only run after the callee signature and answer
-  /// fingerprints have been verified; on the callee it runs after the signed
-  /// offer has been verified and before the signed answer is created.
-  Future<bool> prepareDeferredVideo() async {
-    if (!_isVideoCall ||
-        !_deferredVideoRequested ||
-        _peerConnection == null ||
-        !await _startLocalVideoPreview()) {
-      return false;
-    }
-
-    try {
-      final videoTracks =
-          _localVideoPreviewStream?.getVideoTracks() ?? const [];
-      final videoTrack = videoTracks.isEmpty ? null : videoTracks.first;
-      if (videoTrack == null) return false;
-
-      _videoTransceiver ??= await _findVideoTransceiver();
-      _videoSender ??= _videoTransceiver?.sender;
-      if (_videoTransceiver != null) {
-        await _videoTransceiver!.setDirection(TransceiverDirection.SendRecv);
-      }
-      if (_videoSender != null) {
-        await _videoSender!.replaceTrack(videoTrack);
-        debugPrint(
-          '🧪 replaceTrack succeeded on sender trackId=${_videoSender?.track?.id}',
-        );
-      } else {
-        _videoSender = await _peerConnection!.addTrack(
-          videoTrack,
-          _localVideoPreviewStream!,
-        );
-        debugPrint('🧪 addTrack used as fallback for deferred video');
-      }
-      await _logVideoSenderState('after deferred video attach');
-
-      _deferredVideoRequested = false;
-      _isCameraEnabled = videoTrack.enabled;
-      await _applyVideoBitrateCap();
-      onLocalStream?.call(_localVideoPreviewStream!);
-      return true;
-    } catch (e) {
-      debugPrint('❌ Deferred camera activation failed: $e');
-      return false;
-    }
-  }
-
-  /// Activates the already-negotiated video m-line without renegotiation.
-  Future<bool> enableDeferredVideo() => prepareDeferredVideo();
 
   /// Create and apply an ICE-restart offer. The SDP is returned through
   /// [onIceRestartDescription] instead of the normal call signaling callback.
@@ -816,370 +983,6 @@ class WebRTCCallService {
       debugPrint('❌ Remote ICE answer handling failed: $e');
       return false;
     }
-  }
-
-  /// Toggle mute
-  void toggleMute() {
-    if (_localStream != null) {
-      _isMuted = !_isMuted;
-      _localStream!.getAudioTracks().forEach((track) {
-        track.enabled = !_isMuted;
-      });
-      debugPrint('📞 Mute toggled: $_isMuted');
-    }
-  }
-
-  /// Set mute state explicitly (e.g. when Telecom holds/unholds the call)
-  void setMuted(bool muted) {
-    if (_localStream != null && _isMuted != muted) {
-      _isMuted = muted;
-      _localStream!.getAudioTracks().forEach((track) {
-        track.enabled = !muted;
-      });
-      debugPrint('📞 Mute set to: $muted');
-    }
-  }
-
-  /// Toggle the local camera without renegotiating the call.
-  Future<void> setCameraEnabled(bool enabled) async {
-    final tracks = [
-      ...?_localStream?.getVideoTracks(),
-      ...?_localVideoPreviewStream?.getVideoTracks(),
-    ];
-    for (final track in tracks) {
-      track.enabled = enabled;
-    }
-    _isCameraEnabled = enabled && tracks.isNotEmpty;
-    debugPrint('📞 Camera set to: $_isCameraEnabled');
-    await _logVideoSenderState('after setCameraEnabled($enabled)');
-  }
-
-  /// Switch between front and rear cameras when a video track is active.
-  Future<bool> switchCamera() async {
-    final tracks = _localVideoPreviewStream?.getVideoTracks() ??
-        _localStream?.getVideoTracks() ??
-        const [];
-    if (tracks.isEmpty) return false;
-    try {
-      final switched = await Helper.switchCamera(tracks.first);
-      if (switched) _isFrontCamera = !_isFrontCamera;
-      return switched;
-    } catch (e) {
-      debugPrint('⚠️ Failed to switch camera: $e');
-      return false;
-    }
-  }
-
-  /// Cap outbound video bitrate through RTP sender parameters.
-  Future<void> _applyVideoBitrateCap() async {
-    if (!_isVideoCall || _peerConnection == null) return;
-    try {
-      final senders = await _peerConnection!.getSenders();
-      for (final sender in senders) {
-        if (sender.track?.kind != 'video') continue;
-        final parameters = sender.parameters;
-        final encodings = parameters.encodings;
-        if (encodings == null || encodings.isEmpty) {
-          parameters.encodings = [
-            RTCRtpEncoding(maxBitrate: CallMediaHelper.videoBitrateCapBps),
-          ];
-        } else {
-          for (final encoding in encodings) {
-            encoding.maxBitrate = CallMediaHelper.videoBitrateCapBps;
-          }
-        }
-        await sender.setParameters(parameters);
-      }
-      debugPrint(
-        '📞 Video bitrate capped at ${CallMediaHelper.videoBitrateCapBps}bps',
-      );
-    } catch (e) {
-      debugPrint('⚠️ Failed to apply video bitrate cap: $e');
-    }
-  }
-
-  /// Toggle speaker
-  Future<void> toggleSpeaker() async {
-    final newState = !_isSpeakerOn;
-    _isSpeakerOn = newState;
-    await _configureAudioSession(speakerOn: newState);
-    debugPrint('📞 Speaker toggled: $_isSpeakerOn');
-  }
-
-  /// Set speaker to specific state (useful for restoring state after app resume)
-  Future<void> setSpeaker(bool speakerOn) async {
-    _isSpeakerOn = speakerOn;
-    await _configureAudioSession(speakerOn: speakerOn);
-    debugPrint('📞 Speaker set to: $_isSpeakerOn');
-  }
-
-  /// Start call duration timer
-  void _startDurationTimer() {
-    _durationTimer?.cancel();
-    _callDurationSeconds = 0;
-
-    _durationTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      _callDurationSeconds++;
-    });
-
-    debugPrint('📞 Call duration timer started');
-  }
-
-  /// Get call duration formatted as MM:SS
-  String getCallDuration() {
-    final minutes = _callDurationSeconds ~/ 60;
-    final seconds = _callDurationSeconds % 60;
-    return '${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}';
-  }
-
-  /// End the call
-  void endCall() {
-    debugPrint('📞 Ending call');
-    _endCall();
-  }
-
-  /// Internal cleanup
-  Future<void> _endCall() async {
-    _durationTimer?.cancel();
-    _durationTimer = null;
-
-    _statsTimer?.cancel();
-    _statsTimer = null;
-
-    _localStream?.getTracks().forEach((track) {
-      track.stop();
-    });
-    _localStream?.dispose();
-    _localStream = null;
-    _deferredVideoRequested = false;
-    _localVideoPreviewStream?.getTracks().forEach((track) {
-      track.stop();
-    });
-    await _localVideoPreviewStream?.dispose();
-    _localVideoPreviewStream = null;
-    _localVideoPreviewFuture = null;
-    _videoTransceiver = null;
-    _videoSender = null;
-
-    _remoteStream?.dispose();
-    _remoteStream = null;
-
-    _peerConnection?.close();
-    _peerConnection?.dispose();
-    _peerConnection = null;
-    _remoteDescriptionSet = false;
-    _pendingRemoteIceCandidates.clear();
-
-    // Reset speakerphone to earpiece when the call ends
-    await _configureAudioSession(speakerOn: false);
-    _isSpeakerOn = false;
-
-    onCallEnded?.call(_currentCallId ?? '');
-
-    if (Platform.isAndroid) CallForegroundService().stop();
-
-    _currentCallId = null;
-    _remoteDeviceId = null;
-    _isCaller = false;
-    _isMuted = false;
-    _isVideoCall = false;
-    _isCameraEnabled = false;
-    _isFrontCamera = true;
-    _iceRestartInProgress = false;
-    _localSdp = null;
-    _remoteSdp = null;
-    _callDurationSeconds = 0;
-
-    debugPrint('📞 Call ended and cleaned up');
-  }
-
-  /// Configure audio session after call connects.
-  /// On iOS, audio session is already configured by flutter_webrtc during getUserMedia.
-  /// This method controls speaker routing (earpiece vs speaker) after connection.
-  ///
-  /// IMPORTANT (Android): When a self-managed Telecom Connection is active,
-  /// the framework owns the audio route and AudioManager/AudioSwitch requests
-  /// may be ignored. We therefore notify Telecom via
-  /// `Connection.setAudioRoute(ROUTE_SPEAKER/ROUTE_EARPIECE)` first, then keep
-  /// flutter_webrtc's AudioSwitch state in sync with `Helper.setSpeakerphoneOn`.
-  Future _configureAudioSession({bool speakerOn = false}) async {
-    try {
-      if (Platform.isAndroid) {
-        await _audioChannel.invokeMethod('setTelecomAudioRoute', {
-          'speakerOn': speakerOn,
-        });
-      }
-      await Helper.setSpeakerphoneOn(speakerOn);
-      debugPrint('📞 Audio session configured: speaker=$speakerOn');
-    } catch (e) {
-      debugPrint('⚠️ Audio session config failed: $e');
-    }
-  }
-
-  /// Force audio device selection to prevent flutter_webrtc from interfering
-  Future<void> _forceAudioDevice() async {
-    if (Platform.isAndroid) {
-      try {
-        // Force audio mode to communication mode before WebRTC takes over
-        await _audioChannel.invokeMethod('setAudioMode', {
-          'mode': 'MODE_IN_COMMUNICATION',
-        });
-        debugPrint('📞 Audio mode forced to MODE_IN_COMMUNICATION');
-      } catch (e) {
-        debugPrint('⚠️ Failed to force audio mode: $e');
-      }
-    }
-  }
-
-  /// Stop any active ringing and force MODE_IN_COMMUNICATION atomically.
-  /// Must be called BEFORE getUserMedia so WebRTC's AudioTrack is created under
-  /// the correct audio mode instead of MODE_RINGTONE.
-  Future<void> _stopRingingAndSetAudioMode() async {
-    if (!Platform.isAndroid) return;
-    try {
-      await _audioChannel.invokeMethod('stopRingingAndSetAudioMode');
-      debugPrint('📞 Ringing stopped and audio mode set atomically');
-    } catch (e) {
-      // Fallback: the method may not exist on older builds, just force audio mode
-      debugPrint('⚠️ stopRingingAndSetAudioMode not available, using fallback');
-      await _forceAudioDevice();
-    }
-  }
-
-  /// Request microphone permission
-  Future<bool> _requestMicrophonePermission() async {
-    final status = await Permission.microphone.request();
-
-    if (status.isGranted) {
-      return true;
-    }
-
-    if (status.isPermanentlyDenied) {
-      debugPrint(
-        '❌ Microphone permission permanently denied - need to open settings',
-      );
-    } else if (status.isDenied) {
-      debugPrint('❌ Microphone permission denied by user');
-    }
-
-    return false;
-  }
-
-  /// Request camera permission only when a video call is starting.
-  Future<bool> _requestCameraPermission() async {
-    final status = await Permission.camera.request();
-    if (status.isGranted) return true;
-    debugPrint(
-      status.isPermanentlyDenied
-          ? '❌ Camera permission permanently denied'
-          : '❌ Camera permission denied — falling back to audio',
-    );
-    return false;
-  }
-
-  /// Getters
-  bool get isMuted => _isMuted;
-  bool get isSpeakerOn => _isSpeakerOn;
-  bool get isVideoCall => _isVideoCall;
-  bool get isCameraEnabled => _isCameraEnabled;
-  bool get isFrontCamera => _isFrontCamera;
-  bool get isIceRestartInProgress => _iceRestartInProgress;
-  bool get hasDeferredVideo => _deferredVideoRequested;
-  bool get isInCall => _peerConnection != null;
-  String? get currentCallId => _currentCallId;
-  String? get remoteDeviceId => _remoteDeviceId;
-  bool get isCaller => _isCaller;
-
-  /// Debug helper: print only the m=video section and its direction lines.
-  void _logSdpVideoDirections(String label, String? sdp) {
-    if (sdp == null) return;
-    final lines = sdp.split('\n');
-    var inVideo = false;
-    final buffer = StringBuffer()..writeln('🧪 $label SDP video m-line:');
-    for (final raw in lines) {
-      final line = raw.trim();
-      if (line.startsWith('m=video')) {
-        inVideo = true;
-        buffer.writeln('  $line');
-      } else if (line.startsWith('m=')) {
-        inVideo = false;
-      } else if (inVideo &&
-          RegExp(r'^a=(sendrecv|recvonly|sendonly|inactive)\s*$')
-              .hasMatch(line)) {
-        buffer.writeln('  $line');
-      }
-    }
-    debugPrint(buffer.toString().trimRight());
-  }
-
-  /// Debug helper: print current video sender track IDs and directions.
-  Future<void> _logVideoSenderState(String label) async {
-    if (_peerConnection == null) return;
-    try {
-      final senders = await _peerConnection!.getSenders();
-      final transceivers = await _peerConnection!.getTransceivers();
-      for (final sender in senders) {
-        if (sender.track?.kind != 'video') continue;
-        final tx = transceivers.cast<RTCRtpTransceiver?>().firstWhere(
-              (t) => t?.sender == sender,
-              orElse: () => null,
-            );
-        debugPrint(
-          '🧪 $label video sender trackId=${sender.track?.id} '
-          'hasTransceiver=${tx != null}',
-        );
-      }
-    } catch (e) {
-      debugPrint('⚠️ $label sender state log failed: $e');
-    }
-  }
-
-  /// Start periodic stats logging for diagnostic purposes
-  void _startStatsLogger() {
-    _statsTimer?.cancel();
-    _statsTimer = Timer.periodic(const Duration(seconds: 2), (timer) async {
-      if (_peerConnection == null) {
-        timer.cancel();
-        return;
-      }
-      try {
-        final stats = await _peerConnection!.getStats();
-        for (final report in stats) {
-          if ((report.type == 'outbound-rtp' || report.type == 'inbound-rtp') &&
-              (report.values['kind'] == 'video')) {
-            final id = report.values['id'];
-            final bytesSent = report.values['bytesSent'];
-            final bytesReceived = report.values['bytesReceived'];
-            final framesSent = report.values['framesSent'];
-            final framesReceived = report.values['framesReceived'];
-            final frameWidth = report.values['frameWidth'];
-            final frameHeight = report.values['frameHeight'];
-            if (report.type == 'outbound-rtp' && bytesSent != null) {
-              debugPrint(
-                '📊 VIDEO OUT id=$id bytes=$bytesSent '
-                'frames=$framesSent ${frameWidth}x$frameHeight',
-              );
-            }
-            if (report.type == 'inbound-rtp' && bytesReceived != null) {
-              debugPrint(
-                '📊 VIDEO IN id=$id bytes=$bytesReceived '
-                'frames=$framesReceived ${frameWidth}x$frameHeight',
-              );
-            }
-          }
-        }
-      } catch (e) {
-        debugPrint('❌ Error getting stats: $e');
-      }
-    });
-    debugPrint('📊 Stats logger started (2s video-only)');
-  }
-
-  /// Stop the stats logger
-  void _stopStatsLogger() {
-    _statsTimer?.cancel();
-    _statsTimer = null;
-    debugPrint('📊 Stats logger stopped');
   }
 
   /// Dispose

@@ -19,3 +19,30 @@ Branches: `pear_messaging/video-integration` and `vant_chatting/turn-credentials
 | D13 | Ringing camera privacy release | Start a video call, confirm the camera indicator/privacy dot appears during ringing, then cancel before answer; repeat after decline/timeout/end | Camera indicator/privacy dot turns off immediately; no preview or camera session remains active | ☐ Pass ☐ Fail | ☐ Pass ☐ Fail |
 
 Automation anchors: server `cold-started callee can REST accept and resync within grace`; client `five signed capability rollbacks warn once and preserve encrypted floor`; plus the mixed-version and downgrade tests in `server/tests/call_video_capability.test.js`.
+
+## Two-device video regression checklist
+
+Use two physical devices. Capture `flutter run --verbose` / logcat from each side for any failure. After the transport fix, the caller's camera track must be in the initial offer and the callee's camera track must be in the initial answer; both sides should see `m=video` `a=sendrecv` and rising outbound/inbound video stats.
+
+| ID | Scenario | Check | Pass/Fail |
+|---|---|---|---|
+| V1 | Outgoing video call | Caller taps video; `/call/video` opens; local preview appears while offer is created; remote video appears after callee accepts | ☐ Pass ☐ Fail |
+| V2 | Incoming video accept | Callee accepts from incoming screen; `/call/video` opens before `acceptCall` returns; both local and remote video visible after handshake | ☐ Pass ☐ Fail |
+| V3 | Cold-start video accept | Force-kill callee, start video call, accept from native notification, reopen app | Resync delivers offer, video connects, remote video appears | ☐ Pass ☐ Fail |
+| V4 | Video SDP direction | Inspect logs for `local offer`, `remote offer`, `local answer`, `remote answer` | All video sections show `a=sendrecv` (or `a=sendonly` for camera-off side only when toggled) | ☐ Pass ☐ Fail |
+| V5 | Video stats flow | After `RTCPeerConnectionStateConnected` | `VIDEO OUT` bytes/frames increase on sender; `VIDEO IN` bytes/frames increase on receiver | ☐ Pass ☐ Fail |
+| V6 | Camera toggle | Tap camera-off during connected video call | Local preview pauses, peer sees placeholder, `sendCallMediaUpdate(video=false)` log appears | ☐ Pass ☐ Fail |
+| V7 | Camera flip | Tap flip during connected video call | Local preview switches front/rear and continues sending | ☐ Pass ☐ Fail |
+| V8 | Network change | Move one device from Wi-Fi to mobile data during connected video call | Call stays connected or ICE restart recovers within ~10s; video resumes | ☐ Pass ☐ Fail |
+| V9 | Mixed-version fallback | Store-built caller (pre-video) calls new-build callee | Plain audio call connects; callee does not show video route | ☐ Pass ☐ Fail |
+| V10 | Camera privacy on cancel | Start video call, then caller cancels before answer | Camera privacy dot/indicator turns off; `Call ended and cleaned up` log appears | ☐ Pass ☐ Fail |
+
+Log markers to look for:
+
+- `📞 Local audio/video stream captured with hardware optimization`
+- `📞 Active senders before createOffer/createAnswer: 2` (audio + video)
+- `🧪 local offer SDP video m-line:` `m=video ...` `a=sendrecv`
+- `🧪 remote answer SDP video m-line:` `m=video ...` `a=sendrecv`
+- `📞 Remote track received`
+- `📊 VIDEO OUT id=... bytes=... frames=...`
+- `📊 VIDEO IN id=... bytes=... frames=...`

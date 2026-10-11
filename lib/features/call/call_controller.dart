@@ -1028,9 +1028,6 @@ class CallController extends GetxController {
         final decoded = jsonDecode(plaintext);
         if (decoded is! Map || decoded['sdp'] is! String) return;
         if (decoded['type'] == 'offer') {
-          if (_webrtcService.hasDeferredVideo) {
-            await _webrtcService.prepareDeferredVideo();
-          }
           final handled = await _webrtcService.handleIceRestartOffer(
             decoded['sdp'] as String,
             acceptDuringLocalRestart:
@@ -1054,7 +1051,7 @@ class CallController extends GetxController {
               _videoRequested = false;
               _sendCallMediaUpdate(
                 video: false,
-                reason: 'deferred video attach failed during ICE restart',
+                reason: 'camera not available during ICE restart',
               );
             }
           }
@@ -1069,9 +1066,6 @@ class CallController extends GetxController {
     final offer = data['sdpOffer'] as String?;
     final answer = data['sdpAnswer'] as String?;
     if (offer != null && offer.isNotEmpty) {
-      if (_webrtcService.hasDeferredVideo) {
-        await _webrtcService.prepareDeferredVideo();
-      }
       final handled = await _webrtcService.handleIceRestartOffer(
         offer,
         acceptDuringLocalRestart: CallMediaHelper.acceptRemoteIceRestartOffer(
@@ -1740,12 +1734,12 @@ class CallController extends GetxController {
       // Resolve caller's own display name to pass to backend
       await _resolveCallerDisplayName();
 
-      // Start WebRTC call - this will trigger onLocalDescription callback
+      // Start WebRTC call - this will trigger onLocalDescription callback.
+      // The video track (if requested) is captured and added before createOffer.
       final success = await _webrtcService.startCall(
         calleeDeviceId: calleeDeviceId,
         callerDeviceId: callerDeviceId,
         isVideo: wantsVideo,
-        deferVideoTransmission: wantsVideo,
       );
 
       if (success) {
@@ -1988,7 +1982,8 @@ class CallController extends GetxController {
       await _initializeAudioMode();
       unawaited(_setNativeInCall(true));
 
-      // Accept WebRTC call - this will trigger onLocalDescription callback with answer
+      // Accept WebRTC call - this will trigger onLocalDescription callback with answer.
+      // The video track (if requested) is captured and added before createAnswer.
       _webrtcService.primeIceServers(callData['iceServers']);
       final success = await _webrtcService.acceptCall(
         callId: callId,
@@ -1996,7 +1991,6 @@ class CallController extends GetxController {
         calleeDeviceId: calleeDeviceId,
         sdpOffer: sdpOffer,
         isVideo: incomingVideo,
-        deferVideoTransmission: incomingVideo,
       );
 
       if (success) {
@@ -2271,29 +2265,21 @@ class CallController extends GetxController {
         }
         await _storageService.markPeerEncryptedCall(remoteDeviceId.value);
         _cryptoHandshakeReady = true;
-        final remoteCanSendVideo =
-            CallMediaHelper.remoteVideoCanSend(sdpAnswer);
-        var localVideoReady = false;
+        await _flushPendingIceCandidates();
+        await _webrtcService.setRemoteDescription(sdpAnswer, 'answer');
         if (_videoRequested) {
-          localVideoReady = await _webrtcService.enableDeferredVideo();
           isCameraOn.value = _webrtcService.isCameraEnabled;
           isFrontCamera.value = _webrtcService.isFrontCamera;
-          isVideoCall.value =
-              _videoCallingEnabled && _webrtcService.isVideoCall;
-          if (localVideoReady) {
+          isVideoCall.value = _videoCallingEnabled && _webrtcService.isVideoCall;
+          if (isCameraOn.value) {
             unawaited(_refreshAndroidOngoingCallNotification());
             _stopProximitySensor();
           } else {
             _sendCallMediaUpdate(
               video: false,
-              reason: 'deferred video attach failed on answer',
+              reason: 'camera not available on answer',
             );
           }
-        }
-        await _flushPendingIceCandidates();
-        await _webrtcService.setRemoteDescription(sdpAnswer, 'answer');
-        if (localVideoReady && !remoteCanSendVideo) {
-          unawaited(_webrtcService.restartIce());
         }
         _updateCallEncryptionState(remoteDeviceId.value);
       } catch (e) {
@@ -3378,7 +3364,6 @@ class CallController extends GetxController {
         calleeDeviceId: calleeDeviceId,
         sdpOffer: sdpOffer,
         isVideo: incomingVideo,
-        deferVideoTransmission: incomingVideo,
       );
 
       if (success) {

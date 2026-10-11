@@ -145,7 +145,7 @@ void main() {
     );
   });
 
-  test('local camera preview is promoted only after call crypto verification',
+  test('video track is captured and added before createOffer/createAnswer',
       () {
     final service =
         File('lib/core/services/webrtc_call_service.dart').readAsStringSync();
@@ -156,29 +156,26 @@ void main() {
       controller.indexOf('/// Handle call initiated'),
     );
 
-    expect(service, contains('_localVideoPreviewStream'));
-    expect(service, contains('_reserveVideoTransceiver'));
-    expect(service, contains('RTCRtpMediaType.RTCRtpMediaTypeVideo'));
-    expect(service, contains('TransceiverDirection.SendRecv'));
-    expect(service, contains('replaceTrack(videoTrack)'));
-    expect(service, contains("'audio': false"));
-    expect(service, contains("'video': constraints['video']"));
+    expect(service, contains('_getUserMedia(video: _isVideoCall)'));
+    expect(service, contains('for (final track in _localStream!.getTracks())'));
+    expect(service, contains('await _peerConnection!.addTrack(track, _localStream!)'));
+    expect(service, contains('Active senders before createOffer'));
+    expect(service, contains('Active senders before createAnswer'));
+    expect(service, isNot(contains('enableDeferredVideo')));
+    expect(service, isNot(contains('prepareDeferredVideo')));
 
+    // Crypto verification must still happen before the remote answer is applied.
     expect(
       accepted.indexOf('completeHandshakeFirstContact'),
       lessThan(accepted.indexOf('_sameFingerprints')),
     );
     expect(
       accepted.indexOf('_sameFingerprints'),
-      lessThan(accepted.indexOf('enableDeferredVideo')),
-    );
-    expect(
-      accepted.indexOf('enableDeferredVideo'),
       lessThan(accepted.indexOf('setRemoteDescription')),
     );
     expect(
       accepted.indexOf('setRemoteDescription'),
-      lessThan(accepted.indexOf('localVideoReady && !remoteCanSendVideo')),
+      lessThan(accepted.indexOf('isCameraOn.value')),
     );
   });
 

@@ -75,18 +75,17 @@ void main() {
   });
 
   group('camera release contract', () {
-    test('call cleanup stops and disposes the local preview stream', () {
+    test('call cleanup stops and disposes the local stream', () {
       final cleanup = section(
         source('lib/core/services/webrtc_call_service.dart'),
         'Future<void> _endCall() async',
         '/// Configure audio session',
       );
 
-      expect(cleanup, contains('_deferredVideoRequested = false'));
-      expect(cleanup, contains('_localVideoPreviewStream?.getTracks()'));
+      expect(cleanup, contains('_localStream?.getTracks()'));
       expect(cleanup, contains('track.stop()'));
-      expect(cleanup, contains('_localVideoPreviewStream?.dispose()'));
-      expect(cleanup, contains('_localVideoPreviewStream = null'));
+      expect(cleanup, contains('_localStream?.dispose()'));
+      expect(cleanup, contains('_localStream = null'));
     });
 
     test('caller cancel and remote timeout release video media', () {
