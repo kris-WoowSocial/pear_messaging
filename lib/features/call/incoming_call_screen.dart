@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
+import 'package:pear_messaging/core/services/feature_flag_service.dart';
 import 'package:pear_messaging/core/services/notification_service.dart';
 import 'package:pear_messaging/core/services/socket_service.dart';
 import 'call_controller.dart';
@@ -120,7 +121,7 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
                       const SizedBox(height: 8),
                       // Call status
                       Text(
-                        isVideo ? 'Incoming video call...' : 'Incoming call...',
+                        isVideo ? 'Incoming video call' : 'Incoming call...',
                         style: const TextStyle(
                           color: Colors.white70,
                           fontSize: 16,
@@ -226,11 +227,26 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
     });
 
     final callId = callData['callId'] as String?;
+    final callerId = callData['callerId'] as String? ?? '';
     final sdpOffer = callData['sdpOffer'] as String?;
+    final isVideo = callData['isVideo'] == true;
 
     try {
       final controller = Get.find<CallController>();
       final ringtoneService = RingtoneService();
+      final hasDirectOffer = (sdpOffer != null && sdpOffer.isNotEmpty) ||
+          callData['crypto'] is Map;
+      final videoUiEnabled = isVideo &&
+          Get.isRegistered<FeatureFlagService>() &&
+          Get.find<FeatureFlagService>().videoCalling.value;
+      if (videoUiEnabled) {
+        controller.prepareVideoCallScreen(callerId, incoming: true);
+        Get.offNamed('/call/video');
+      }
+      Future<bool>? acceptFuture;
+      if (hasDirectOffer && videoUiEnabled) {
+        acceptFuture = controller.acceptCall(callData);
+      }
 
       // Stop ringtone immediately so it doesn't keep ringing
       await ringtoneService.stopRingtone();
@@ -248,10 +264,14 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
 
       // If we have a plaintext SDP offer or a complete encrypted offer
       // (socket was connected), accept directly without a resync round trip.
-      if ((sdpOffer != null && sdpOffer.isNotEmpty) ||
-          callData['crypto'] is Map) {
-        await controller.acceptCall(callData);
-        Get.offNamed(controller.activeCallRoute);
+      if (hasDirectOffer) {
+        acceptFuture ??= controller.acceptCall(callData);
+        final success = await acceptFuture;
+        if (!success && Get.currentRoute == '/call/video') {
+          Get.back();
+        } else if (success && Get.currentRoute != controller.activeCallRoute) {
+          Get.offNamed(controller.activeCallRoute);
+        }
       } else {
         // No SDP offer (socket was disconnected) - request resync from server
         debugPrint('📞 No SDP offer, requesting call resync for $callId');

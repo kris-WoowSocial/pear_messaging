@@ -37,7 +37,10 @@ class WebRTCCallService {
   bool _isFrontCamera = true;
   bool _iceRestartInProgress = false;
   bool _deferredVideoRequested = false;
-  MediaStream? _deferredVideoStream;
+  MediaStream? _localVideoPreviewStream;
+  Future<bool>? _localVideoPreviewFuture;
+  RTCRtpTransceiver? _videoTransceiver;
+  RTCRtpSender? _videoSender;
   String? _localSdp;
   String? _remoteSdp;
 
@@ -131,14 +134,15 @@ class WebRTCCallService {
       _isCaller = true;
       _isVideoCall = isVideo;
       _isSpeakerOn = isVideo;
-      _currentCallId = 'call_${DateTime.now().millisecondsSinceEpoch}';
+      final callId = 'call_${DateTime.now().millisecondsSinceEpoch}';
+      _currentCallId = callId;
 
       debugPrint('📞 Starting call to $calleeDeviceId');
 
       // Request microphone permission
       final hasPermission = await _requestMicrophonePermission();
-      if (!hasPermission) {
-        debugPrint('❌ Microphone permission denied');
+      if (!hasPermission || _currentCallId != callId) {
+        debugPrint('❌ Microphone permission denied or call cancelled');
         return false;
       }
 
@@ -153,6 +157,7 @@ class WebRTCCallService {
 
       // Create peer connection
       await _createPeerConnection();
+      if (_currentCallId != callId) return false;
 
       // Force the Android audio subsystem into MODE_IN_COMMUNICATION BEFORE WebRTC
       // captures audio. Without this, cold-start answers can initialize in MODE_NORMAL
@@ -166,8 +171,12 @@ class WebRTCCallService {
       _localStream = await _getUserMedia(
         video: _isVideoCall && !deferVideoTransmission,
       );
-      if (_localStream == null) {
-        debugPrint('❌ Failed to get local stream');
+      if (_localStream == null || _currentCallId != callId) {
+        debugPrint('❌ Failed to get local stream or call was cancelled');
+        final staleStream = _localStream;
+        _localStream = null;
+        staleStream?.getTracks().forEach((track) => track.stop());
+        await staleStream?.dispose();
         return false;
       }
 
@@ -177,12 +186,16 @@ class WebRTCCallService {
       onLocalStream?.call(_localStream!);
       _isCameraEnabled = _localStream!.getVideoTracks().isNotEmpty;
 
-      // Add local stream to peer connection
-      // CRITICAL FIX: Use for loop instead of forEach - forEach doesn't await async callbacks
-      // Without this fix, createOffer runs before tracks are attached, causing silence
-      for (final track in _localStream!.getTracks()) {
+      // Add local audio to the peer connection. The camera stream stays
+      // separate so it can render locally before the signed answer arrives.
+      for (final track in _localStream!.getAudioTracks()) {
         await _peerConnection!.addTrack(track, _localStream!);
       }
+      if (_deferredVideoRequested) {
+        await _reserveVideoTransceiver();
+        unawaited(_startLocalVideoPreview());
+      }
+      if (_currentCallId != callId) return false;
 
       // Verify tracks were added before creating offer
       final sendersBeforeOffer = await _peerConnection!.getSenders();
@@ -194,6 +207,7 @@ class WebRTCCallService {
       // Create offer
       final offer = await _peerConnection!.createOffer();
       await _peerConnection!.setLocalDescription(offer);
+      _logSdpVideoDirections('local offer', offer.sdp);
 
       // Notify caller of the SDP offer
       if (offer.sdp != null) {
@@ -231,8 +245,8 @@ class WebRTCCallService {
 
       // Request microphone permission
       final hasPermission = await _requestMicrophonePermission();
-      if (!hasPermission) {
-        debugPrint('❌ Microphone permission denied');
+      if (!hasPermission || _currentCallId != callId) {
+        debugPrint('❌ Microphone permission denied or call cancelled');
         return false;
       }
 
@@ -247,6 +261,7 @@ class WebRTCCallService {
 
       // Create peer connection
       await _createPeerConnection();
+      if (_currentCallId != callId) return false;
 
       // CRITICAL: Stop any active ringtone/vibration, tell Telecom the call is
       // ACTIVE (not ringing), and force MODE_IN_COMMUNICATION.
@@ -269,8 +284,12 @@ class WebRTCCallService {
       _localStream = await _getUserMedia(
         video: _isVideoCall && !deferVideoTransmission,
       );
-      if (_localStream == null) {
-        debugPrint('❌ Failed to get local stream');
+      if (_localStream == null || _currentCallId != callId) {
+        debugPrint('❌ Failed to get local stream or call was cancelled');
+        final staleStream = _localStream;
+        _localStream = null;
+        staleStream?.getTracks().forEach((track) => track.stop());
+        await staleStream?.dispose();
         return false;
       }
 
@@ -281,11 +300,16 @@ class WebRTCCallService {
       onLocalStream?.call(_localStream!);
       _isCameraEnabled = _localStream!.getVideoTracks().isNotEmpty;
 
-      // Add local stream to peer connection
-      // CRITICAL FIX: Use for loop instead of forEach - forEach doesn't await async callbacks
-      for (final track in _localStream!.getTracks()) {
+      final localVideoPreview = _deferredVideoRequested
+          ? _startLocalVideoPreview()
+          : Future<bool>.value(false);
+
+      // Add local audio to the peer connection. Camera preview remains local
+      // until the signed offer has been decrypted and verified.
+      for (final track in _localStream!.getAudioTracks()) {
         await _peerConnection!.addTrack(track, _localStream!);
       }
+      if (_currentCallId != callId) return false;
 
       // Verify tracks were added before creating answer
       final sendersBeforeAnswer = await _peerConnection!.getSenders();
@@ -307,10 +331,18 @@ class WebRTCCallService {
       _remoteDescriptionSet = true;
       // Add any candidates that arrived before the remote description was ready
       await _flushPendingRemoteIceCandidates();
+      if (_currentCallId != callId) return false;
+
+      if (_deferredVideoRequested &&
+          CallMediaHelper.hasVideoMediaSection(sdpOffer)) {
+        await localVideoPreview;
+        await prepareDeferredVideo();
+      }
 
       // Create answer
       final answer = await _peerConnection!.createAnswer();
       await _peerConnection!.setLocalDescription(answer);
+      _logSdpVideoDirections('local answer', answer.sdp);
 
       // Send the answer immediately (trickle ICE). Candidates are exchanged
       // separately via signaling, so we must NOT block on ICE gathering here.
@@ -463,6 +495,7 @@ class WebRTCCallService {
 
   /// Set remote description (answer for caller, offer for callee)
   Future<void> setRemoteDescription(String sdp, String type) async {
+    _logSdpVideoDirections('remote $type', sdp);
     try {
       await _peerConnection?.setRemoteDescription(
         RTCSessionDescription(sdp, type),
@@ -470,6 +503,7 @@ class WebRTCCallService {
       _remoteSdp = sdp;
       _remoteDescriptionSet = true;
       debugPrint('📞 Remote description set: $type');
+      await _logVideoSenderState('after setRemoteDescription($type)');
       // Add any candidates that arrived before the remote description was ready
       await _flushPendingRemoteIceCandidates();
     } catch (e) {
@@ -532,20 +566,34 @@ class WebRTCCallService {
     );
   }
 
-  /// Acquires the deferred camera track after encrypted signaling is ready.
-  /// This method does not create an offer, so it can be used by the callee
-  /// immediately before answering a caller-initiated media-upgrade offer.
-  Future<bool> prepareDeferredVideo() async {
+  /// Captures the camera for a local-only preview. The stream is deliberately
+  /// kept outside [_localStream] and is not attached to the peer connection
+  /// until the signed call description has been verified.
+  Future<bool> _startLocalVideoPreview() {
+    final pending = _localVideoPreviewFuture;
+    if (pending != null) return pending;
+    final future = _captureLocalVideoPreview();
+    _localVideoPreviewFuture = future;
+    future.whenComplete(() {
+      if (identical(_localVideoPreviewFuture, future)) {
+        _localVideoPreviewFuture = null;
+      }
+    });
+    return future;
+  }
+
+  Future<bool> _captureLocalVideoPreview() async {
     if (!_isVideoCall ||
         !_deferredVideoRequested ||
-        _peerConnection == null ||
-        _localStream == null) {
-      return false;
+        _localVideoPreviewStream != null) {
+      return _localVideoPreviewStream != null;
     }
-    _deferredVideoRequested = false;
 
     try {
-      if (!await _requestCameraPermission()) {
+      final hasCameraPermission = await _requestCameraPermission();
+      if (!_deferredVideoRequested || _peerConnection == null) return false;
+      if (!hasCameraPermission) {
+        _deferredVideoRequested = false;
         _isVideoCall = false;
         _isSpeakerOn = false;
         onCameraPermissionDenied?.call();
@@ -558,22 +606,32 @@ class WebRTCCallService {
         'video': constraints['video'],
       });
       final videoTracks = videoStream.getVideoTracks();
-      final videoTrack = videoTracks.isEmpty ? null : videoTracks.first;
-      if (videoTrack == null) {
+      if (videoTracks.isEmpty) {
+        _deferredVideoRequested = false;
+        _isVideoCall = false;
+        _isSpeakerOn = false;
         await videoStream.dispose();
         return false;
       }
 
-      _deferredVideoStream = videoStream;
-      await _localStream!.addTrack(videoTrack);
-      await _peerConnection!.addTrack(videoTrack, _localStream!);
+      // The user may have cancelled while the permission prompt/camera capture
+      // was in flight. Release the camera immediately instead of leaking it.
+      if (!_deferredVideoRequested || _peerConnection == null) {
+        for (final track in videoTracks) {
+          track.stop();
+        }
+        await videoStream.dispose();
+        return false;
+      }
+
+      _localVideoPreviewStream = videoStream;
       _isFrontCamera = true;
       _isCameraEnabled = true;
-      await _applyVideoBitrateCap();
-      onLocalStream?.call(_localStream!);
+      onLocalStream?.call(videoStream);
       return true;
     } catch (e) {
-      debugPrint('❌ Deferred camera acquisition failed: $e');
+      debugPrint('❌ Local video preview failed: $e');
+      _deferredVideoRequested = false;
       _isVideoCall = false;
       _isSpeakerOn = false;
       onCameraPermissionDenied?.call();
@@ -581,30 +639,87 @@ class WebRTCCallService {
     }
   }
 
-  /// Starts the deferred camera and sends a renegotiation offer through the
-  /// encrypted ICE-restart channel. Only the call initiator calls this.
-  Future<bool> enableDeferredVideo() async {
-    if (_iceRestartInProgress || !await prepareDeferredVideo()) return false;
-    _iceRestartInProgress = true;
+  Future<void> _reserveVideoTransceiver() async {
+    if (_peerConnection == null || _videoTransceiver != null) return;
     try {
-      final offer = await _peerConnection!.createOffer();
-      if (offer.sdp == null ||
-          _localSdp == null ||
-          !CallMediaHelper.sameDtlsFingerprints(_localSdp!, offer.sdp!)) {
-        _iceRestartInProgress = false;
-        debugPrint('❌ Video upgrade aborted: DTLS fingerprint changed');
-        return false;
+      _videoTransceiver = await _peerConnection!.addTransceiver(
+        kind: RTCRtpMediaType.RTCRtpMediaTypeVideo,
+        init: RTCRtpTransceiverInit(direction: TransceiverDirection.SendRecv),
+      );
+      _videoSender = _videoTransceiver!.sender;
+      debugPrint('📞 Reserved send/receive video m-line in offer');
+    } catch (e) {
+      debugPrint('⚠️ Unable to reserve video transceiver: $e');
+    }
+  }
+
+  Future<RTCRtpTransceiver?> _findVideoTransceiver() async {
+    final peerConnection = _peerConnection;
+    if (peerConnection == null) return null;
+    try {
+      final transceivers = await peerConnection.getTransceivers();
+      for (final transceiver in transceivers) {
+        if (transceiver.receiver.track?.kind == 'video' ||
+            transceiver.sender.track?.kind == 'video') {
+          return transceiver;
+        }
       }
-      await _peerConnection!.setLocalDescription(offer);
-      _localSdp = offer.sdp;
-      onIceRestartDescription?.call(offer.sdp!, true);
+    } catch (e) {
+      debugPrint('⚠️ Unable to inspect video transceivers: $e');
+    }
+    return null;
+  }
+
+  /// Attaches the local-only preview track to the negotiated video m-line.
+  /// On the caller this must only run after the callee signature and answer
+  /// fingerprints have been verified; on the callee it runs after the signed
+  /// offer has been verified and before the signed answer is created.
+  Future<bool> prepareDeferredVideo() async {
+    if (!_isVideoCall ||
+        !_deferredVideoRequested ||
+        _peerConnection == null ||
+        !await _startLocalVideoPreview()) {
+      return false;
+    }
+
+    try {
+      final videoTracks =
+          _localVideoPreviewStream?.getVideoTracks() ?? const [];
+      final videoTrack = videoTracks.isEmpty ? null : videoTracks.first;
+      if (videoTrack == null) return false;
+
+      _videoTransceiver ??= await _findVideoTransceiver();
+      _videoSender ??= _videoTransceiver?.sender;
+      if (_videoTransceiver != null) {
+        await _videoTransceiver!.setDirection(TransceiverDirection.SendRecv);
+      }
+      if (_videoSender != null) {
+        await _videoSender!.replaceTrack(videoTrack);
+        debugPrint(
+          '🧪 replaceTrack succeeded on sender trackId=${_videoSender?.track?.id}',
+        );
+      } else {
+        _videoSender = await _peerConnection!.addTrack(
+          videoTrack,
+          _localVideoPreviewStream!,
+        );
+        debugPrint('🧪 addTrack used as fallback for deferred video');
+      }
+      await _logVideoSenderState('after deferred video attach');
+
+      _deferredVideoRequested = false;
+      _isCameraEnabled = videoTrack.enabled;
+      await _applyVideoBitrateCap();
+      onLocalStream?.call(_localVideoPreviewStream!);
       return true;
     } catch (e) {
-      _iceRestartInProgress = false;
-      debugPrint('❌ Deferred video negotiation failed: $e');
+      debugPrint('❌ Deferred camera activation failed: $e');
       return false;
     }
   }
+
+  /// Activates the already-negotiated video m-line without renegotiation.
+  Future<bool> enableDeferredVideo() => prepareDeferredVideo();
 
   /// Create and apply an ICE-restart offer. The SDP is returned through
   /// [onIceRestartDescription] instead of the normal call signaling callback.
@@ -727,17 +842,23 @@ class WebRTCCallService {
 
   /// Toggle the local camera without renegotiating the call.
   Future<void> setCameraEnabled(bool enabled) async {
-    final tracks = _localStream?.getVideoTracks() ?? const [];
+    final tracks = [
+      ...?_localStream?.getVideoTracks(),
+      ...?_localVideoPreviewStream?.getVideoTracks(),
+    ];
     for (final track in tracks) {
       track.enabled = enabled;
     }
     _isCameraEnabled = enabled && tracks.isNotEmpty;
     debugPrint('📞 Camera set to: $_isCameraEnabled');
+    await _logVideoSenderState('after setCameraEnabled($enabled)');
   }
 
   /// Switch between front and rear cameras when a video track is active.
   Future<bool> switchCamera() async {
-    final tracks = _localStream?.getVideoTracks() ?? const [];
+    final tracks = _localVideoPreviewStream?.getVideoTracks() ??
+        _localStream?.getVideoTracks() ??
+        const [];
     if (tracks.isEmpty) return false;
     try {
       final switched = await Helper.switchCamera(tracks.first);
@@ -830,9 +951,15 @@ class WebRTCCallService {
     });
     _localStream?.dispose();
     _localStream = null;
-    await _deferredVideoStream?.dispose();
-    _deferredVideoStream = null;
     _deferredVideoRequested = false;
+    _localVideoPreviewStream?.getTracks().forEach((track) {
+      track.stop();
+    });
+    await _localVideoPreviewStream?.dispose();
+    _localVideoPreviewStream = null;
+    _localVideoPreviewFuture = null;
+    _videoTransceiver = null;
+    _videoSender = null;
 
     _remoteStream?.dispose();
     _remoteStream = null;
@@ -963,10 +1090,54 @@ class WebRTCCallService {
   String? get remoteDeviceId => _remoteDeviceId;
   bool get isCaller => _isCaller;
 
+  /// Debug helper: print only the m=video section and its direction lines.
+  void _logSdpVideoDirections(String label, String? sdp) {
+    if (sdp == null) return;
+    final lines = sdp.split('\n');
+    var inVideo = false;
+    final buffer = StringBuffer()..writeln('🧪 $label SDP video m-line:');
+    for (final raw in lines) {
+      final line = raw.trim();
+      if (line.startsWith('m=video')) {
+        inVideo = true;
+        buffer.writeln('  $line');
+      } else if (line.startsWith('m=')) {
+        inVideo = false;
+      } else if (inVideo &&
+          RegExp(r'^a=(sendrecv|recvonly|sendonly|inactive)\s*$')
+              .hasMatch(line)) {
+        buffer.writeln('  $line');
+      }
+    }
+    debugPrint(buffer.toString().trimRight());
+  }
+
+  /// Debug helper: print current video sender track IDs and directions.
+  Future<void> _logVideoSenderState(String label) async {
+    if (_peerConnection == null) return;
+    try {
+      final senders = await _peerConnection!.getSenders();
+      final transceivers = await _peerConnection!.getTransceivers();
+      for (final sender in senders) {
+        if (sender.track?.kind != 'video') continue;
+        final tx = transceivers.cast<RTCRtpTransceiver?>().firstWhere(
+              (t) => t?.sender == sender,
+              orElse: () => null,
+            );
+        debugPrint(
+          '🧪 $label video sender trackId=${sender.track?.id} '
+          'hasTransceiver=${tx != null}',
+        );
+      }
+    } catch (e) {
+      debugPrint('⚠️ $label sender state log failed: $e');
+    }
+  }
+
   /// Start periodic stats logging for diagnostic purposes
   void _startStatsLogger() {
     _statsTimer?.cancel();
-    _statsTimer = Timer.periodic(const Duration(seconds: 3), (timer) async {
+    _statsTimer = Timer.periodic(const Duration(seconds: 2), (timer) async {
       if (_peerConnection == null) {
         timer.cancel();
         return;
@@ -974,16 +1145,25 @@ class WebRTCCallService {
       try {
         final stats = await _peerConnection!.getStats();
         for (final report in stats) {
-          if (report.type == 'outbound-rtp' || report.type == 'inbound-rtp') {
+          if ((report.type == 'outbound-rtp' || report.type == 'inbound-rtp') &&
+              (report.values['kind'] == 'video')) {
+            final id = report.values['id'];
             final bytesSent = report.values['bytesSent'];
             final bytesReceived = report.values['bytesReceived'];
-            final kind = report.values['kind'] ?? 'unknown';
-            if (bytesSent != null) {
-              debugPrint('📊 outbound-rtp ($kind): bytesSent=$bytesSent');
-            }
-            if (bytesReceived != null) {
+            final framesSent = report.values['framesSent'];
+            final framesReceived = report.values['framesReceived'];
+            final frameWidth = report.values['frameWidth'];
+            final frameHeight = report.values['frameHeight'];
+            if (report.type == 'outbound-rtp' && bytesSent != null) {
               debugPrint(
-                '📊 inbound-rtp ($kind): bytesReceived=$bytesReceived',
+                '📊 VIDEO OUT id=$id bytes=$bytesSent '
+                'frames=$framesSent ${frameWidth}x$frameHeight',
+              );
+            }
+            if (report.type == 'inbound-rtp' && bytesReceived != null) {
+              debugPrint(
+                '📊 VIDEO IN id=$id bytes=$bytesReceived '
+                'frames=$framesReceived ${frameWidth}x$frameHeight',
               );
             }
           }
@@ -992,7 +1172,7 @@ class WebRTCCallService {
         debugPrint('❌ Error getting stats: $e');
       }
     });
-    debugPrint('📊 Stats logger started');
+    debugPrint('📊 Stats logger started (2s video-only)');
   }
 
   /// Stop the stats logger

@@ -111,7 +111,7 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
               return Stack(
                 fit: StackFit.expand,
                 children: [
-                  _buildRemoteVideo(),
+                  _buildVideoSurface(),
                   _buildCenterStatus(),
                   _buildLocalPreview(size),
                   _buildTopOverlay(),
@@ -130,7 +130,7 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
         size.height - _previewSize.height - _previewMargin,
       );
 
-  Widget _buildRemoteVideo() {
+  Widget _buildVideoSurface() {
     return Obx(() {
       final hasRemoteVideo = _controller.remoteVideoStream.value != null &&
           !_controller.peerCameraOff.value;
@@ -140,6 +140,16 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
           objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
         );
       }
+
+      if (_controller.isCameraOn.value &&
+          _controller.localVideoStream.value != null) {
+        return RTCVideoView(
+          _localRenderer,
+          objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
+          mirror: _controller.isFrontCamera.value,
+        );
+      }
+
       return Container(
         decoration: const BoxDecoration(
           gradient: LinearGradient(
@@ -157,6 +167,11 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
       final peerCameraOff = _controller.peerCameraOff.value;
       final remoteMissing = _controller.remoteVideoStream.value == null;
       if (!peerCameraOff && !remoteMissing) return const SizedBox.shrink();
+      if (_controller.isCameraOn.value &&
+          _controller.localVideoStream.value != null &&
+          remoteMissing) {
+        return const SizedBox.shrink();
+      }
 
       final status = peerCameraOff ? 'Camera off' : _callStatusText();
       return Center(
@@ -189,7 +204,10 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
 
   Widget _buildLocalPreview(Size size) {
     return Obx(() {
-      if (!_controller.isCameraOn.value ||
+      final hasRemoteVideo = _controller.remoteVideoStream.value != null &&
+          !_controller.peerCameraOff.value;
+      if (!hasRemoteVideo ||
+          !_controller.isCameraOn.value ||
           _controller.localVideoStream.value == null) {
         return const SizedBox.shrink();
       }
@@ -441,13 +459,5 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
     );
   }
 
-  String _callStatusText() {
-    if (_controller.isReconnecting.value) return 'Reconnecting...';
-    return switch (_controller.callState.value) {
-      CallState.dialing => 'Calling...',
-      CallState.ringing => 'Ringing...',
-      CallState.connected => _controller.callDuration.value,
-      _ => 'Connecting...',
-    };
-  }
+  String _callStatusText() => _controller.callTimerLabel;
 }

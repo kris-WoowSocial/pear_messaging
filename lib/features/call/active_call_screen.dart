@@ -1,3 +1,4 @@
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:get/get.dart';
@@ -52,31 +53,18 @@ class ActiveCallScreen extends StatelessWidget {
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
                   // Avatar
-                  Container(
-                    width: 140,
-                    height: 140,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: Colors.grey[800],
-                      border: Border.all(
-                        color: Colors.white.withOpacity(0.3),
-                        width: 2,
-                      ),
-                    ),
-                    child: const Icon(
-                      Icons.person,
-                      size: 70,
-                      color: Colors.white,
-                    ),
-                  ),
-                  const SizedBox(height: 24),
+                  _buildAvatar(controller),
+                  const SizedBox(height: 16),
                   // Contact name
                   Obx(
                     () => Text(
                       controller.remoteDisplayLabel,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      textAlign: TextAlign.center,
                       style: const TextStyle(
                         color: Colors.white,
-                        fontSize: 32,
+                        fontSize: 25,
                         fontWeight: FontWeight.bold,
                       ),
                     ),
@@ -88,11 +76,11 @@ class ActiveCallScreen extends StatelessWidget {
                       state: controller.callEncryptionState.value,
                     ),
                   ),
-                  const SizedBox(height: 24),
+                  const SizedBox(height: 14),
                   // Call duration
                   Obx(
                     () => Text(
-                      controller.callDuration.value,
+                      controller.callTimerLabel,
                       style: const TextStyle(
                         color: Colors.white70,
                         fontSize: 24,
@@ -153,6 +141,45 @@ class ActiveCallScreen extends StatelessWidget {
         ],
       ),
     );
+  }
+
+  Widget _buildAvatar(CallController controller) {
+    return Obx(() {
+      final avatarUrl = controller.remoteAvatarUrl.value.trim();
+      final hasAvatar = avatarUrl.isNotEmpty;
+      return Container(
+        width: 120,
+        height: 120,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: Colors.grey[800],
+          border: Border.all(
+            color: Colors.white.withOpacity(0.3),
+            width: 2,
+          ),
+        ),
+        child: ClipOval(
+          child: hasAvatar
+              ? CachedNetworkImage(
+                  imageUrl: avatarUrl,
+                  fit: BoxFit.cover,
+                  placeholder: (context, url) => const Center(
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                  errorWidget: (context, url, error) => const Icon(
+                    Icons.person,
+                    size: 58,
+                    color: Colors.white,
+                  ),
+                )
+              : const Icon(
+                  Icons.person,
+                  size: 58,
+                  color: Colors.white,
+                ),
+        ),
+      );
+    });
   }
 
   Widget _buildControlButton({

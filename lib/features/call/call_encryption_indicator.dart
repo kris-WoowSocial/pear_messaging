@@ -10,6 +10,10 @@ enum CallEncryptionState {
 class CallEncryptionIndicator extends StatelessWidget {
   const CallEncryptionIndicator({required this.state, super.key});
 
+  static const directEncryptionMessage =
+      'Encrypted, direct device-to-device link.\n'
+      'Because Vant works without servers, nobody—not even an AI—can intercept, save, or spy on what you say.';
+
   final CallEncryptionState state;
 
   @override
@@ -17,52 +21,58 @@ class CallEncryptionIndicator extends StatelessWidget {
     final (icon, text, color) = switch (state) {
       CallEncryptionState.securing => (
           Icons.lock_outline,
-          'Securing call…',
+          'Securing encrypted call…',
           const Color(0xFF64B5F6),
         ),
       CallEncryptionState.encryptedVerified => (
-          Icons.verified_user,
-          'Encrypted and verified',
+          Icons.lock,
+          directEncryptionMessage,
           const Color(0xFF4CD964),
         ),
       CallEncryptionState.encryptedUnverified => (
           Icons.lock,
-          'Encrypted — not verified',
-          const Color(0xFFFFCC00),
+          directEncryptionMessage,
+          const Color(0xFF4CD964),
         ),
       CallEncryptionState.legacyUnencrypted => (
           Icons.lock_open,
-          'Not end-to-end encrypted',
+          'Not end-to-end encrypted\n'
+              'This call is not protected by the device-to-device encrypted channel.',
           const Color(0xFFFF8A80),
         ),
     };
 
-    return Container(
-      key: const ValueKey('call_encryption_indicator'),
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-      decoration: BoxDecoration(
-        color: Colors.black.withValues(alpha: 0.55),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: color.withValues(alpha: 0.65)),
+    return ConstrainedBox(
+      constraints: BoxConstraints(
+        maxWidth: MediaQuery.of(context).size.width - 64,
       ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, size: 14, color: color),
-          const SizedBox(width: 6),
-          Flexible(
-            child: Text(
+      child: Container(
+        key: const ValueKey('call_encryption_indicator'),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+        decoration: BoxDecoration(
+          color: Colors.black.withValues(alpha: 0.55),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: color.withValues(alpha: 0.65)),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 15, color: color),
+            const SizedBox(height: 4),
+            Text(
               text,
-              maxLines: 1,
+              maxLines: 4,
               overflow: TextOverflow.ellipsis,
+              textAlign: TextAlign.center,
               style: TextStyle(
                 color: color,
-                fontSize: 12,
+                fontSize: 11.5,
+                height: 1.3,
                 fontWeight: FontWeight.w600,
               ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }

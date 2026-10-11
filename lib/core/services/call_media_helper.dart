@@ -78,6 +78,36 @@ class CallMediaHelper {
         'video': video ? 'on' : 'off',
       };
 
+  static bool hasVideoMediaSection(String sdp) =>
+      RegExp(r'^m=video\s', multiLine: true).hasMatch(sdp);
+
+  /// Whether the remote answer advertises video it can send. A missing
+  /// direction attribute means sendrecv per RFC 3264/8829.
+  static bool remoteVideoCanSend(String sdp) {
+    final videoStart = RegExp(r'^m=video\s', multiLine: true).firstMatch(sdp);
+    if (videoStart == null) return false;
+    RegExpMatch? nextSection;
+    for (final match in RegExp(r'^m=', multiLine: true).allMatches(sdp)) {
+      if (match.start > videoStart.start) {
+        nextSection = match;
+        break;
+      }
+    }
+    final section = sdp.substring(
+      videoStart.start,
+      nextSection?.start ?? sdp.length,
+    );
+    if (RegExp(r'^a=(sendrecv|sendonly)\s*$', multiLine: true)
+        .hasMatch(section)) {
+      return true;
+    }
+    if (RegExp(r'^a=(recvonly|inactive)\s*$', multiLine: true)
+        .hasMatch(section)) {
+      return false;
+    }
+    return true;
+  }
+
   static Set<String> dtlsFingerprints(String sdp) {
     final matches = RegExp(
       r'^a=fingerprint:([^\s]+)\s+([0-9A-Fa-f:]+)\s*$',

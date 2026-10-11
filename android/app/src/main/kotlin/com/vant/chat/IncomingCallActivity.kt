@@ -87,7 +87,7 @@ class IncomingCallActivity : AppCompatActivity() {
         val btnDecline = findViewById<ImageView>(R.id.btnDecline)
 
         tvName.text = callerName
-        tvStatus.text = if (isVideo) "Incoming video call..." else "Incoming call..."
+        tvStatus.text = if (isVideo) "Incoming video call" else "Incoming call..."
 
         if (avatarUrl.isNotEmpty()) {
             Glide.with(this)

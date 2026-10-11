@@ -1259,11 +1259,15 @@ class ChatScreen extends GetView<ChatController> {
       }
 
       final callController = Get.find<CallController>();
-      final success = await callController.startCall(
+      final started = callController.startCall(
         controller.recipientDeviceId,
         isVideo: true,
       );
-      if (success) Get.toNamed(callController.activeCallRoute);
+      Get.toNamed('/call/video');
+      final success = await started;
+      if (!success && Get.currentRoute == '/call/video') {
+        Get.back();
+      }
     } catch (e) {
       debugPrint('❌ Failed to start video call: $e');
       Get.snackbar(
@@ -1355,7 +1359,6 @@ class ChatScreen extends GetView<ChatController> {
   }
 }
 
-
 /// Gzip-compresses [bytes] if doing so actually reduces the size.
 /// Runs in a background isolate via [compute] to avoid blocking the UI
 /// thread for large files.
@@ -1415,7 +1418,7 @@ Future<Uint8List> _compressImageBytes(String filePath) async {
       debugPrint('❌ Compression failed completely');
     }
 
-      return result ?? Uint8List(0);
+    return result ?? Uint8List(0);
   } catch (e) {
     debugPrint('❌ Compression error: $e');
     return Uint8List(0);

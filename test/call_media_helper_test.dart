@@ -145,17 +145,57 @@ void main() {
     );
   });
 
-  test('deferred video captures camera only for the post-handshake upgrade',
+  test('local camera preview is promoted only after call crypto verification',
       () {
-    final source =
+    final service =
         File('lib/core/services/webrtc_call_service.dart').readAsStringSync();
+    final controller =
+        File('lib/features/call/call_controller.dart').readAsStringSync();
+    final accepted = controller.substring(
+      controller.indexOf('Future<void> _handleCallAccepted'),
+      controller.indexOf('/// Handle call initiated'),
+    );
 
-    expect(source, contains('_deferredVideoRequested'));
-    expect(source, contains('_isVideoCall && !deferVideoTransmission'));
-    expect(source, contains('prepareDeferredVideo'));
-    expect(source, contains('enableDeferredVideo'));
-    expect(source, contains("'audio': false"));
-    expect(source, contains("'video': constraints['video']"));
+    expect(service, contains('_localVideoPreviewStream'));
+    expect(service, contains('_reserveVideoTransceiver'));
+    expect(service, contains('RTCRtpMediaType.RTCRtpMediaTypeVideo'));
+    expect(service, contains('TransceiverDirection.SendRecv'));
+    expect(service, contains('replaceTrack(videoTrack)'));
+    expect(service, contains("'audio': false"));
+    expect(service, contains("'video': constraints['video']"));
+
+    expect(
+      accepted.indexOf('completeHandshakeFirstContact'),
+      lessThan(accepted.indexOf('_sameFingerprints')),
+    );
+    expect(
+      accepted.indexOf('_sameFingerprints'),
+      lessThan(accepted.indexOf('enableDeferredVideo')),
+    );
+    expect(
+      accepted.indexOf('enableDeferredVideo'),
+      lessThan(accepted.indexOf('setRemoteDescription')),
+    );
+    expect(
+      accepted.indexOf('setRemoteDescription'),
+      lessThan(accepted.indexOf('localVideoReady && !remoteCanSendVideo')),
+    );
+  });
+
+  test('video m-line direction is detected for mixed-version fallback', () {
+    const sendRecv =
+        'v=0\r\nm=audio 9 RTP/AVP 0\r\na=sendrecv\r\nm=video 9 RTP/AVP 96\r\na=sendrecv\r\n';
+    const recvOnly =
+        'v=0\r\nm=audio 9 RTP/AVP 0\r\na=sendrecv\r\nm=video 9 RTP/AVP 96\r\na=recvonly\r\n';
+    const sendOnly =
+        'v=0\r\nm=audio 9 RTP/AVP 0\r\na=sendrecv\r\nm=video 9 RTP/AVP 96\r\na=sendonly\r\n';
+
+    expect(CallMediaHelper.hasVideoMediaSection(sendRecv), isTrue);
+    expect(CallMediaHelper.hasVideoMediaSection('v=0\r\nm=audio 9 RTP/AVP 0'),
+        isFalse);
+    expect(CallMediaHelper.remoteVideoCanSend(sendRecv), isTrue);
+    expect(CallMediaHelper.remoteVideoCanSend(sendOnly), isTrue);
+    expect(CallMediaHelper.remoteVideoCanSend(recvOnly), isFalse);
   });
 
   test('failed encrypted handshakes never display an encrypted call', () {
