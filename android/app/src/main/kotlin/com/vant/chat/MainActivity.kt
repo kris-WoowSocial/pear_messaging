@@ -298,7 +298,15 @@ class MainActivity : FlutterFragmentActivity() {
                 }
                 "canUseFullScreenIntent" -> {
                     val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-                    result.success(notificationManager.canUseFullScreenIntent())
+                    // canUseFullScreenIntent is only available on Android 14+ (API 34).
+                    // On earlier versions the permission is implicitly granted.
+                    result.success(
+                        if (Build.VERSION.SDK_INT >= 34) {
+                            notificationManager.canUseFullScreenIntent()
+                        } else {
+                            true
+                        }
+                    )
                 }
                 "openFullScreenIntentSettings" -> {
                     try {

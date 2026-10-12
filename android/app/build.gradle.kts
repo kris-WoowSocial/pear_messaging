@@ -82,6 +82,11 @@ android {
             )
         }
     }
+
+    lint {
+        abortOnError = true
+        checkOnly += setOf("NewApi")
+    }
 }
 
 flutter {
