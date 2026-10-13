@@ -320,6 +320,17 @@ import CommonCrypto
     registerVoipTokenWithBackend(token: token)
   }
 
+  /// Returns the APNs environment matching the current build configuration.
+  /// Debug builds use the sandbox APNs endpoint; release builds (TestFlight /
+  /// App Store) use the production endpoint.
+  private func apnsEnvironmentForCurrentBuild() -> String {
+    #if DEBUG
+    return "sandbox"
+    #else
+    return "production"
+    #endif
+  }
+
   /// Register VoIP token with the backend server directly from native Swift.
   /// Uses URLSession so it works even before Flutter is fully initialized.
   private func registerVoipTokenWithBackend(token: String) {
@@ -339,7 +350,8 @@ import CommonCrypto
     let body: [String: String] = [
       "deviceId": deviceId,
       "voipToken": token,
-      "platform": "ios"
+      "platform": "ios",
+      "apnsEnvironment": apnsEnvironmentForCurrentBuild()
     ]
 
     guard let httpBody = try? JSONSerialization.data(withJSONObject: body) else { return }

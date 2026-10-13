@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:uuid/uuid.dart';
 import '../constants/network_constants.dart';
@@ -48,6 +49,11 @@ class CallKitService {
 
   // Check if CallKit should be enabled (disabled in China)
   bool get _isCallKitEnabled => !_isChinaRegion();
+
+  /// APNs environment reported at VoIP token registration.
+  /// Debug/profile builds hit the sandbox endpoint; release builds
+  /// (TestFlight / App Store) hit the production endpoint.
+  String get _apnsEnvironment => kReleaseMode ? 'production' : 'sandbox';
 
   // Event controller for UI layer to listen to call events
   final StreamController<CallKitEvent> _eventController =
@@ -750,6 +756,7 @@ class CallKitService {
               'deviceId': deviceId,
               'voipToken': token,
               'platform': 'ios',
+              'apnsEnvironment': kReleaseMode ? 'production' : 'sandbox',
             }),
           )
           .timeout(const Duration(seconds: 10));
@@ -808,6 +815,7 @@ class CallKitService {
           'deviceId': deviceId,
           'voipToken': token,
           'platform': 'ios',
+          'apnsEnvironment': _apnsEnvironment,
         }),
       );
 
