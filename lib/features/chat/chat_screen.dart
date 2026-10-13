@@ -1199,7 +1199,7 @@ class ChatScreen extends GetView<ChatController> {
         child: Text(
           controller.isGroup
               ? '🔒 Messages and photos in this group are end-to-end encrypted. Only members of this group can read or share them.'
-              : '🔒 Messages and photos in this chat are end-to-end encrypted and peer-to-peer, with no servers in between. Only the people in this chat can read or share them. We are physically incapable of complying with data requests from third parties or government agencies. Our answer to every request is simple: The data does not exist.',
+              : '🔒 Messages are encrypted in transit and stored encrypted on your device.',
           style: TextStyle(
             fontSize: 12,
             color: Colors.black,

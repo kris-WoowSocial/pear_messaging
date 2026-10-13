@@ -306,7 +306,7 @@ class _SecureImageViewerState extends State<SecureImageViewer> {
             ],
           ),
           content: const Text(
-            'All photos, calls, and data are securely encrypted inside Vant. You can share them within the app, and they cannot be accessed by other apps.\n\nHowever, downloaded photos are saved to your device and are no longer protected by Vant\'s encryption. Other apps on your phone (such as your photo gallery or various AI services) will be able to access them.\n\nWe strongly advise against downloading sensitive images.\n\nThis is a one-time warning.',
+            'Photos shared in Vant are encrypted. If you download a photo to your device, it is no longer protected by Vant\'s encryption and other apps may be able to access it.\n\nWe strongly advise against downloading sensitive images.',
             style: TextStyle(fontSize: 14),
           ),
           actions: [

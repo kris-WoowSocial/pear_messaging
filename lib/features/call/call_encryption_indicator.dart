@@ -10,10 +10,6 @@ enum CallEncryptionState {
 class CallEncryptionIndicator extends StatelessWidget {
   const CallEncryptionIndicator({required this.state, super.key});
 
-  static const directEncryptionMessage =
-      'Encrypted, direct device-to-device link.\n'
-      'Because Vant works without servers, nobody—not even an AI—can intercept, save, or spy on what you say.';
-
   final CallEncryptionState state;
 
   @override
