@@ -1198,7 +1198,7 @@ class ChatScreen extends GetView<ChatController> {
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
         child: Text(
           controller.isGroup
-              ? '🔒 Messages and photos in this group are end-to-end encrypted. Only members of this group can read or share them.'
+              ? '🔒 Messages in this group are encrypted in transit and stored encrypted on your device.'
               : '🔒 Messages are encrypted in transit and stored encrypted on your device.',
           style: TextStyle(
             fontSize: 12,
