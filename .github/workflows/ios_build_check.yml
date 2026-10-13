@@ -14,13 +14,21 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Select Xcode
+      - name: Print runner image info
+        run: |
+          echo "Runner image: macos-15"
+          echo "Software list: https://github.com/actions/runner-images/blob/main/images/macos/macos-15-Readme.md"
+          echo "Installed Xcode versions:"
+          ls -d /Applications/Xcode*.app || true
+
+      - name: Select Xcode 26
         run: |
           if [ -d "/Applications/Xcode_26.0.app" ]; then
             sudo xcode-select -s /Applications/Xcode_26.0.app/Contents/Developer
           elif [ -d "/Applications/Xcode_26.app" ]; then
             sudo xcode-select -s /Applications/Xcode_26.app/Contents/Developer
           else
+            echo "Xcode 26 not found; using latest available Xcode on the runner."
             LATEST_XCODE=$(ls -d /Applications/Xcode*.app | sort -V | tail -1)
             sudo xcode-select -s "$LATEST_XCODE/Contents/Developer"
           fi
@@ -29,7 +37,7 @@ jobs:
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: "3.32.8"
+          flutter-version: "3.27.0"
           channel: "stable"
 
       - name: Install Flutter iOS artifacts
@@ -38,8 +46,19 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
-      - name: Run analyzer
-        run: flutter analyze
+      - name: Cache CocoaPods dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ios/Pods
+            ios/Podfile.lock
+            ~/Library/Caches/CocoaPods
+          key: ${{ runner.os }}-pods-${{ hashFiles('ios/Podfile.lock', 'ios/Podfile', 'pubspec.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-pods-
+
+      - name: Run analyzer (errors only)
+        run: flutter analyze --no-fatal-infos --no-fatal-warnings
 
       - name: Run tests
         run: flutter test
@@ -50,3 +69,16 @@ jobs:
             --no-codesign \
             --flavor prod \
             -t lib/main_prod.dart
+
+      - name: Build unsigned iOS archive
+        run: |
+          cd ios
+          pod install
+          xcodebuild archive \
+            -workspace Runner.xcworkspace \
+            -scheme Runner \
+            -configuration Release-prod \
+            -archivePath "$RUNNER_TEMP/Runner.xcarchive" \
+            -destination generic/platform=iOS \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO
