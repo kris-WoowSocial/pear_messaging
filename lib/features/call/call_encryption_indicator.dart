@@ -21,23 +21,22 @@ class CallEncryptionIndicator extends StatelessWidget {
     final (icon, text, color) = switch (state) {
       CallEncryptionState.securing => (
           Icons.lock_outline,
-          'Securing encrypted call…',
+          'Encrypted, contact not verified',
           const Color(0xFF64B5F6),
         ),
       CallEncryptionState.encryptedVerified => (
           Icons.lock,
-          directEncryptionMessage,
+          'End-to-end encrypted',
           const Color(0xFF4CD964),
         ),
       CallEncryptionState.encryptedUnverified => (
-          Icons.lock,
-          directEncryptionMessage,
-          const Color(0xFF4CD964),
+          Icons.lock_outline,
+          'Encrypted, contact not verified',
+          const Color(0xFF64B5F6),
         ),
       CallEncryptionState.legacyUnencrypted => (
           Icons.lock_open,
-          'Not end-to-end encrypted\n'
-              'This call is not protected by the device-to-device encrypted channel.',
+          'Not end-to-end encrypted',
           const Color(0xFFFF8A80),
         ),
     };

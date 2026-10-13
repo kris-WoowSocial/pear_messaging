@@ -11,34 +11,29 @@ void main() {
     );
   }
 
-  testWidgets('shows securing state while the encrypted handshake runs',
+  testWidgets('shows unverified text while the encrypted handshake runs',
       (tester) async {
     await tester.pumpWidget(subject(CallEncryptionState.securing));
 
     expect(find.byIcon(Icons.lock_outline), findsOne);
-    expect(find.text('Securing encrypted call…'), findsOne);
+    expect(find.text('Encrypted, contact not verified'), findsOne);
   });
 
-  testWidgets('shows sticky encrypted text for verified calls', (tester) async {
+  testWidgets('shows end-to-end encrypted text for verified calls',
+      (tester) async {
     await tester.pumpWidget(subject(CallEncryptionState.encryptedVerified));
 
     expect(find.byKey(const ValueKey('call_encryption_indicator')), findsOne);
     expect(find.byIcon(Icons.lock), findsOne);
-    expect(
-      find.text(CallEncryptionIndicator.directEncryptionMessage),
-      findsOne,
-    );
+    expect(find.text('End-to-end encrypted'), findsOne);
   });
 
-  testWidgets('shows sticky encrypted text for unverified calls',
+  testWidgets('shows encrypted-unverified text for unverified calls',
       (tester) async {
     await tester.pumpWidget(subject(CallEncryptionState.encryptedUnverified));
 
-    expect(find.byIcon(Icons.lock), findsOne);
-    expect(
-      find.text(CallEncryptionIndicator.directEncryptionMessage),
-      findsOne,
-    );
+    expect(find.byIcon(Icons.lock_outline), findsOne);
+    expect(find.text('Encrypted, contact not verified'), findsOne);
   });
 
   testWidgets('shows warning for legacy unencrypted calls', (tester) async {
@@ -46,7 +41,7 @@ void main() {
 
     expect(find.byIcon(Icons.lock_open), findsOne);
     expect(
-      find.textContaining('Not end-to-end encrypted'),
+      find.text('Not end-to-end encrypted'),
       findsOne,
     );
   });
