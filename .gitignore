@@ -247,3 +247,4 @@ fastlane/test_output
 !.gitignore
 !pubspec.yaml
 !analysis_options.yaml
+*.bundle
