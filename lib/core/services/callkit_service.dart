@@ -193,67 +193,12 @@ class CallKitService {
 
       // Build CallKit params for full-screen incoming call UI
       // Use empty string for avatar to avoid nil crash on iOS (plugin shows first letter)
-      final params = CallKitParams(
-        id: callKitUuid,
-        nameCaller: callerName,
-        appName: 'Vant Chat',
-        avatar: '',
-        handle: callerId,
-        type: isVideo ? 1 : 0, // 0 = audio call, 1 = video call
-        textAccept: 'Accept',
-        textDecline: 'Decline',
-        duration: 30000, // Ring for 30 seconds
-        extra: <String, dynamic>{
-          'callerId': callerId,
-          'callId': callId,
-          'isVideo': isVideo,
-          // sdpOffer intentionally excluded for security
-        },
-        headers: <String, dynamic>{
-          'apiKey': 'Bearer abc',
-          'platform': 'flutter',
-        },
-        missedCallNotification: const NotificationParams(
-          showNotification: true,
-          isShowCallback: true,
-          subtitle: 'Missed call',
-          callbackText: 'Call back',
-        ),
-        callingNotification: const NotificationParams(
-          showNotification: true,
-          isShowCallback: true,
-          subtitle: 'Calling...',
-          callbackText: 'Hang Up',
-        ),
-        android: const AndroidParams(
-          isCustomNotification: true,
-          isShowLogo: false, // Hide app logo, show person icon instead
-          isShowCallID: false,
-          ringtonePath: 'system_ringtone_default',
-          backgroundColor:
-              '#000000', // Black background to match IncomingCallScreen
-          actionColor: '#4CAF50', // Green for accept button
-          textColor: '#ffffff', // White text
-          incomingCallNotificationChannelName: 'Incoming Call',
-          missedCallNotificationChannelName: 'Missed Call',
-          isShowFullLockedScreen: true, // Wake screen when device is locked
-        ),
-        ios: IOSParams(
-          iconName: '',
-          handleType: 'generic',
-          supportsVideo: isVideo,
-          maximumCallGroups: 2,
-          maximumCallsPerCallGroup: 1,
-          audioSessionMode: isVideo ? 'videoChat' : 'voiceChat',
-          audioSessionActive: true,
-          audioSessionPreferredSampleRate: 44100.0,
-          audioSessionPreferredIOBufferDuration: 0.005,
-          supportsDTMF: true,
-          supportsHolding: true,
-          supportsGrouping: false,
-          supportsUngrouping: false,
-          ringtonePath: 'system_ringtone_default',
-        ),
+      final params = buildIncomingCallParams(
+        callId: callId,
+        callKitUuid: callKitUuid,
+        callerId: callerId,
+        callerName: callerName,
+        isVideo: isVideo,
       );
 
       // Display native incoming call UI
@@ -266,6 +211,80 @@ class CallKitService {
     } catch (e) {
       debugPrint('❌ CallKitService: Error showing incoming call: $e');
     }
+  }
+
+  /// Build the CallKit params for an incoming call.
+  /// Extracted so the audio-session choices (mode, sample rate, etc.) are
+  /// source-order testable without invoking the native plugin.
+  static CallKitParams buildIncomingCallParams({
+    required String callId,
+    required String callKitUuid,
+    required String callerId,
+    required String callerName,
+    bool isVideo = false,
+  }) {
+    return CallKitParams(
+      id: callKitUuid,
+      nameCaller: callerName,
+      appName: 'Vant Chat',
+      avatar: '',
+      handle: callerId,
+      type: isVideo ? 1 : 0, // 0 = audio call, 1 = video call
+      textAccept: 'Accept',
+      textDecline: 'Decline',
+      duration: 30000, // Ring for 30 seconds
+      extra: <String, dynamic>{
+        'callerId': callerId,
+        'callId': callId,
+        'isVideo': isVideo,
+        // sdpOffer intentionally excluded for security
+      },
+      headers: <String, dynamic>{
+        'apiKey': 'Bearer abc',
+        'platform': 'flutter',
+      },
+      missedCallNotification: const NotificationParams(
+        showNotification: true,
+        isShowCallback: true,
+        subtitle: 'Missed call',
+        callbackText: 'Call back',
+      ),
+      callingNotification: const NotificationParams(
+        showNotification: true,
+        isShowCallback: true,
+        subtitle: 'Calling...',
+        callbackText: 'Hang Up',
+      ),
+      android: const AndroidParams(
+        isCustomNotification: true,
+        isShowLogo: false, // Hide app logo, show person icon instead
+        isShowCallID: false,
+        ringtonePath: 'system_ringtone_default',
+        backgroundColor:
+            '#000000', // Black background to match IncomingCallScreen
+        actionColor: '#4CAF50', // Green for accept button
+        textColor: '#ffffff', // White text
+        incomingCallNotificationChannelName: 'Incoming Call',
+        missedCallNotificationChannelName: 'Missed Call',
+        isShowFullLockedScreen: true, // Wake screen when device is locked
+      ),
+      ios: IOSParams(
+        iconName: '',
+        handleType: 'generic',
+        supportsVideo: isVideo,
+        maximumCallGroups: 2,
+        maximumCallsPerCallGroup: 1,
+        audioSessionMode: isVideo ? 'videoChat' : 'voiceChat',
+        audioSessionActive: true,
+        audioSessionPreferredSampleRate: 44100.0,
+        audioSessionPreferredIOBufferDuration: 0.005,
+        supportsDTMF: true,
+        supportsHolding: true,
+        supportsGrouping: false,
+        supportsUngrouping: false,
+        ringtonePath: 'system_ringtone_default',
+      ),
+    );
   }
 
   /// Accept call from CallKit UI
