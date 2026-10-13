@@ -26,7 +26,11 @@ import CommonCrypto
   ) -> Bool {
     // Configure Firebase
     FirebaseApp.configure()
-    
+
+    // Persist the real aps-environment entitlement from the embedded provisioning
+    // profile so both native Swift and Flutter use a single source of truth.
+    UserDefaults.standard.set(realApsEnvironment(), forKey: "apns_environment")
+
     // Set up notification delegate BEFORE Firebase configuration
     UNUserNotificationCenter.current().delegate = self
     
@@ -320,15 +324,53 @@ import CommonCrypto
     registerVoipTokenWithBackend(token: token)
   }
 
-  /// Returns the APNs environment matching the current build configuration.
-  /// Debug builds use the sandbox APNs endpoint; release builds (TestFlight /
-  /// App Store) use the production endpoint.
-  private func apnsEnvironmentForCurrentBuild() -> String {
+  /// Fallback APNs environment derived from the Swift build configuration.
+  /// Used only when the real aps-environment entitlement cannot be read.
+  private func fallbackApsEnvironmentForCurrentBuild() -> String {
     #if DEBUG
     return "sandbox"
     #else
     return "production"
     #endif
+  }
+
+  /// Reads the real `aps-environment` entitlement from the embedded
+  /// provisioning profile. This is the single source of truth for whether the
+  /// signed binary is sandbox or production, regardless of build flags.
+  private func realApsEnvironment() -> String {
+    guard let path = Bundle.main.path(forResource: "embedded", ofType: "mobileprovision"),
+          let data = FileManager.default.contents(atPath: path),
+          let raw = String(data: data, encoding: .ascii) else {
+      return fallbackApsEnvironmentForCurrentBuild()
+    }
+
+    guard let startRange = raw.range(of: "<?xml"),
+          let endRange = raw.range(of: "</plist>", range: startRange.lowerBound..<raw.endIndex) else {
+      return fallbackApsEnvironmentForCurrentBuild()
+    }
+
+    let plistXML = String(raw[startRange.lowerBound..<endRange.upperBound])
+    guard let plistData = plistXML.data(using: .utf8),
+          let plist = try? PropertyListSerialization.propertyList(
+            from: plistData,
+            options: [],
+            format: nil
+          ) as? [String: Any],
+          let entitlements = plist["Entitlements"] as? [String: Any],
+          let apsEnv = entitlements["aps-environment"] as? String else {
+      return fallbackApsEnvironmentForCurrentBuild()
+    }
+
+    return apsEnv
+  }
+
+  /// Returns the APNs environment stored at launch from the real entitlement.
+  /// Falls back to the build configuration if the stored value is missing.
+  private func currentApsEnvironment() -> String {
+    if let stored = UserDefaults.standard.string(forKey: "apns_environment"), !stored.isEmpty {
+      return stored
+    }
+    return fallbackApsEnvironmentForCurrentBuild()
   }
 
   /// Register VoIP token with the backend server directly from native Swift.
@@ -351,7 +393,7 @@ import CommonCrypto
       "deviceId": deviceId,
       "voipToken": token,
       "platform": "ios",
-      "apnsEnvironment": apnsEnvironmentForCurrentBuild()
+      "apnsEnvironment": currentApsEnvironment()
     ]
 
     guard let httpBody = try? JSONSerialization.data(withJSONObject: body) else { return }

@@ -51,9 +51,12 @@ class CallKitService {
   bool get _isCallKitEnabled => !_isChinaRegion();
 
   /// APNs environment reported at VoIP token registration.
-  /// Debug/profile builds hit the sandbox endpoint; release builds
-  /// (TestFlight / App Store) hit the production endpoint.
-  String get _apnsEnvironment => kReleaseMode ? 'production' : 'sandbox';
+  /// Prefers the value read by native from the real aps-environment
+  /// entitlement; falls back to the build mode if it is not yet available.
+  static String _apnsEnvironmentFromPrefs(SharedPreferences prefs) {
+    return prefs.getString('apns_environment') ??
+        (kReleaseMode ? 'production' : 'sandbox');
+  }
 
   // Event controller for UI layer to listen to call events
   final StreamController<CallKitEvent> _eventController =
@@ -745,6 +748,8 @@ class CallKitService {
       final deviceId = prefs.getString('device_id');
       if (deviceId == null || deviceId.isEmpty) return;
 
+      final apnsEnvironment = _apnsEnvironmentFromPrefs(prefs);
+
       final uri = Uri.parse(
         '${NetworkConstants.apiBaseUrl}${NetworkConstants.voipTokenPath}',
       );
@@ -756,7 +761,7 @@ class CallKitService {
               'deviceId': deviceId,
               'voipToken': token,
               'platform': 'ios',
-              'apnsEnvironment': kReleaseMode ? 'production' : 'sandbox',
+              'apnsEnvironment': apnsEnvironment,
             }),
           )
           .timeout(const Duration(seconds: 10));
@@ -808,6 +813,8 @@ class CallKitService {
         '${NetworkConstants.apiBaseUrl}${NetworkConstants.voipTokenPath}',
       );
 
+      final apnsEnvironment = _apnsEnvironmentFromPrefs(prefs);
+
       final response = await http.post(
         uri,
         headers: {'Content-Type': 'application/json'},
@@ -815,7 +822,7 @@ class CallKitService {
           'deviceId': deviceId,
           'voipToken': token,
           'platform': 'ios',
-          'apnsEnvironment': _apnsEnvironment,
+          'apnsEnvironment': apnsEnvironment,
         }),
       );
 
