@@ -11,12 +11,12 @@ void main() {
     );
   }
 
-  testWidgets('shows unverified text while the encrypted handshake runs',
+  testWidgets('shows securing text while the encrypted handshake runs',
       (tester) async {
     await tester.pumpWidget(subject(CallEncryptionState.securing));
 
     expect(find.byIcon(Icons.lock_outline), findsOne);
-    expect(find.text('Encrypted, contact not verified'), findsOne);
+    expect(find.text('Securing call…'), findsOne);
   });
 
   testWidgets('shows end-to-end encrypted text for verified calls',

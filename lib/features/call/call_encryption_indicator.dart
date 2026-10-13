@@ -21,7 +21,7 @@ class CallEncryptionIndicator extends StatelessWidget {
     final (icon, text, color) = switch (state) {
       CallEncryptionState.securing => (
           Icons.lock_outline,
-          'Encrypted, contact not verified',
+          'Securing call…',
           const Color(0xFF64B5F6),
         ),
       CallEncryptionState.encryptedVerified => (
