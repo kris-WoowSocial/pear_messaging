@@ -111,6 +111,11 @@ class CallController extends GetxController {
   bool _cryptoAnswerInFlight = false;
   bool _videoRequested = false;
 
+  /// Whether the current call was initiated or accepted as a video call.
+  /// Exposed so the video screen can fall back to the audio UI when the
+  /// camera permission is denied.
+  bool get videoRequested => _videoRequested;
+
   // Call history tracking
   DateTime? _callStartTime;
   bool _wasConnected = false;
@@ -1744,6 +1749,10 @@ class CallController extends GetxController {
       );
 
       if (success) {
+        // Keep the controller's video flag in sync with the actual WebRTC
+        // state so a denied camera permission doesn't leave the UI claiming a
+        // video call while only audio is flowing.
+        isVideoCall.value = _webrtcService.isVideoCall;
         isCameraOn.value = _webrtcService.isCameraEnabled;
         isFrontCamera.value = _webrtcService.isFrontCamera;
         isSpeakerOn.value = _webrtcService.isSpeakerOn;

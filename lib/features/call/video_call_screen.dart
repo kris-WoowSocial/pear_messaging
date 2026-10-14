@@ -92,6 +92,12 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
   @override
   Widget build(BuildContext context) {
     if (!_videoUiEnabled) return const ActiveCallScreen();
+    // If the local camera permission was denied or the call was downgraded to
+    // audio, the controller drops both isVideoCall and videoRequested; fall
+    // back to the audio UI.
+    if (!_controller.isVideoCall.value && !_controller.videoRequested) {
+      return const ActiveCallScreen();
+    }
 
     return PopScope(
       canPop: false,
@@ -107,7 +113,8 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
           child: LayoutBuilder(
             builder: (context, constraints) {
               final size = constraints.biggest;
-              _previewOffset ??= _initialPreviewOffset(size);
+              final padding = MediaQuery.of(context).padding;
+              _previewOffset ??= _initialPreviewOffset(size, padding);
               return Stack(
                 fit: StackFit.expand,
                 children: [
@@ -125,9 +132,9 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
     );
   }
 
-  Offset _initialPreviewOffset(Size size) => Offset(
-        size.width - _previewSize.width - _previewMargin,
-        size.height - _previewSize.height - _previewMargin,
+  Offset _initialPreviewOffset(Size size, EdgeInsets padding) => Offset(
+        size.width - _previewSize.width - _previewMargin - padding.right,
+        size.height - _previewSize.height - _previewMargin - padding.bottom,
       );
 
   Widget _buildVideoSurface() {
@@ -211,7 +218,8 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
           _controller.localVideoStream.value == null) {
         return const SizedBox.shrink();
       }
-      final offset = _previewOffset ?? _initialPreviewOffset(size);
+      final padding = MediaQuery.of(context).padding;
+      final offset = _previewOffset ?? _initialPreviewOffset(size, padding);
       return Positioned(
         left: offset.dx,
         top: offset.dy,
@@ -221,10 +229,11 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
               _previewOffset = _clampedPreviewOffset(
                 offset + details.delta,
                 size,
+                padding,
               );
             });
           },
-          onPanEnd: (_) => _snapPreview(size),
+          onPanEnd: (_) => _snapPreview(size, padding),
           child: ClipRRect(
             borderRadius: BorderRadius.circular(14),
             child: SizedBox(
@@ -246,28 +255,36 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
     });
   }
 
-  Offset _clampedPreviewOffset(Offset offset, Size size) => Offset(
+  Offset _clampedPreviewOffset(
+    Offset offset,
+    Size size,
+    EdgeInsets padding,
+  ) =>
+      Offset(
         offset.dx.clamp(
-          _previewMargin,
-          size.width - _previewSize.width - _previewMargin,
+          _previewMargin + padding.left,
+          size.width - _previewSize.width - _previewMargin - padding.right,
         ),
         offset.dy.clamp(
-          _previewMargin,
-          size.height - _previewSize.height - _previewMargin,
+          _previewMargin + padding.top,
+          size.height - _previewSize.height - _previewMargin - padding.bottom,
         ),
       );
 
-  void _snapPreview(Size size) {
+  void _snapPreview(Size size, EdgeInsets padding) {
     final current = _previewOffset;
     if (current == null) return;
     final corners = [
-      const Offset(_previewMargin, _previewMargin),
-      Offset(size.width - _previewSize.width - _previewMargin, _previewMargin),
+      Offset(_previewMargin + padding.left, _previewMargin + padding.top),
       Offset(
-        _previewMargin,
-        size.height - _previewSize.height - _previewMargin,
+        size.width - _previewSize.width - _previewMargin - padding.right,
+        _previewMargin + padding.top,
       ),
-      _initialPreviewOffset(size),
+      Offset(
+        _previewMargin + padding.left,
+        size.height - _previewSize.height - _previewMargin - padding.bottom,
+      ),
+      _initialPreviewOffset(size, padding),
     ];
     setState(() {
       _previewOffset = corners.reduce(
