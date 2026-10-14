@@ -50,7 +50,7 @@
 	<key>NSCameraUsageDescription</key>
 	<string>This app needs camera access for video calls, Face ID authentication, and QR code scanning</string>
 	<key>NSFaceIDUsageDescription</key>
-	<string>This app uses Face ID for secure authentication to protect your messages</string>
+	<string>Authenticate to open Vant</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>This app needs microphone access for voice and video calls</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>

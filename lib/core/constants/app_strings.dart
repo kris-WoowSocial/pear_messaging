@@ -6,7 +6,7 @@ class AppStrings {
   // Authentication
   static const String authTitle = 'Authentication Required';
   static const String authReason =
-      'Please authenticate to access your secure chats';
+      'Authenticate to open Vant';
   static const String authFailed = 'Authentication failed';
   static const String authCancelled = 'Authentication cancelled';
 
@@ -17,7 +17,7 @@ class AppStrings {
   static const String onboardingTitle2 = 'Real-time Messaging';
   static const String onboardingDesc2 =
       'Chat instantly with others using secure socket connections';
-  static const String onboardingTitle3 = 'Complete Privacy';
+  static const String onboardingTitle3 = 'Privacy by design';
   static const String onboardingDesc3 =
       'No cloud storage, no tracking. Your data stays on your device';
   static const String getStarted = 'Get Started';

@@ -70,7 +70,7 @@ class ChatListScreen extends GetView<ChatListController> {
             ),
             const SizedBox(height: 2),
             const Text(
-              'E2E-PQC Encryption Serverless-Invisible',
+              'Private messaging with no phone number or email needed.',
               style: TextStyle(
                 color: AppColors.textPrimary,
                 fontSize: 10,

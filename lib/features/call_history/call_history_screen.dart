@@ -33,7 +33,7 @@ class CallHistoryScreen extends GetView<CallHistoryController> {
             ),
             SizedBox(height: 2),
             Text(
-              'E2E-PQC Encrypted Voice Calls',
+              'Voice and video calls with end-to-end encryption when both contacts have verified keys.',
               style: TextStyle(
                 color: AppColors.textPrimary,
                 fontSize: 10,
