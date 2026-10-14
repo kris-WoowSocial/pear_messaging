@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:proximity_sensor/proximity_sensor.dart';
@@ -101,8 +102,9 @@ class ProximityService {
     }
   }
 
-  /// Native fallback: turn screen off by dimming to 0 brightness
+  /// Native fallback: turn screen off by dimming to 0 brightness (Android only)
   Future<void> _turnScreenOff() async {
+    if (!Platform.isAndroid) return;
     try {
       await _proximityChannel.invokeMethod('turnScreenOff');
       debugPrint('📱 ProximityService: Manual screen OFF invoked');
@@ -111,8 +113,9 @@ class ProximityService {
     }
   }
 
-  /// Native fallback: turn screen on by restoring brightness
+  /// Native fallback: turn screen on by restoring brightness (Android only)
   Future<void> _turnScreenOn() async {
+    if (!Platform.isAndroid) return;
     try {
       await _proximityChannel.invokeMethod('turnScreenOn');
       debugPrint('📱 ProximityService: Manual screen ON invoked');
@@ -121,8 +124,9 @@ class ProximityService {
     }
   }
 
-  /// Acquire native proximity wake lock
+  /// Acquire native proximity wake lock (Android only)
   Future<void> _acquireProximityWakeLock() async {
+    if (!Platform.isAndroid) return;
     try {
       await _proximityChannel.invokeMethod('acquireProximityWakeLock');
       debugPrint('📱 ProximityService: Native wake lock acquired');
@@ -131,8 +135,9 @@ class ProximityService {
     }
   }
 
-  /// Release native proximity wake lock
+  /// Release native proximity wake lock (Android only)
   Future<void> _releaseProximityWakeLock() async {
+    if (!Platform.isAndroid) return;
     try {
       await _proximityChannel.invokeMethod('releaseProximityWakeLock');
       debugPrint('📱 ProximityService: Native wake lock released');
@@ -141,8 +146,9 @@ class ProximityService {
     }
   }
 
-  /// Check device proximity sensor capabilities
+  /// Check device proximity sensor capabilities (Android only)
   Future<void> _checkProximitySensor() async {
+    if (!Platform.isAndroid) return;
     try {
       final result = await _proximityChannel
           .invokeMethod<Map<dynamic, dynamic>>('checkProximitySensor');

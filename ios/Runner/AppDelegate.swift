@@ -29,7 +29,9 @@ import CommonCrypto
 
     // Persist the real aps-environment entitlement from the embedded provisioning
     // profile so both native Swift and Flutter use a single source of truth.
-    UserDefaults.standard.set(realApsEnvironment(), forKey: "apns_environment")
+    // SharedPreferences on iOS prefixes keys with "flutter.", so we store it
+    // with the same prefix that Dart will resolve.
+    UserDefaults.standard.set(realApsEnvironment(), forKey: "flutter.apns_environment")
 
     // Set up notification delegate BEFORE Firebase configuration
     UNUserNotificationCenter.current().delegate = self
@@ -340,7 +342,7 @@ import CommonCrypto
   private func realApsEnvironment() -> String {
     guard let path = Bundle.main.path(forResource: "embedded", ofType: "mobileprovision"),
           let data = FileManager.default.contents(atPath: path),
-          let raw = String(data: data, encoding: .ascii) else {
+          let raw = String(data: data, encoding: .isoLatin1) else {
       return fallbackApsEnvironmentForCurrentBuild()
     }
 
@@ -367,7 +369,7 @@ import CommonCrypto
   /// Returns the APNs environment stored at launch from the real entitlement.
   /// Falls back to the build configuration if the stored value is missing.
   private func currentApsEnvironment() -> String {
-    if let stored = UserDefaults.standard.string(forKey: "apns_environment"), !stored.isEmpty {
+    if let stored = UserDefaults.standard.string(forKey: "flutter.apns_environment"), !stored.isEmpty {
       return stored
     }
     return fallbackApsEnvironmentForCurrentBuild()

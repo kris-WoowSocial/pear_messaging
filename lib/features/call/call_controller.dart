@@ -1637,6 +1637,7 @@ class CallController extends GetxController {
 
   /// Dismiss keyguard on Android to allow call to connect without unlock
   Future<void> _dismissKeyguard() async {
+    if (!Platform.isAndroid) return;
     try {
       await _callChannel.invokeMethod('dismissKeyguard');
       debugPrint('📞 Keyguard dismissed');
@@ -2924,13 +2925,16 @@ class CallController extends GetxController {
       return;
     }
 
-    // If call was accepted from lock screen, background the app and relock
-    if (_acceptedFromLockScreen) {
-      _acceptedFromLockScreen = false;
-      _callChannel.invokeMethod('relockDevice').catchError((_) {});
-    } else {
-      // Just restore normal power-button lock behaviour
-      _callChannel.invokeMethod('clearShowWhenLocked').catchError((_) {});
+    // If call was accepted from lock screen, background the app and relock.
+    // These methods are Android-only; iOS CallKit handles lock-screen lifecycle.
+    if (Platform.isAndroid) {
+      if (_acceptedFromLockScreen) {
+        _acceptedFromLockScreen = false;
+        _callChannel.invokeMethod('relockDevice').catchError((_) {});
+      } else {
+        // Just restore normal power-button lock behaviour
+        _callChannel.invokeMethod('clearShowWhenLocked').catchError((_) {});
+      }
     }
   }
 
@@ -3209,6 +3213,7 @@ class CallController extends GetxController {
 
   /// Ask Android to bring the activity over the lock screen (no unlock required)
   Future<void> _showWhenLocked() async {
+    if (!Platform.isAndroid) return;
     try {
       await _callChannel.invokeMethod('showWhenLocked');
       debugPrint('📞 showWhenLocked triggered for incoming call');
