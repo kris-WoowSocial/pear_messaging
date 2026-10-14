@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
@@ -356,9 +357,24 @@ class CallController extends GetxController {
   /// locked. Pause the local video track and tell the peer the camera is off so
   /// they show a "camera off" state instead of a frozen/black frame. Restore on
   /// resume only if we were the ones who turned it off.
+  ///
+  /// `inactive` alone is transient (Control Center, app switcher, banner
+  /// notifications), so we only pause for it while a Telecom/CallKit hold or
+  /// audio interruption is active.
+  /// Returns whether the given lifecycle state should pause the camera.
+  /// `inactive` is transient (Control Center, app switcher, banners) so it only
+  /// pauses while a Telecom/CallKit hold is active.
+  @visibleForTesting
+  static bool shouldPauseCameraForLifecycle(
+    AppLifecycleState state, {
+    required bool nativeCallHeld,
+  }) {
+    return state == AppLifecycleState.paused ||
+        (state == AppLifecycleState.inactive && nativeCallHeld);
+  }
+
   void _didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.paused ||
-        state == AppLifecycleState.inactive) {
+    if (shouldPauseCameraForLifecycle(state, nativeCallHeld: _nativeCallHeld)) {
       if (isVideoCall.value && isCameraOn.value && isInCall) {
         _cameraPausedForBackground = true;
         unawaited(setCameraEnabled(false));

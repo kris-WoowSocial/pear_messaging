@@ -388,11 +388,13 @@ class WebRTCCallService {
         case RTCPeerConnectionState.RTCPeerConnectionStateConnected:
           debugPrint('📞 WebRTC CONNECTED - starting timer and audio');
           onCallStateChange?.call('connected');
-          // Apply audio configuration once. Since we now use only
-          // Helper.setSpeakerphoneOn (AudioSwitchManager), there is no
-          // conflicting audio focus request so the setting sticks and we
-          // don't need staggered re-applications.
-          _configureAudioSession(speakerOn: _isSpeakerOn);
+          // Apply audio configuration once. For video calls the speaker default
+          // prefers an already-connected Bluetooth/wired headset instead of
+          // forcing the speaker route.
+          _configureAudioSession(
+            speakerOn: _isSpeakerOn,
+            preferBluetooth: _isVideoCall,
+          );
           _startDurationTimer();
           _startStatsLogger();
           if (Platform.isAndroid) CallForegroundService().start();
@@ -703,20 +705,35 @@ class WebRTCCallService {
   /// On iOS, audio session is already configured by flutter_webrtc during getUserMedia.
   /// This method controls speaker routing (earpiece vs speaker) after connection.
   ///
+  /// For video calls the speaker default must not override an active Bluetooth
+  /// or wired headset route. flutter_webrtc provides
+  /// Helper.setSpeakerphoneOnButPreferBluetooth(), which sets
+  /// AVAudioSessionCategoryOptionDefaultToSpeaker without forcing the output
+  /// port override, so an already-connected headset keeps the route.
+  ///
   /// IMPORTANT (Android): When a self-managed Telecom Connection is active,
   /// the framework owns the audio route and AudioManager/AudioSwitch requests
   /// may be ignored. We therefore notify Telecom via
   /// Connection.setAudioRoute(ROUTE_SPEAKER/ROUTE_EARPIECE) first, then keep
   /// flutter_webrtc's AudioSwitch state in sync with Helper.setSpeakerphoneOn.
-  Future _configureAudioSession({bool speakerOn = false}) async {
+  Future _configureAudioSession({
+    bool speakerOn = false,
+    bool preferBluetooth = false,
+  }) async {
     try {
       if (Platform.isAndroid) {
         await _audioChannel.invokeMethod('setTelecomAudioRoute', {
           'speakerOn': speakerOn,
         });
       }
-      await Helper.setSpeakerphoneOn(speakerOn);
-      debugPrint('📞 Audio session configured: speaker=$speakerOn');
+      if (speakerOn && preferBluetooth) {
+        await Helper.setSpeakerphoneOnButPreferBluetooth();
+      } else {
+        await Helper.setSpeakerphoneOn(speakerOn);
+      }
+      debugPrint(
+        '📞 Audio session configured: speaker=$speakerOn preferBluetooth=$preferBluetooth',
+      );
     } catch (e) {
       debugPrint('⚠️ Audio session config failed: $e');
     }
