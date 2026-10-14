@@ -145,6 +145,12 @@ class CallController extends GetxController {
   bool _nativeCallHeld = false;
   bool _cameraWasOnBeforeNativeHold = false;
 
+  // iOS suspends camera capture when the app is backgrounded or the screen is
+  // locked. Track whether we turned the camera off for that reason so we can
+  // restore it on resume without interfering with a user-initiated camera-off.
+  bool _cameraPausedForBackground = false;
+  WidgetsBindingObserver? _lifecycleObserver;
+
   // Prevents duplicate handling of the same native answer/decline action
   String? _lastHandledNativeCallId;
 
@@ -159,6 +165,8 @@ class CallController extends GetxController {
   void onInit() {
     super.onInit();
     debugPrint('📞 CallController onInit called');
+    _lifecycleObserver = _CallLifecycleObserver(this);
+    WidgetsBinding.instance.addObserver(_lifecycleObserver!);
     _initializeWebrtcService();
     _setupSocketListeners();
     _setupCallConnectivityMonitor();
@@ -342,6 +350,25 @@ class CallController extends GetxController {
     }
     _nativeCallHeld = false;
     _cameraWasOnBeforeNativeHold = false;
+  }
+
+  /// iOS suspends camera capture when the app is backgrounded or the screen is
+  /// locked. Pause the local video track and tell the peer the camera is off so
+  /// they show a "camera off" state instead of a frozen/black frame. Restore on
+  /// resume only if we were the ones who turned it off.
+  void _didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.inactive) {
+      if (isVideoCall.value && isCameraOn.value && isInCall) {
+        _cameraPausedForBackground = true;
+        unawaited(setCameraEnabled(false));
+      }
+    } else if (state == AppLifecycleState.resumed) {
+      if (_cameraPausedForBackground && isVideoCall.value && isInCall) {
+        _cameraPausedForBackground = false;
+        unawaited(setCameraEnabled(true));
+      }
+    }
   }
 
   void _handleNativeShowFlutterCall(Map<String, dynamic> data) {
@@ -571,6 +598,10 @@ class CallController extends GetxController {
 
   @override
   void onClose() {
+    if (_lifecycleObserver != null) {
+      WidgetsBinding.instance.removeObserver(_lifecycleObserver!);
+      _lifecycleObserver = null;
+    }
     _pendingAcceptedCallWatchTimer?.cancel();
     _pendingAcceptedCallWatchTimer = null;
     _callEventSubscription?.cancel();
@@ -2912,6 +2943,7 @@ class CallController extends GetxController {
     _latestIncomingCallData = null;
     _nativeCallHeld = false;
     _cameraWasOnBeforeNativeHold = false;
+    _cameraPausedForBackground = false;
     _iceRestartInFlight = false;
     _stopDurationUpdateTimer();
     _stopProximitySensor();
@@ -3408,4 +3440,15 @@ class CallController extends GetxController {
       _resetCallState();
     }
   }
+}
+
+/// WidgetsBindingObserver bridge for CallController so we don't have to
+/// implement every observer method on the controller itself.
+class _CallLifecycleObserver extends WidgetsBindingObserver {
+  _CallLifecycleObserver(this._controller);
+  final CallController _controller;
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) =>
+      _controller._didChangeAppLifecycleState(state);
 }

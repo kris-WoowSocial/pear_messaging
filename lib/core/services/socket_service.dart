@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io' show Platform;
 import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:flutter/foundation.dart' show listEquals;
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -25,6 +26,8 @@ class SocketService extends GetxService {
   bool _isConnecting = false; // Prevent duplicate connection attempts
   bool _isInForeground = true;
   int _reconnectAttempts = 0;
+  List<Worker> _capabilityWorkers = [];
+  List<String> _lastAnnouncedCapabilities = const [];
   final List<Map<String, dynamic>> _pendingMessagesAwaitingHandler = [];
 
   final RxBool isConnected = false.obs;
@@ -258,6 +261,7 @@ class SocketService extends GetxService {
       _storeBackendUrl();
 
       _registerDevice();
+      _trackCapabilityAnnouncements();
 
       // Send pending delivery acknowledgments for FCM messages received while offline
       FCMService.sendPendingAcknowledgments();
@@ -667,6 +671,7 @@ class SocketService extends GetxService {
       'identitySig': identitySig,
       'registerSig': registerSig,
     });
+    _lastAnnouncedCapabilities = _announcedCapabilities;
     debugPrint(
         '📝 Device registration requested: $_deviceId (platform: $platform, version: $_clientVersion)');
   }
@@ -685,6 +690,29 @@ class SocketService extends GetxService {
       if (encryptedAvailable) 'encrypted_call',
       if (encryptedAvailable && flags.videoCalling.value) 'video_call',
     ];
+  }
+
+  /// Re-emit the register payload when Remote Config flips a capability flag.
+  /// This keeps the server's view of `video_call`/`encrypted_call` accurate
+  /// even when the initial fetch lands after the first register.
+  void _trackCapabilityAnnouncements() {
+    if (!Get.isRegistered<FeatureFlagService>()) return;
+    final flags = Get.find<FeatureFlagService>();
+    for (final worker in _capabilityWorkers) {
+      worker.dispose();
+    }
+    _capabilityWorkers = [
+      ever(flags.encryptedSignaling, (_) => _announceCapabilitiesIfChanged()),
+      ever(flags.videoCalling, (_) => _announceCapabilitiesIfChanged()),
+    ];
+  }
+
+  void _announceCapabilitiesIfChanged() {
+    if (!isConnected.value) return;
+    final caps = _announcedCapabilities;
+    if (listEquals(caps, _lastAnnouncedCapabilities)) return;
+    _lastAnnouncedCapabilities = caps;
+    _registerDevice();
   }
 
   /// Identity bundle for the new identityBundle register field.
@@ -1755,6 +1783,10 @@ class SocketService extends GetxService {
 
   @override
   void onClose() {
+    for (final worker in _capabilityWorkers) {
+      worker.dispose();
+    }
+    _capabilityWorkers = [];
     _connectivitySubscription?.cancel();
     disconnect();
     super.onClose();
