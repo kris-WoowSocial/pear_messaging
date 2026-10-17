@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:firebase_remote_config/firebase_remote_config.dart';
 import 'package:flutter/foundation.dart';
 import 'package:get/get.dart';
@@ -22,6 +24,12 @@ class FeatureFlagService extends GetxService {
   final RxBool videoCalling = false.obs;
 
   FirebaseRemoteConfig? _rc;
+  final Completer<void> _initialFetchCompleter = Completer<void>();
+
+  /// Completes once the first Remote Config fetch/activate attempt finishes,
+  /// whether it succeeded or not. Socket registration can wait on this with
+  /// a timeout so it never stalls cold-start if Remote Config is unreachable.
+  Future<void> get initialFetchCompleted => _initialFetchCompleter.future;
 
   Future<FeatureFlagService> init() async {
     try {
@@ -47,6 +55,10 @@ class FeatureFlagService extends GetxService {
       });
     } catch (e) {
       debugPrint('⚠️ Remote Config unavailable — all feature flags OFF: $e');
+    } finally {
+      if (!_initialFetchCompleter.isCompleted) {
+        _initialFetchCompleter.complete();
+      }
     }
     return this;
   }

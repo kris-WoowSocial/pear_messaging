@@ -241,7 +241,7 @@ class SocketService extends GetxService {
 
   /// Setup socket event listeners
   void _setupSocketListeners() {
-    _socket?.on('connect', (_) {
+    _socket?.on('connect', (_) async {
       debugPrint('✅ Socket connected');
       isConnected.value = true;
       isRegistered.value = false;
@@ -259,6 +259,11 @@ class SocketService extends GetxService {
 
       // Store backend URL for HTTP delivery ack
       _storeBackendUrl();
+
+      // Wait for the first Remote Config fetch (up to 3s) so the initial
+      // capability announcement reflects the real feature flags instead of
+      // the safe OFF defaults.
+      await _waitForFeatureFlags();
 
       _registerDevice();
       _trackCapabilityAnnouncements();
@@ -713,6 +718,20 @@ class SocketService extends GetxService {
     if (listEquals(caps, _lastAnnouncedCapabilities)) return;
     _lastAnnouncedCapabilities = caps;
     _registerDevice();
+  }
+
+  /// Wait up to 3 seconds for the first Remote Config fetch. This keeps the
+  /// initial register from publishing capabilities while flags are still at
+  /// their safe OFF defaults.
+  Future<void> _waitForFeatureFlags() async {
+    if (!Get.isRegistered<FeatureFlagService>()) return;
+    try {
+      await Get.find<FeatureFlagService>()
+          .initialFetchCompleted
+          .timeout(const Duration(seconds: 3), onTimeout: () => null);
+    } catch (_) {
+      // Remote Config unreachable — proceed with defaults.
+    }
   }
 
   /// Identity bundle for the new identityBundle register field.
