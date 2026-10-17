@@ -2353,6 +2353,12 @@ class CallController extends GetxController {
     );
 
     _webrtcService.endCall();
+
+    // Capture the peer and video intent before resetting state; the fallback
+    // path needs them to redial as a legacy voice call.
+    final rejectedPeer = remoteDeviceId.value;
+    final wasOutgoingVideo = isCaller.value && _videoRequested;
+
     _resetCallState();
 
     // Navigate back only when the full-screen dialing UI is still visible.
@@ -2362,11 +2368,52 @@ class CallController extends GetxController {
       Get.back();
     }
 
-    // Show rejection reason to user
+    if (reason == 'peer_update_required' && wasOutgoingVideo) {
+      _showPeerUpdateRequiredFallback(rejectedPeer);
+      return;
+    }
+
+    // Show a friendly rejection reason. Never surface raw server reason codes.
     Get.snackbar(
       'Call Rejected',
-      reason ?? 'The call was rejected',
+      _friendlyRejectionReason(reason),
       snackPosition: SnackPosition.BOTTOM,
+    );
+  }
+
+  /// Maps server rejection reasons to user-facing text.
+  String _friendlyRejectionReason(String? reason) {
+    switch (reason) {
+      case 'peer_update_required':
+        return 'The other device needs an app update to support this call.';
+      case 'encryption_required':
+        return 'This call requires end-to-end encryption support on both devices.';
+      case 'invalid_signaling':
+        return 'Call setup failed. Please try again.';
+      case 'declined':
+        return 'The call was declined.';
+      case 'ended':
+      case 'busy':
+      case 'unavailable':
+        return 'The person you called is unavailable.';
+      default:
+        return 'The call was rejected';
+    }
+  }
+
+  /// Offer to redial a rejected video call as a legacy voice call.
+  void _showPeerUpdateRequiredFallback(String peerDeviceId) {
+    if (peerDeviceId.isEmpty) return;
+    Get.defaultDialog(
+      title: 'Video call not available',
+      middleText:
+          "The other person's app isn't ready for video calls yet. Call as voice instead?",
+      textConfirm: 'Call as voice',
+      textCancel: 'Cancel',
+      onConfirm: () {
+        Get.back();
+        startCall(peerDeviceId, isVideo: false);
+      },
     );
   }
 

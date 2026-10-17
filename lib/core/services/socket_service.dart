@@ -238,7 +238,7 @@ class SocketService extends GetxService {
 
   /// Setup socket event listeners
   void _setupSocketListeners() {
-    _socket?.on('connect', (_) {
+    _socket?.on('connect', (_) async {
       debugPrint('✅ Socket connected');
       isConnected.value = true;
       isRegistered.value = false;
@@ -257,7 +257,16 @@ class SocketService extends GetxService {
       // Store backend URL for HTTP delivery ack
       _storeBackendUrl();
 
+      // Wait for the first Remote Config fetch (up to 3s) so the initial
+      // capability announcement reflects the real feature flags instead of
+      // the safe OFF defaults.
+      await _waitForFeatureFlags();
+
       _registerDevice();
+
+      // Subscribe once to flag changes so any later Remote Config flip triggers
+      // a capabilities_update re-announcement (covers app resume refresh too).
+      _subscribeCapabilityFlagUpdates();
 
       // Send pending delivery acknowledgments for FCM messages received while offline
       FCMService.sendPendingAcknowledgments();
@@ -685,6 +694,51 @@ class SocketService extends GetxService {
       if (encryptedAvailable) 'encrypted_call',
       if (encryptedAvailable && flags.videoCalling.value) 'video_call',
     ];
+  }
+
+  bool _capabilityFlagListenerAdded = false;
+
+  /// Wait up to 3 seconds for the first Remote Config fetch. This keeps the
+  /// initial register from publishing capabilities while flags are still at
+  /// their safe OFF defaults.
+  Future<void> _waitForFeatureFlags() async {
+    if (!Get.isRegistered<FeatureFlagService>()) return;
+    try {
+      await Get.find<FeatureFlagService>()
+          .initialFetchCompleted
+          .timeout(const Duration(seconds: 3), onTimeout: () => null);
+    } catch (_) {
+      // Remote Config unreachable — proceed with defaults.
+    }
+  }
+
+  /// Subscribe to Remote Config flag changes so the server always sees the
+  /// current capability set, even when the socket already registered with
+  /// an earlier flag state.
+  void _subscribeCapabilityFlagUpdates() {
+    if (_capabilityFlagListenerAdded ||
+        !Get.isRegistered<FeatureFlagService>()) {
+      return;
+    }
+    _capabilityFlagListenerAdded = true;
+    Get.find<FeatureFlagService>().onFlagsUpdated(() {
+      if (isRegistered.value) {
+        sendCapabilitiesUpdate();
+      }
+    });
+  }
+
+  /// Re-announce capabilities over the existing socket. Used when Remote Config
+  /// flags change after registration and on app resume.
+  void sendCapabilitiesUpdate() {
+    if (_socket == null || _deviceId == null) return;
+    _socket?.emit('capabilities_update', {
+      'clientVersion': _clientVersion,
+      'capabilities': _announcedCapabilities,
+    });
+    debugPrint(
+      '📡 Capabilities update sent: $_deviceId -> $_announcedCapabilities',
+    );
   }
 
   /// Identity bundle for the new identityBundle register field.

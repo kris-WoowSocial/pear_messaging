@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:firebase_remote_config/firebase_remote_config.dart';
 import 'package:flutter/foundation.dart';
 import 'package:get/get.dart';
@@ -22,6 +24,20 @@ class FeatureFlagService extends GetxService {
   final RxBool videoCalling = false.obs;
 
   FirebaseRemoteConfig? _rc;
+  final Completer<void> _initialFetchCompleter = Completer<void>();
+  final List<VoidCallback> _onApplyCallbacks = [];
+
+  /// Completes once the first Remote Config fetch/activate attempt finishes,
+  /// whether it succeeded or not. Socket registration can wait on this with
+  /// a timeout so it never stalls cold-start if Remote Config is unreachable.
+  Future<void> get initialFetchCompleted => _initialFetchCompleter.future;
+
+  /// Register a callback invoked every time flags are applied (initial load,
+  /// real-time config updates, and manual refresh). Used by SocketService to
+  /// re-announce capabilities whenever a flag changes.
+  void onFlagsUpdated(VoidCallback callback) {
+    _onApplyCallbacks.add(callback);
+  }
 
   Future<FeatureFlagService> init() async {
     try {
@@ -47,6 +63,10 @@ class FeatureFlagService extends GetxService {
       });
     } catch (e) {
       debugPrint('⚠️ Remote Config unavailable — all feature flags OFF: $e');
+    } finally {
+      if (!_initialFetchCompleter.isCompleted) {
+        _initialFetchCompleter.complete();
+      }
     }
     return this;
   }
@@ -68,5 +88,12 @@ class FeatureFlagService extends GetxService {
       'encrypted=${encryptedSignaling.value}, video=${videoCalling.value} '
       '(fetch=${_rc!.lastFetchStatus}, at=${_rc!.lastFetchTime})',
     );
+    for (final callback in _onApplyCallbacks) {
+      try {
+        callback();
+      } catch (e) {
+        debugPrint('⚠️ Flag update callback failed: $e');
+      }
+    }
   }
 }
