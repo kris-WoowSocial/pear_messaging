@@ -22,11 +22,30 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
   late AnimationController _animationController;
   late Animation<double> _pulseAnimation;
   bool _isAccepting = false;
+  Worker? _callStateWorker;
+
+  CallController get _controller => Get.find<CallController>();
 
   @override
   void initState() {
     super.initState();
     _setupAnimation();
+    _callStateWorker = ever(_controller.callState, _onCallStateChanged);
+  }
+
+  void _onCallStateChanged(CallState state) {
+    if (state == CallState.ended || state == CallState.idle) {
+      _closeCallRoute();
+    }
+  }
+
+  /// Pop this call route and anything that may have been pushed on top of it
+  /// (snackbars, dialogs) without touching routes underneath.
+  void _closeCallRoute() {
+    if (!mounted) return;
+    final routeName = ModalRoute.of(context)?.settings.name;
+    if (routeName == null || !routeName.startsWith('/call/')) return;
+    Navigator.of(context).popUntil((route) => route.settings.name != routeName);
   }
 
   void _setupAnimation() {
@@ -42,6 +61,7 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
 
   @override
   void dispose() {
+    _callStateWorker?.dispose();
     _animationController.dispose();
     super.dispose();
   }
@@ -309,9 +329,7 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
     try {
       final controller = Get.find<CallController>();
       controller.rejectCall(callData);
-
-      // Go back to previous screen
-      Get.back();
+      // The incoming call screen closes reactively when callState becomes idle/ended.
     } catch (e) {
       debugPrint('❌ Error declining call: $e');
       Get.back();

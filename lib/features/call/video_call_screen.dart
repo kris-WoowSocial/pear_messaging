@@ -26,6 +26,7 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
   late final bool _videoUiEnabled;
   Worker? _localStreamWorker;
   Worker? _remoteStreamWorker;
+  Worker? _callStateWorker;
   Timer? _hideControlsTimer;
   Offset? _previewOffset;
   bool _controlsVisible = true;
@@ -40,6 +41,22 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
     if (!_videoUiEnabled) return;
     _initializeRenderers();
     _scheduleHideControls();
+    _callStateWorker = ever(_controller.callState, _onCallStateChanged);
+  }
+
+  void _onCallStateChanged(CallState state) {
+    if (state == CallState.ended || state == CallState.idle) {
+      _closeCallRoute();
+    }
+  }
+
+  /// Pop this call route and anything that may have been pushed on top of it
+  /// (snackbars, dialogs) without touching routes underneath.
+  void _closeCallRoute() {
+    if (!mounted) return;
+    final routeName = ModalRoute.of(context)?.settings.name;
+    if (routeName == null || !routeName.startsWith('/call/')) return;
+    Navigator.of(context).popUntil((route) => route.settings.name != routeName);
   }
 
   Future<void> _initializeRenderers() async {
@@ -82,6 +99,7 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
     _hideControlsTimer?.cancel();
     _localStreamWorker?.dispose();
     _remoteStreamWorker?.dispose();
+    _callStateWorker?.dispose();
     _localRenderer.srcObject = null;
     _remoteRenderer.srcObject = null;
     _localRenderer.dispose();
@@ -418,7 +436,6 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
                           onTap: () {
                             HapticFeedback.heavyImpact();
                             _controller.endCall();
-                            Get.back();
                           },
                         ),
                       ],

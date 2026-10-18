@@ -49,13 +49,17 @@ class WebRTCCallService {
   // Stats timer for diagnostics (logs bytes sent/received)
   Timer? _statsTimer;
 
+  // Watchdog timer for unrecoverable peer-connection disconnects/failures.
+  static const _connectionLostWatchdogSeconds = 20;
+  Timer? _connectionLostWatchdog;
+
   // Callbacks
   Function(MediaStream)? onLocalStream;
   Function(MediaStream)? onRemoteStream;
   Function(String)? onCallEnded;
   Function(String candidate, String? sdpMid, int? sdpMLineIndex)?
       onIceCandidate;
-  Function(String)? onCallStateChange;
+  Function(String state, {String? reason})? onCallStateChange;
   Function(String)? onLocalDescription; // Callback for SDP offer/answer
   Function(String sdp, bool isOffer)? onIceRestartDescription;
   Function(String reason)? onIceRestartNeeded;
@@ -387,6 +391,8 @@ class WebRTCCallService {
       switch (state) {
         case RTCPeerConnectionState.RTCPeerConnectionStateConnected:
           debugPrint('📞 WebRTC CONNECTED - starting timer and audio');
+          _connectionLostWatchdog?.cancel();
+          _connectionLostWatchdog = null;
           onCallStateChange?.call('connected');
           // Apply audio configuration once. Since we now use only
           // Helper.setSpeakerphoneOn (AudioSwitchManager), there is no
@@ -403,39 +409,27 @@ class WebRTCCallService {
           );
           onCallStateChange?.call('disconnected');
           _stopStatsLogger();
-          // Don't immediately end call on disconnect, give it more time to recover
-          // Increased from 3s to 10s to handle network hiccups and TURN relay instability
-          Future.delayed(const Duration(seconds: 10), () {
-            if (_peerConnection != null &&
-                _peerConnection!.connectionState ==
-                    RTCPeerConnectionState.RTCPeerConnectionStateDisconnected) {
-              debugPrint('📞 Still disconnected after 10 seconds, ending call');
-              onCallStateChange?.call('ended');
-              _endCall();
-            }
-          });
+          _startConnectionLostWatchdog(
+            RTCPeerConnectionState.RTCPeerConnectionStateDisconnected,
+          );
           break;
         case RTCPeerConnectionState.RTCPeerConnectionStateFailed:
           debugPrint('📞 WebRTC FAILED - attempting ICE restart');
           onIceRestartNeeded?.call('connection_failed');
           if (onConnectionFailed != null) {
             onConnectionFailed!('failed');
-            Future.delayed(const Duration(seconds: 10), () {
-              if (_peerConnection != null &&
-                  _peerConnection!.connectionState ==
-                      RTCPeerConnectionState.RTCPeerConnectionStateFailed) {
-                debugPrint('📞 Still failed after 10 seconds, ending call');
-                onCallStateChange?.call('ended');
-                _endCall();
-              }
-            });
+            _startConnectionLostWatchdog(
+              RTCPeerConnectionState.RTCPeerConnectionStateFailed,
+            );
           } else {
-            onCallStateChange?.call('ended');
+            onCallStateChange?.call('ended', reason: 'connection_lost');
             _endCall();
           }
           break;
         case RTCPeerConnectionState.RTCPeerConnectionStateClosed:
           debugPrint('📞 WebRTC CLOSED');
+          _connectionLostWatchdog?.cancel();
+          _connectionLostWatchdog = null;
           onCallStateChange?.call('ended');
           _endCall();
           break;
@@ -653,8 +647,31 @@ class WebRTCCallService {
     _endCall();
   }
 
+  /// Start the connection-lost watchdog. If the peer connection stays in
+  /// [targetState] for [_connectionLostWatchdogSeconds] without recovering,
+  /// end the call with reason `connection_lost`.
+  void _startConnectionLostWatchdog(RTCPeerConnectionState targetState) {
+    _connectionLostWatchdog?.cancel();
+    _connectionLostWatchdog = Timer(
+      const Duration(seconds: _connectionLostWatchdogSeconds),
+      () {
+        if (_peerConnection != null &&
+            _peerConnection!.connectionState == targetState) {
+          debugPrint(
+            '📞 Still ${targetState.name} after $_connectionLostWatchdogSeconds seconds, ending call',
+          );
+          onCallStateChange?.call('ended', reason: 'connection_lost');
+          _endCall();
+        }
+      },
+    );
+  }
+
   /// Internal cleanup
   Future<void> _endCall() async {
+    _connectionLostWatchdog?.cancel();
+    _connectionLostWatchdog = null;
+
     _durationTimer?.cancel();
     _durationTimer = null;
 

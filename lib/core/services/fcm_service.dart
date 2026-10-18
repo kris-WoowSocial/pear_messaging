@@ -23,6 +23,7 @@ import 'app_lifecycle_service.dart';
 import 'badge_service.dart';
 import 'callkit_service.dart';
 import 'call_foreground_service.dart';
+import '../../features/call/call_controller.dart';
 
 // Global notification settings for our custom notifications
 // Note: number field will be set dynamically based on total unread count
@@ -818,14 +819,10 @@ class FCMService extends GetxService {
       if (callId.isNotEmpty) {
         await CallKitService.dismissCall(callId);
       }
-      // Also dismiss the custom Flutter incoming call screen if it's open
+      // Reset call state so any open call screen closes reactively.
       // (socket call_terminated may arrive first, but FCM is a reliable fallback)
-      final currentRoute = Get.currentRoute;
-      if (currentRoute == '/call/incoming' ||
-          currentRoute == '/call/outgoing' ||
-          currentRoute == '/call/active') {
-        debugPrint('📞 Foreground: call_cancelled — dismissing $currentRoute');
-        Get.back();
+      if (Get.isRegistered<CallController>()) {
+        Get.find<CallController>().resetCallStateForRemoteEnd();
       }
       // Stop the active-call foreground service/notification so it doesn't linger
       try {
