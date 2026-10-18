@@ -5,8 +5,44 @@ import 'call_controller.dart';
 import 'call_encryption_indicator.dart';
 
 /// Outgoing Call Screen - Full-screen overlay for outgoing audio calls
-class OutgoingCallScreen extends StatelessWidget {
+class OutgoingCallScreen extends StatefulWidget {
   const OutgoingCallScreen({super.key});
+
+  @override
+  State<OutgoingCallScreen> createState() => _OutgoingCallScreenState();
+}
+
+class _OutgoingCallScreenState extends State<OutgoingCallScreen> {
+  Worker? _callStateWorker;
+
+  CallController get _controller => Get.find<CallController>();
+
+  @override
+  void initState() {
+    super.initState();
+    _callStateWorker = ever(_controller.callState, _onCallStateChanged);
+  }
+
+  void _onCallStateChanged(CallState state) {
+    if (state == CallState.ended || state == CallState.idle) {
+      _closeCallRoute();
+    }
+  }
+
+  /// Pop this call route and anything that may have been pushed on top of it
+  /// (snackbars, dialogs) without touching routes underneath.
+  void _closeCallRoute() {
+    if (!mounted) return;
+    final routeName = ModalRoute.of(context)?.settings.name;
+    if (routeName == null || !routeName.startsWith('/call/')) return;
+    Navigator.of(context).popUntil((route) => route.settings.name != routeName);
+  }
+
+  @override
+  void dispose() {
+    _callStateWorker?.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -202,7 +238,6 @@ class OutgoingCallScreen extends StatelessWidget {
       onTap: () {
         HapticFeedback.heavyImpact();
         controller.endCall();
-        Get.back();
       },
       child: Container(
         width: 72,

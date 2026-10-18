@@ -61,6 +61,7 @@ class SocketService extends GetxService {
   Function(Map<String, dynamic>)? onCallMediaUpdate;
   Function(Map<String, dynamic>)? onCallResync;
   Function(Map<String, dynamic>)? onCalleeConnecting;
+  Function(Map<String, dynamic>)? onCallStatusResponse;
 
   // Callbacks for group chat events
   Function(Map<String, dynamic>)? onGroupMessageReceived;
@@ -553,6 +554,16 @@ class SocketService extends GetxService {
       );
       if (onCallResync != null && data != null) {
         onCallResync!(Map<String, dynamic>.from(data));
+      }
+    });
+
+    // WebRTC Call: Server response to a call status probe
+    _socket?.on('call_status_response', (data) {
+      debugPrint(
+        '📞 Call status response: callId=${data is Map ? data['callId'] : null}, exists=${data is Map ? data['exists'] : null}',
+      );
+      if (onCallStatusResponse != null && data != null) {
+        onCallStatusResponse!(Map<String, dynamic>.from(data));
       }
     });
 
@@ -1772,6 +1783,19 @@ class SocketService extends GetxService {
       const Duration(seconds: 5),
       onTimeout: () => false,
     );
+  }
+
+  /// Request call status - used when the socket reconnects mid-call to ask the
+  /// server whether the call still exists. Server answers with
+  /// call_status_response; if the call is gone the client ends locally.
+  void requestCallStatus({required String callId}) {
+    if (!isRegistered.value) {
+      debugPrint('❌ Cannot request call status: socket is not registered');
+      return;
+    }
+
+    _socket?.emit('call_status', {'callId': callId});
+    debugPrint('📞 Call status requested for $callId');
   }
 
   /// Request call resync - used when app cold-starts after accepting from CallKit

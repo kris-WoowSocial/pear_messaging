@@ -42,6 +42,124 @@ enum CallState {
 
 enum _EncryptedCallSetup { legacyAllowed, ready, requiredUnavailable }
 
+/// User-facing call outcome message with an optional action.
+class FriendlyCallMessage {
+  final String title;
+  final String body;
+  final String? actionLabel;
+  final VoidCallback? action;
+
+  const FriendlyCallMessage({
+    required this.title,
+    required this.body,
+    this.actionLabel,
+    this.action,
+  });
+}
+
+/// Maps server-side call rejection / termination reason codes to plain,
+/// non-technical text. The optional [onCallAsVoice] action is only offered
+/// when [offerVoiceFallback] is true (the rejected call was a video call).
+FriendlyCallMessage friendlyCallMessage(
+  String? reason, {
+  required String peerName,
+  bool offerVoiceFallback = false,
+  VoidCallback? onCallAsVoice,
+}) {
+  switch (reason) {
+    case 'peer_update_required':
+      if (offerVoiceFallback) {
+        return FriendlyCallMessage(
+          title: 'Video call not available',
+          body: "$peerName's app isn't ready for video calls yet.",
+          actionLabel: 'Call as voice',
+          action: onCallAsVoice,
+        );
+      }
+      return FriendlyCallMessage(
+        title: 'Call not available',
+        body: "$peerName's app needs an update to support this call.",
+      );
+    case 'encryption_required':
+      return const FriendlyCallMessage(
+        title: 'Secure call unavailable',
+        body: 'This call requires end-to-end encryption support on both devices.',
+      );
+    case 'unavailable':
+    case 'offline':
+      return FriendlyCallMessage(
+        title: 'Unavailable',
+        body: '$peerName is unavailable right now.',
+      );
+    case 'busy':
+      return FriendlyCallMessage(
+        title: 'Busy',
+        body: '$peerName is on another call.',
+      );
+    case 'declined':
+    case 'rejected':
+      return FriendlyCallMessage(
+        title: 'Call declined',
+        body: '$peerName declined the call.',
+      );
+    case 'timeout':
+    case 'no_answer':
+      return FriendlyCallMessage(
+        title: 'No answer',
+        body: "$peerName didn't answer.",
+      );
+    case 'duplicate_session':
+      return const FriendlyCallMessage(
+        title: 'Call failed',
+        body: 'A call is already starting. Please try again.',
+      );
+    case 'identity_announce_required':
+    case 'identity_binding_required':
+    case 'identity_conflict':
+    case 'identity_invalid':
+      return const FriendlyCallMessage(
+        title: 'Secure call unavailable',
+        body: 'Verify this contact before calling.',
+      );
+    case 'crypto_failed':
+      return const FriendlyCallMessage(
+        title: 'Secure call unavailable',
+        body: 'Could not establish encrypted call signaling.',
+      );
+    case 'resync_timeout':
+      return const FriendlyCallMessage(
+        title: 'Call failed',
+        body: 'Connection took too long to restore.',
+      );
+    case 'rate_limited':
+      return const FriendlyCallMessage(
+        title: 'Try again later',
+        body: 'Too many call attempts. Please wait a moment.',
+      );
+    case 'ended':
+      return const FriendlyCallMessage(
+        title: 'Call ended',
+        body: 'The call has ended.',
+      );
+    case 'disconnected':
+    case 'connection_lost':
+      return const FriendlyCallMessage(
+        title: 'Connection lost',
+        body: 'The call was disconnected.',
+      );
+    case 'expired':
+      return const FriendlyCallMessage(
+        title: 'Call ended',
+        body: 'This call is no longer active.',
+      );
+    default:
+      return const FriendlyCallMessage(
+        title: 'Call failed',
+        body: "Couldn't start the call. Please try again.",
+      );
+  }
+}
+
 /// Call Controller - Manages WebRTC audio call state and UI
 class CallController extends GetxController {
   // Services
@@ -184,6 +302,8 @@ class CallController extends GetxController {
     // Same for a caller whose socket dropped mid-dial: the server preserves the
     // unanswered session for ~45s, so a resync re-links the fresh socket to the
     // call and re-delivers CALL_ACCEPTED if the callee already answered.
+    // For an established call, probe the server so we can end locally if the
+    // call was cleaned up while we were offline.
     ever(_socketService.isRegistered, (registered) {
       if (!registered) return;
       if (_pendingAutoAcceptCallId != null) {
@@ -192,13 +312,18 @@ class CallController extends GetxController {
           '📞 Socket reconnected with pending auto-accept, requesting resync for $callId',
         );
         _socketService.requestCallResync(callId: callId);
-      } else if (isCaller.value &&
-          currentCallId.value.isNotEmpty &&
-          !isConnected) {
-        debugPrint(
-          '📞 Socket reconnected while dialing, requesting resync for ${currentCallId.value}',
-        );
-        _socketService.requestCallResync(callId: currentCallId.value);
+      } else if (currentCallId.value.isNotEmpty && isInCall) {
+        if (isCaller.value && !isConnected) {
+          debugPrint(
+            '📞 Socket reconnected while dialing, requesting resync for ${currentCallId.value}',
+          );
+          _socketService.requestCallResync(callId: currentCallId.value);
+        } else {
+          debugPrint(
+            '📞 Socket reconnected mid-call, requesting status for ${currentCallId.value}',
+          );
+          _socketService.requestCallStatus(callId: currentCallId.value);
+        }
       }
     });
 
@@ -650,8 +775,8 @@ class CallController extends GetxController {
       remoteVideoStream.value = stream;
     };
 
-    _webrtcService.onCallStateChange = (state) {
-      _handleCallStateChange(state);
+    _webrtcService.onCallStateChange = (state, {reason}) {
+      _handleCallStateChange(state, reason: reason);
     };
 
     _webrtcService.onCallEnded = (callId) {
@@ -746,6 +871,10 @@ class CallController extends GetxController {
 
     _socketService.onCallResync = (data) {
       _handleCallResync(data);
+    };
+
+    _socketService.onCallStatusResponse = (data) {
+      _handleCallStatusResponse(data);
     };
   }
 
@@ -1939,11 +2068,20 @@ class CallController extends GetxController {
     _logCallHistory(reason: reason);
     _webrtcService.endCall();
     _resetCallState();
-    Get.snackbar(
-      'Secure call unavailable',
-      'Could not establish encrypted call signaling.',
-      snackPosition: SnackPosition.BOTTOM,
-      duration: const Duration(seconds: 3),
+    final peerName = remoteDeviceId.value.isNotEmpty
+        ? (remoteDisplayName.value.isNotEmpty
+            ? remoteDisplayName.value
+            : StringUtils.generateFriendlyName(remoteDeviceId.value))
+        : 'The other person';
+    // Map internal crypto failure codes to the user-facing crypto_failed reason.
+    final userReason = reason == 'missing_call_crypto' ||
+            reason == 'offer_failed' ||
+            reason == 'missing_answer_crypto' ||
+            reason == 'pin_unavailable'
+        ? 'crypto_failed'
+        : reason;
+    _showFriendlyCallMessage(
+      friendlyCallMessage(userReason, peerName: peerName),
     );
   }
 
@@ -2109,6 +2247,14 @@ class CallController extends GetxController {
       reason: 'rejected',
     );
 
+    _webrtcService.endCall();
+    _resetCallState();
+  }
+
+  /// Reset call state when we know the call has already ended remotely (e.g. FCM
+  /// call_cancelled) without sending another terminate event to the server.
+  void resetCallStateForRemoteEnd() {
+    _ringtoneService.stopRingtone();
     _webrtcService.endCall();
     _resetCallState();
   }
@@ -2393,10 +2539,30 @@ class CallController extends GetxController {
     unawaited(_flushPendingIceCandidates());
   }
 
+  /// Show a non-blocking banner for a call outcome. Dismisses any previous
+  /// call-outcome banner so the user never ends up with a stack of them, and
+  /// uses a unique snackbar key so the banner cannot block navigation.
+  void _showFriendlyCallMessage(FriendlyCallMessage message) {
+    if (Get.isSnackbarOpen) {
+      Get.closeCurrentSnackbar();
+    }
+    Get.snackbar(
+      message.title,
+      message.body,
+      snackPosition: SnackPosition.BOTTOM,
+      duration: const Duration(seconds: 4),
+      mainButton: message.action != null && message.actionLabel != null
+          ? TextButton(
+              onPressed: message.action,
+              child: Text(message.actionLabel!),
+            )
+          : null,
+    );
+  }
+
   /// Handle call rejected from socket
   void _handleCallRejected(Map<String, dynamic> data) {
     debugPrint('📞 Call rejected: $data');
-    final wasMinimized = isCallMinimized.value;
 
     // Stop ringtone
     _ringtoneService.stopRingtone();
@@ -2405,7 +2571,7 @@ class CallController extends GetxController {
 
     // Log rejected call
     _logCallHistory(
-      reason: 'rejected',
+      reason: reason ?? 'rejected',
       terminatedBy: data['terminatedBy'] as String?,
     );
 
@@ -2418,66 +2584,30 @@ class CallController extends GetxController {
 
     _resetCallState();
 
-    // Navigate back only when the full-screen dialing UI is still visible.
-    if (!wasMinimized &&
-        (Get.currentRoute == '/call/outgoing' ||
-            Get.currentRoute == '/call/video')) {
-      Get.back();
-    }
+    // Surface the raw server reason in logs only, never to the user.
+    debugPrint('📞 Rejection reason (logs only): $reason');
 
-    if (reason == 'peer_update_required' && wasOutgoingVideo) {
-      _showPeerUpdateRequiredFallback(rejectedPeer);
-      return;
-    }
+    final peerName = rejectedPeer.isNotEmpty
+        ? (remoteDisplayName.value.isNotEmpty
+            ? remoteDisplayName.value
+            : StringUtils.generateFriendlyName(rejectedPeer))
+        : 'The other person';
 
-    // Show a friendly rejection reason. Never surface raw server reason codes.
-    Get.snackbar(
-      'Call Rejected',
-      _friendlyRejectionReason(reason),
-      snackPosition: SnackPosition.BOTTOM,
+    final message = friendlyCallMessage(
+      reason,
+      peerName: peerName,
+      offerVoiceFallback: reason == 'peer_update_required' && wasOutgoingVideo,
+      onCallAsVoice: rejectedPeer.isEmpty
+          ? null
+          : () => startCall(rejectedPeer, isVideo: false),
     );
-  }
 
-  /// Maps server rejection reasons to user-facing text.
-  String _friendlyRejectionReason(String? reason) {
-    switch (reason) {
-      case 'peer_update_required':
-        return 'The other device needs an app update to support this call.';
-      case 'encryption_required':
-        return 'This call requires end-to-end encryption support on both devices.';
-      case 'invalid_signaling':
-        return 'Call setup failed. Please try again.';
-      case 'declined':
-        return 'The call was declined.';
-      case 'ended':
-      case 'busy':
-      case 'unavailable':
-        return 'The person you called is unavailable.';
-      default:
-        return 'The call was rejected';
-    }
-  }
-
-  /// Offer to redial a rejected video call as a legacy voice call.
-  void _showPeerUpdateRequiredFallback(String peerDeviceId) {
-    if (peerDeviceId.isEmpty) return;
-    Get.defaultDialog(
-      title: 'Video call not available',
-      middleText:
-          "The other person's app isn't ready for video calls yet. Call as voice instead?",
-      textConfirm: 'Call as voice',
-      textCancel: 'Cancel',
-      onConfirm: () {
-        Get.back();
-        startCall(peerDeviceId, isVideo: false);
-      },
-    );
+    _showFriendlyCallMessage(message);
   }
 
   /// Handle call terminated from socket
   void _handleCallTerminated(Map<String, dynamic> data) {
     final callId = data['callId'] as String?;
-    final wasMinimized = isCallMinimized.value;
     debugPrint('📞 Call terminated: $data');
 
     // Only process if this is the current call (ignore if we have a different active call)
@@ -2510,24 +2640,31 @@ class CallController extends GetxController {
       debugPrint('⚠️ Call terminated: failed to stop foreground service: $e');
     }
 
+    final reason = data['reason'] as String? ?? 'ended';
+
     // Log call history from server-provided reason
     _logCallHistory(
-      reason: data['reason'] as String? ?? 'ended',
+      reason: reason,
       terminatedBy: data['terminatedBy'] as String?,
     );
 
     _webrtcService.endCall();
-    _resetCallState();
 
-    // Navigate to chat list to dismiss the incoming/dialing/active call screen
-    // Using offAllNamed ensures proper cleanup when app was launched from notification
-    final currentRoute = Get.currentRoute;
-    if (!wasMinimized &&
-        currentRoute != '/chat-list' &&
-        currentRoute != '/main' &&
-        currentRoute != '/') {
-      Get.offAllNamed('/chat-list');
-    }
+    // Surface the raw server reason in logs only, never to the user.
+    debugPrint('📞 Termination reason (logs only): $reason');
+
+    final peerName = remoteDeviceId.value.isNotEmpty
+        ? (remoteDisplayName.value.isNotEmpty
+            ? remoteDisplayName.value
+            : StringUtils.generateFriendlyName(remoteDeviceId.value))
+        : 'The other person';
+
+    _showFriendlyCallMessage(friendlyCallMessage(reason, peerName: peerName));
+
+    // The call screen(s) will close themselves reactively once _resetCallState
+    // sets callState to ended/idle. Do not navigate here so a banner or dialog
+    // on top cannot be bypassed or duplicated.
+    _resetCallState();
   }
 
   /// Handle local ICE candidate from WebRTC
@@ -2775,8 +2912,8 @@ class CallController extends GetxController {
   }
 
   /// Handle call state change from WebRTC
-  void _handleCallStateChange(String state) async {
-    debugPrint('📞 Call state changed: $state');
+  void _handleCallStateChange(String state, {String? reason}) async {
+    debugPrint('📞 Call state changed: $state (reason: $reason)');
 
     switch (state) {
       case 'dialing':
@@ -2839,21 +2976,17 @@ class CallController extends GetxController {
         }
         break;
       case 'ended':
-        final wasMinimized = isCallMinimized.value;
         _ringtoneService.stopRingtone();
+        // Fallback log when no server termination event was received.
+        _logCallHistory(reason: reason ?? 'ended');
+        _stopDurationUpdateTimer();
+        // The call screen(s) will close themselves reactively once callState
+        // becomes ended. Do not navigate here so overlays on top are handled
+        // safely by the screen itself.
         callState.value = CallState.ended;
         isCallMinimized.value = false;
         isReconnecting.value = false;
         hasPoorConnection.value = false;
-        _stopDurationUpdateTimer();
-        // Make sure we leave the call screen so the app doesn't get stuck
-        // (e.g. after a cold-start accept from a notification)
-        if (!wasMinimized &&
-            Get.currentRoute != '/chat-list' &&
-            Get.currentRoute != '/main' &&
-            Get.currentRoute != '/') {
-          Get.offAllNamed('/chat-list');
-        }
         break;
     }
   }
@@ -2861,18 +2994,12 @@ class CallController extends GetxController {
   /// Handle call ended from WebRTC
   void _handleCallEnded(String callId) {
     debugPrint('📞 Call ended: $callId');
-    final wasMinimized = isCallMinimized.value;
-    // Note: _logCallHistory should already be called by endCall() or _handleCallTerminated()
-    // This handler is a fallback for WebRTC-level disconnections
+    // Fallback log when no server termination event was received.
+    _logCallHistory(reason: 'ended');
+    // Note: _logCallHistory may already have been called by endCall() or
+    // _handleCallTerminated(). This handler is a fallback for WebRTC-level
+    // disconnections. The call screen(s) close reactively via callState.
     _resetCallState();
-
-    // Ensure we leave the active call screen so the UI doesn't get stuck
-    if (!wasMinimized &&
-        Get.currentRoute != '/chat-list' &&
-        Get.currentRoute != '/main' &&
-        Get.currentRoute != '/') {
-      Get.offAllNamed('/chat-list');
-    }
   }
 
   /// Handle call resync from server - server resends SDP offer after cold-start accept
@@ -2894,6 +3021,44 @@ class CallController extends GetxController {
     // Delegate to the full accept-resync path so permission checks, audio
     // mode, native in-call state, and error handling are all applied.
     _acceptIncomingCallResync(data);
+  }
+
+  /// Handle server response to a call status probe.
+  /// If the server says the call no longer exists, end locally with a friendly
+  /// message. If it exists, stay on the call (the peer will drive ICE restart).
+  void _handleCallStatusResponse(Map<String, dynamic> data) {
+    final callId = data['callId'] as String?;
+    final exists = data['exists'] == true;
+    debugPrint('📞 Call status response: $data');
+
+    if (callId == null ||
+        callId.isEmpty ||
+        currentCallId.value.isEmpty ||
+        callId != currentCallId.value) {
+      return;
+    }
+
+    if (exists) return;
+
+    debugPrint('📞 Server reports call $callId no longer exists, ending locally');
+    _logCallHistory(
+      reason: data['reason'] as String? ?? 'expired',
+    );
+    _webrtcService.endCall();
+
+    final peerName = remoteDeviceId.value.isNotEmpty
+        ? (remoteDisplayName.value.isNotEmpty
+            ? remoteDisplayName.value
+            : StringUtils.generateFriendlyName(remoteDeviceId.value))
+        : 'The other person';
+    _showFriendlyCallMessage(
+      friendlyCallMessage(
+        data['reason'] as String? ?? 'expired',
+        peerName: peerName,
+      ),
+    );
+
+    _resetCallState();
   }
 
   /// Start call duration update timer
