@@ -1,5 +1,6 @@
 package com.vant.chat
 
+import android.app.KeyguardManager
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.ComponentName
@@ -12,6 +13,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
 import android.telecom.CallAudioState
 import android.telecom.DisconnectCause
 import android.telecom.PhoneAccount
@@ -433,6 +435,12 @@ object VantCallManager {
             .build()
 
         val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        // Re-check at post time: if FSI was revoked since the call arrived, the
+        // full-screen UI is suppressed right now and the heads-up/shade entry is
+        // all the user will see.
+        if (Build.VERSION.SDK_INT >= 34 && !notificationManager.canUseFullScreenIntent()) {
+            Log.w(TAG, "DIAG posting call notification with fsi=DENIED — heads-up only")
+        }
         notificationManager.notify(NOTIFICATION_ID, notification)
     }
 
@@ -487,6 +495,46 @@ object VantCallManager {
         // system full-screen intent path. The direct launch below is best-effort.
         showCallNotification(context, callerName, callerId, callId, roomId, avatarUrl, isVideo)
         launchIncomingCallActivity(context, callerName, callerId, callId, roomId, avatarUrl, isVideo)
+    }
+
+    /**
+     * Logcat-only diagnostics emitted when an incoming call arrives. Contains
+     * no caller identity, tokens or phone numbers — just the device state that
+     * decides whether the full-screen incoming-call UI can appear:
+     * canUseFullScreenIntent, call-channel importance/sound, PhoneAccount
+     * registration/enabled state, keyguard/screen state and Android version.
+     */
+    fun logIncomingCallDiagnostics(context: Context) {
+        try {
+            val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            val fsi = if (Build.VERSION.SDK_INT >= 34) nm.canUseFullScreenIntent() else true
+            val channel = if (Build.VERSION.SDK_INT >= 26) {
+                nm.getNotificationChannel(CHANNEL_ID)?.let {
+                    "imp=${it.importance} sound=${it.sound != null} vib=${it.shouldVibrate()}"
+                } ?: "missing"
+            } else {
+                "n/a"
+            }
+            val accountState = try {
+                val tm = context.getSystemService(Context.TELECOM_SERVICE) as TelecomManager
+                when (val account = tm.getPhoneAccount(getPhoneAccountHandle(context))) {
+                    null -> "unregistered"
+                    else -> if (account.isEnabled) "enabled" else "disabled"
+                }
+            } catch (e: Exception) {
+                "error"
+            }
+            val km = context.getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
+            val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+            Log.i(TAG, "DIAG incoming-call sdk=${Build.VERSION.SDK_INT} rel=${Build.VERSION.RELEASE} " +
+                "fsi=$fsi channel[$CHANNEL_ID]=$channel phoneAccount=$accountState " +
+                "locked=${km.isKeyguardLocked} interactive=${pm.isInteractive}")
+            if (!fsi) {
+                Log.w(TAG, "DIAG fsi=DENIED — full-screen call UI will be suppressed")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "DIAG failed: ${e.message}")
+        }
     }
 
     fun cancelNotification(context: Context) {

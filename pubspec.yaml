@@ -2,7 +2,7 @@ name: pear_messaging
 description: "Secure local chat application"
 publish_to: "none"
 
-version: 1.8.8+188
+version: 1.8.8+200
 
 environment:
   sdk: ^3.5.4

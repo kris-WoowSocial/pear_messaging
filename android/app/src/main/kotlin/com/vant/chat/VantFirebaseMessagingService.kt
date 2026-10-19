@@ -166,6 +166,7 @@ class VantFirebaseMessagingService : FirebaseMessagingService() {
         }
 
         Log.d(TAG, "📞 Incoming call from $callerName (callId=$callId)")
+        VantCallManager.logIncomingCallDiagnostics(this)
 
         wakeUpDevice()
 

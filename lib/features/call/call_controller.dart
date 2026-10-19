@@ -29,6 +29,7 @@ import '../../core/services/fcm_service.dart';
 import '../../core/utils/string_utils.dart';
 import '../../storage/models/call_history_entry.dart';
 import 'call_encryption_indicator.dart';
+import 'fsi_prompt_decision.dart';
 
 /// Call State Enum
 enum CallState {
@@ -258,6 +259,13 @@ class CallController extends GetxController {
   bool _nativeCallHeld = false;
   bool _cameraWasOnBeforeNativeHold = false;
 
+  // Full-screen-intent state: true while USE_FULL_SCREEN_INTENT is denied
+  // (incoming calls fall back to a heads-up notification). When a call rings
+  // while denied, _fsiPromptPending defers the settings dialog until the call
+  // ends so it never covers the incoming-call UI.
+  bool _fsiDenied = false;
+  bool _fsiPromptPending = false;
+
   // Prevents duplicate handling of the same native answer/decline action
   String? _lastHandledNativeCallId;
 
@@ -390,29 +398,61 @@ class CallController extends GetxController {
   /// On Android 14+, USE_FULL_SCREEN_INTENT is auto-granted only for calling
   /// apps installed from Play Store. Sideloaded builds and some OEMs (Infinix,
   /// Xiaomi) deny it, which means incoming calls only show a heads-up
-  /// notification instead of the full-screen call UI. Prompt the user once to
-  /// enable it — same thing WhatsApp does on restricted builds.
-  Future<void> _checkFullScreenIntentPermission() async {
+  /// notification instead of the full-screen call UI.
+  ///
+  /// The check runs on every app start and is re-run when an incoming call
+  /// arrives while the permission is denied (set via [prompt] = false there so
+  /// the dialog never covers the incoming-call UI — it is deferred to the end
+  /// of the call instead). 'fsi_dont_ask_again' is only written when the user
+  /// explicitly picks "Don't ask again"; "Later" leaves the prompt eligible
+  /// for the next opportunity.
+  Future<void> _checkFullScreenIntentPermission({bool prompt = true}) async {
     if (!Platform.isAndroid) return;
     try {
       final granted = await _incomingCallChannel.invokeMethod<bool>(
         'canUseFullScreenIntent',
       );
-      if (granted == true) return;
-
       final prefs = await SharedPreferences.getInstance();
-      if (prefs.getBool('fsi_prompt_shown') == true) return;
-      await prefs.setBool('fsi_prompt_shown', true);
+      final dontAskAgain = prefs.getBool('fsi_dont_ask_again') == true;
 
-      debugPrint('⚠️ Full-screen intent denied — prompting user to enable it');
+      if (granted == true) {
+        _fsiDenied = false;
+        // Clear the flag so a later revocation prompts again.
+        if (dontAskAgain) await prefs.remove('fsi_dont_ask_again');
+        return;
+      }
+
+      _fsiDenied = true;
+      debugPrint(
+        '⚠️ Full-screen intent denied — incoming calls will only show a notification',
+      );
+
+      if (!prompt ||
+          decideFsiPrompt(
+                canUseFullScreenIntent: false,
+                dontAskAgain: dontAskAgain,
+              ) !=
+              FsiPromptDecision.showDialog) {
+        return;
+      }
+
+      debugPrint('⚠️ Prompting user to enable full-screen intent');
       Get.dialog(
         AlertDialog(
-          title: const Text('Enable Full-Screen Calls'),
+          title: const Text('Show Calls Full Screen'),
           content: const Text(
-            'To show incoming calls on the lock screen like WhatsApp, '
-            'please enable "Full screen notifications" for Vant.',
+            'Vant needs permission to show incoming calls on the whole '
+            'screen, like WhatsApp. Without it, calls only appear as a '
+            'notification you have to pull down and tap.',
           ),
           actions: [
+            TextButton(
+              onPressed: () async {
+                await prefs.setBool('fsi_dont_ask_again', true);
+                Get.back();
+              },
+              child: const Text("Don't ask again"),
+            ),
             TextButton(
               onPressed: () => Get.back(),
               child: const Text('Later'),
@@ -3144,6 +3184,13 @@ class CallController extends GetxController {
       // Just restore normal power-button lock behaviour
       _callChannel.invokeMethod('clearShowWhenLocked').catchError((_) {});
     }
+
+    // If a call rang while full-screen intent was denied, offer the fix now —
+    // the user just experienced the symptom, so this is the right moment.
+    if (_fsiPromptPending) {
+      _fsiPromptPending = false;
+      unawaited(_checkFullScreenIntentPermission());
+    }
   }
 
   /// Cleanup resources
@@ -3283,6 +3330,15 @@ class CallController extends GetxController {
       debugPrint('❌ Incoming call received with no callId, ignoring');
       return;
     }
+
+    // Re-check full-screen intent while a call notification is being posted.
+    // If it is denied the full-screen UI will be suppressed — flag it so the
+    // settings dialog can be offered once this call ends.
+    unawaited(
+      _checkFullScreenIntentPermission(prompt: false).then((_) {
+        if (_fsiDenied) _fsiPromptPending = true;
+      }),
+    );
 
     final incomingCallerId = data['callerId'] as String? ?? '';
     if (data['isVideo'] == true && !_videoCallingEnabled) {
