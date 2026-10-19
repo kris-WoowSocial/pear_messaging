@@ -202,6 +202,7 @@ class VantFirebaseMessagingService : FirebaseMessagingService() {
         val callId = data["callId"] ?: data["call_id"] ?: ""
         Log.d(TAG, "📞 Cancelling call: $callId")
 
+        markMissedCallForFsiPrompt()
         VantCallManager.teardownCall(this, callId)
     }
 
@@ -216,6 +217,7 @@ class VantFirebaseMessagingService : FirebaseMessagingService() {
         }
 
         Log.d(TAG, "📞 Showing missed call notification for $callerName")
+        markMissedCallForFsiPrompt()
         createMissedCallChannel()
 
         val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -249,6 +251,20 @@ class VantFirebaseMessagingService : FirebaseMessagingService() {
     }
 
     // ==================== UTILITY METHODS ====================
+
+    /**
+     * A call the user didn't answer may mean the full-screen intent was
+     * suppressed — flag it so the next app open can offer the settings prompt
+     * (consumed one-shot by CallController; the prompt still only shows when
+     * canUseFullScreenIntent() is false). Written into the Flutter
+     * SharedPreferences backend so Dart's SharedPreferences can read it.
+     */
+    private fun markMissedCallForFsiPrompt() {
+        getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean("flutter.fsi_prompt_after_missed_call", true)
+            .apply()
+    }
 
     private fun wakeUpDevice() {
         try {

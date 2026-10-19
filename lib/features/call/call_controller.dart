@@ -414,6 +414,13 @@ class CallController extends GetxController {
       );
       final prefs = await SharedPreferences.getInstance();
       final dontAskAgain = prefs.getBool('fsi_dont_ask_again') == true;
+      // One-shot flag written by native code when a call was missed — consume
+      // it now regardless of the decision below.
+      final missedCallPromptPending =
+          prefs.getBool('fsi_prompt_after_missed_call') == true;
+      if (missedCallPromptPending) {
+        await prefs.remove('fsi_prompt_after_missed_call');
+      }
 
       if (granted == true) {
         _fsiDenied = false;
@@ -431,6 +438,7 @@ class CallController extends GetxController {
           decideFsiPrompt(
                 canUseFullScreenIntent: false,
                 dontAskAgain: dontAskAgain,
+                missedCallPromptPending: missedCallPromptPending,
               ) !=
               FsiPromptDecision.showDialog) {
         return;

@@ -309,24 +309,44 @@ class MainActivity : FlutterFragmentActivity() {
                     )
                 }
                 "openFullScreenIntentSettings" -> {
-                    try {
-                        val settingsIntent = if (Build.VERSION.SDK_INT >= 34) {
-                            Intent(
-                                Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT,
-                                Uri.parse("package:$packageName")
+                    // API 34+ has a dedicated full-screen-intent settings page,
+                    // but some OEMs don't implement it — resolve each candidate
+                    // first and fall back to app notification settings, then app
+                    // details.
+                    val candidates = buildList {
+                        if (Build.VERSION.SDK_INT >= 34) {
+                            add(
+                                Intent(
+                                    Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT,
+                                    Uri.parse("package:$packageName")
+                                )
                             )
-                        } else if (Build.VERSION.SDK_INT >= 26) {
-                            Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
-                                putExtra(Settings.EXTRA_APP_PACKAGE, packageName)
-                            }
-                        } else {
+                        }
+                        if (Build.VERSION.SDK_INT >= 26) {
+                            add(
+                                Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                                    putExtra(Settings.EXTRA_APP_PACKAGE, packageName)
+                                }
+                            )
+                        }
+                        add(
                             Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
                                 data = Uri.parse("package:$packageName")
                             }
+                        )
+                    }
+                    try {
+                        val resolved = candidates.firstOrNull {
+                            it.resolveActivity(packageManager) != null
                         }
-                        settingsIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                        startActivity(settingsIntent)
-                        result.success(true)
+                        if (resolved != null) {
+                            resolved.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            startActivity(resolved)
+                            result.success(true)
+                        } else {
+                            println("No settings screen resolved for full-screen intent")
+                            result.success(false)
+                        }
                     } catch (e: Exception) {
                         println("Error opening full-screen intent settings: $e")
                         result.success(false)
