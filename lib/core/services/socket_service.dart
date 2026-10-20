@@ -7,6 +7,7 @@ import 'package:get/get.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:socket_io_client/socket_io_client.dart' as IO;
 import 'call_media_helper.dart';
+import 'call_diag.dart';
 import 'encryption_service.dart';
 import 'feature_flag_service.dart';
 import 'fcm_service.dart';
@@ -259,7 +260,7 @@ class SocketService extends GetxService {
   /// Setup socket event listeners
   void _setupSocketListeners() {
     _socket?.on('connect', (_) async {
-      debugPrint(
+      callDiag(
         '✅ Socket connected (transport=websocket, '
         '${_connectWatch.elapsedMilliseconds}ms DNS+TLS+WS)',
       );
@@ -286,11 +287,11 @@ class SocketService extends GetxService {
       // answered — flags are hydrated from disk at startup, so capabilities
       // still announce correctly, and the fetch is not on the accept path.
       if (callUrgency) {
-        debugPrint('⚡ Skipping Remote Config wait — call in progress');
+        callDiag('⚡ Skipping Remote Config wait — call in progress');
       } else {
         final rcWatch = Stopwatch()..start();
         await _waitForFeatureFlags();
-        debugPrint(
+        callDiag(
           '🎛️ Remote Config wait: ${rcWatch.elapsedMilliseconds}ms',
         );
       }
@@ -353,7 +354,7 @@ class SocketService extends GetxService {
       final deviceId = data is Map ? data['deviceId'] : null;
       if (deviceId == _deviceId) {
         isRegistered.value = true;
-        debugPrint(
+        callDiag(
           '✅ Socket registration confirmed for $_deviceId '
           '(register→registered: ${_registerWatch.elapsedMilliseconds}ms, '
           'total from connect: ${_connectWatch.elapsedMilliseconds}ms)',
@@ -697,7 +698,7 @@ class SocketService extends GetxService {
     } else if (challenge != null) {
       nonce = await challenge.future;
     }
-    debugPrint(
+    callDiag(
       '⏱️ register_challenge wait: ${regWatch.elapsedMilliseconds}ms '
       '(nonce=${nonce != null})',
     );
@@ -722,7 +723,7 @@ class SocketService extends GetxService {
     } catch (e) {
       debugPrint('⚠️ Identity signing failed, registering unsigned: $e');
     }
-    debugPrint(
+    callDiag(
       '⏱️ identity signing: ${signWatch.elapsedMilliseconds}ms',
     );
 

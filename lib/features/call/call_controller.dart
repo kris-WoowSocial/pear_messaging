@@ -12,6 +12,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import '../../core/services/call_media_helper.dart';
+import '../../core/services/call_diag.dart';
 import '../../core/services/call_signaling_crypto.dart';
 import '../../core/services/feature_flag_service.dart';
 import '../../core/services/identity_announcement_service.dart';
@@ -2970,7 +2971,7 @@ class CallController extends GetxController {
           offerDtlsFps: _incomingOfferFps,
           answerDtlsFps: answerFps,
         );
-        debugPrint(
+        callDiag(
           '⏱️ answer crypto: fingerprints=${stepMs}ms, '
           'beginAnswer=${cryptoWatch.elapsedMilliseconds - stepMs}ms',
         );
@@ -2989,7 +2990,7 @@ class CallController extends GetxController {
             throw const CallSignalingCryptoException('pin_unavailable');
           }
         }
-        debugPrint(
+        callDiag(
           '⏱️ answer crypto: bundleLookup+pin='
           '${cryptoWatch.elapsedMilliseconds - stepMs}ms',
         );
@@ -2999,7 +3000,7 @@ class CallController extends GetxController {
           event: 'call_accept',
           plaintext: sdp,
         );
-        debugPrint(
+        callDiag(
           '⏱️ answer crypto: markPeer+encrypt='
           '${cryptoWatch.elapsedMilliseconds - stepMs}ms, '
           'total=${cryptoWatch.elapsedMilliseconds}ms',

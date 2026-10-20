@@ -1474,4 +1474,143 @@ void main() {
     expect(base64Encode(box.cipherText + box.mac.bytes),
         'rZiXRXjfChi6yyVc6+kulo5OMFE/SqmunXBFF33Bjw==');
   });
+
+
+  group('ring-time prepareAnswer', () {
+    test('prepared beginAnswer produces a wire-valid answer and full session', () async {
+      final a = await _mk(), b = await _mk();
+      final pinMap = {'devB': await b.bundle(), 'devA': await a.bundle()};
+      String? r(String id) => pinMap[id];
+      final caller = CallSignalingCrypto(
+          dh: a.dh, sign: a.sign, myDeviceId: 'devA', resolvePeerBundle: r);
+      final callee = CallSignalingCrypto(
+          dh: b.dh, sign: b.sign, myDeviceId: 'devB', resolvePeerBundle: r);
+
+      final offerFps = CallSignalingCrypto.extractDtlsFingerprints(offerSdp);
+      final begin = await caller.beginOffer(
+          callId: 'call_1', myId: 'devA', peerId: 'devB', offerDtlsFps: offerFps);
+      final encOffer = await caller.encryptOffer(offerSdp);
+      await callee.decryptOffer(
+          callId: 'call_1', callerId: 'devA', ephA: begin.eph, encrypted: encOffer);
+
+      // Ring-time: derive everything that does not need the answer SDP.
+      await callee.prepareAnswer(
+          peerId: 'devA', callerSig: begin.fp, offerDtlsFps: offerFps);
+
+      final answerFps = CallSignalingCrypto.extractDtlsFingerprints(answerSdp);
+      final ans = await callee.beginAnswer(
+          peerId: 'devA',
+          callerSig: begin.fp,
+          offerDtlsFps: offerFps,
+          answerDtlsFps: answerFps);
+      await caller.completeHandshake(
+          peerId: 'devB',
+          ephB: ans.eph,
+          calleeSig: ans.fp,
+          answerDtlsFps: answerFps);
+
+      // Session works in both directions — prepared keys are correct.
+      final c2c = await caller.encryptMessage(event: 'ice_candidate', plaintext: 'c1');
+      expect(await callee.decryptMessage(event: 'ice_candidate', encrypted: c2c), 'c1');
+      final b2a = await callee.encryptMessage(event: 'call_accept', plaintext: 'a1');
+      expect(await caller.decryptMessage(event: 'call_accept', encrypted: b2a), 'a1');
+    });
+
+    test('beginAnswer during in-flight prepare reuses its ephemeral (no divergence)', () async {
+      final a = await _mk(), b = await _mk();
+      final pinMap = {'devB': await b.bundle(), 'devA': await a.bundle()};
+      String? r(String id) => pinMap[id];
+      final caller = CallSignalingCrypto(
+          dh: a.dh, sign: a.sign, myDeviceId: 'devA', resolvePeerBundle: r);
+      final callee = CallSignalingCrypto(
+          dh: b.dh, sign: b.sign, myDeviceId: 'devB', resolvePeerBundle: r);
+
+      final offerFps = CallSignalingCrypto.extractDtlsFingerprints(offerSdp);
+      final begin = await caller.beginOffer(
+          callId: 'call_1', myId: 'devA', peerId: 'devB', offerDtlsFps: offerFps);
+      final encOffer = await caller.encryptOffer(offerSdp);
+      await callee.decryptOffer(
+          callId: 'call_1', callerId: 'devA', ephA: begin.eph, encrypted: encOffer);
+
+      // Do NOT await prepare — fire beginAnswer while it is still running.
+      final prep = callee.prepareAnswer(
+          peerId: 'devA', callerSig: begin.fp, offerDtlsFps: offerFps);
+      final answerFps = CallSignalingCrypto.extractDtlsFingerprints(answerSdp);
+      final ans = await callee.beginAnswer(
+          peerId: 'devA',
+          callerSig: begin.fp,
+          offerDtlsFps: offerFps,
+          answerDtlsFps: answerFps);
+      await prep;
+      await caller.completeHandshake(
+          peerId: 'devB', ephB: ans.eph, calleeSig: ans.fp, answerDtlsFps: answerFps);
+
+      // If ephB had diverged from the derived session keys, this decrypt fails.
+      final b2a = await callee.encryptMessage(event: 'call_accept', plaintext: 'ok');
+      expect(await caller.decryptMessage(event: 'call_accept', encrypted: b2a), 'ok');
+    });
+
+    test('prepare for a mismatched caller signature is not reused', () async {
+      final a = await _mk(), b = await _mk();
+      final pinMap = {'devB': await b.bundle(), 'devA': await a.bundle()};
+      String? r(String id) => pinMap[id];
+      final caller = CallSignalingCrypto(
+          dh: a.dh, sign: a.sign, myDeviceId: 'devA', resolvePeerBundle: r);
+      final callee = CallSignalingCrypto(
+          dh: b.dh, sign: b.sign, myDeviceId: 'devB', resolvePeerBundle: r);
+
+      final offerFps = CallSignalingCrypto.extractDtlsFingerprints(offerSdp);
+      final begin = await caller.beginOffer(
+          callId: 'call_1', myId: 'devA', peerId: 'devB', offerDtlsFps: offerFps);
+      final encOffer = await caller.encryptOffer(offerSdp);
+      await callee.decryptOffer(
+          callId: 'call_1', callerId: 'devA', ephA: begin.eph, encrypted: encOffer);
+
+      await callee.prepareAnswer(
+          peerId: 'devA', callerSig: begin.fp, offerDtlsFps: offerFps);
+
+      // beginAnswer with a DIFFERENT callerSig must re-verify and fail.
+      final answerFps = CallSignalingCrypto.extractDtlsFingerprints(answerSdp);
+      await expectLater(
+        callee.beginAnswer(
+            peerId: 'devA',
+            callerSig: Uint8List(64),
+            offerDtlsFps: offerFps,
+            answerDtlsFps: answerFps),
+        throwsCrypto('crypto_failed'),
+      );
+    });
+
+    test('dispose clears prepared state — a new call cannot reuse stale keys', () async {
+      final a = await _mk(), b = await _mk();
+      final pinMap = {'devB': await b.bundle(), 'devA': await a.bundle()};
+      String? r(String id) => pinMap[id];
+      final caller = CallSignalingCrypto(
+          dh: a.dh, sign: a.sign, myDeviceId: 'devA', resolvePeerBundle: r);
+      final callee = CallSignalingCrypto(
+          dh: b.dh, sign: b.sign, myDeviceId: 'devB', resolvePeerBundle: r);
+
+      final offerFps = CallSignalingCrypto.extractDtlsFingerprints(offerSdp);
+      final begin = await caller.beginOffer(
+          callId: 'call_1', myId: 'devA', peerId: 'devB', offerDtlsFps: offerFps);
+      final encOffer = await caller.encryptOffer(offerSdp);
+      await callee.decryptOffer(
+          callId: 'call_1', callerId: 'devA', ephA: begin.eph, encrypted: encOffer);
+      await callee.prepareAnswer(
+          peerId: 'devA', callerSig: begin.fp, offerDtlsFps: offerFps);
+
+      callee.dispose();
+
+      // After dispose the object is fully reset — beginAnswer must reject.
+      final answerFps = CallSignalingCrypto.extractDtlsFingerprints(answerSdp);
+      await expectLater(
+        callee.beginAnswer(
+            peerId: 'devA',
+            callerSig: begin.fp,
+            offerDtlsFps: offerFps,
+            answerDtlsFps: answerFps),
+        throwsA(isA<CallSignalingCryptoException>()),
+      );
+    });
+  });
 }
