@@ -2,7 +2,8 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:cryptography/cryptography.dart';
-import 'package:flutter/foundation.dart' show kDebugMode, visibleForTesting;
+import 'package:flutter/foundation.dart'
+    show debugPrint, kDebugMode, visibleForTesting;
 
 import 'identity_service.dart';
 
@@ -656,6 +657,88 @@ class CallSignalingCrypto {
         ephSeed: ephSeed,
       );
 
+  /// Callee ring-time work: every expensive step of [beginAnswer] that does
+  /// not depend on the local answer SDP — caller fingerprint verification,
+  /// ephemeral keygen, and session key derivation. A later [beginAnswer]
+  /// whose inputs match these only produces the fingerprint signature.
+  /// Fire-and-forget; on failure the accept path runs the full sequence.
+  Future<void> prepareAnswer({
+    required String peerId,
+    required Uint8List callerSig,
+    required List<Uint8List> offerDtlsFps,
+  }) async {
+    if (_amCaller ||
+        _answerStarted ||
+        _answerPrepared ||
+        _prepareInFlight != null ||
+        _handshakeComplete ||
+        _peerDeviceId != peerId) {
+      return;
+    }
+    final future = _prepareAnswerCore(
+      peerId: peerId,
+      callerSig: callerSig,
+      offerDtlsFps: offerDtlsFps,
+    );
+    _prepareInFlight = future;
+    await future;
+  }
+
+  Future<void> _prepareAnswerCore({
+    required String peerId,
+    required Uint8List callerSig,
+    required List<Uint8List> offerDtlsFps,
+  }) async {
+    try {
+      final callId = _requireCallId();
+      final ephA = _requirePeerEphPub();
+      final peer = _peerBundleFromPin(peerId);
+      final ok = await _verifyCallerFp(
+        callId: callId,
+        idA: peerId,
+        idB: _myDeviceId,
+        ephA: ephA,
+        offerFps: offerDtlsFps,
+        callerSig: callerSig,
+        callerEd25519Pub: peer.ed25519Pub,
+      );
+      if (!ok) throw const CallSignalingCryptoException('crypto_failed');
+      _ephLocal = await _x25519.newKeyPair();
+      _ephLocalPub = Uint8List.fromList(
+          (await _ephLocal!.extract() as SimpleKeyPairData).publicKey.bytes);
+      await _deriveSessionKeys(peer.x25519Pub);
+      _preppedPeerId = peerId;
+      _preppedCallerSig = callerSig;
+      _preppedOfferFps = offerDtlsFps;
+      _answerPrepared = true;
+      debugPrint('📞 Call crypto pre-derived during ringing');
+    } catch (e) {
+      debugPrint('⚠️ Ringing-time crypto prepare failed: $e');
+    } finally {
+      _prepareInFlight = null;
+    }
+  }
+
+  /// In-flight [prepareAnswer] — [beginAnswer] awaits it so the ephemeral
+  /// used for session keys is the same one bound into the fingerprint.
+  Future<void>? _prepareInFlight;
+  bool _answerPrepared = false;
+  String? _preppedPeerId;
+  Uint8List? _preppedCallerSig;
+  List<Uint8List>? _preppedOfferFps;
+
+  static bool _eqBytes(List<int> a, List<int> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
+  }
+
+  static bool _eqFps(List<Uint8List> a, List<Uint8List> b) =>
+      a.length == b.length &&
+      List.generate(a.length, (i) => i).every((i) => _eqBytes(a[i], b[i]));
+
   Future<({Uint8List eph, Uint8List fp})> _beginAnswer({
     required String peerId,
     required ParsedIdentityBundle Function() resolvePeer,
@@ -674,27 +757,53 @@ class CallSignalingCrypto {
     if (_peerDeviceId != peerId) {
       throw const CallSignalingCryptoException('peer_identity_mismatch');
     }
+    // If a ring-time prepare is mid-flight, let it finish — starting a
+    // second keygen/derive would diverge ephB from the session keys.
+    final inFlight = _prepareInFlight;
+    if (inFlight != null) {
+      await inFlight;
+    }
+    final prepped = _answerPrepared &&
+        _preppedPeerId == peerId &&
+        _eqBytes(callerSig, _preppedCallerSig!) &&
+        _eqFps(offerDtlsFps, _preppedOfferFps!);
     final ephA = _requirePeerEphPub();
     final peer = resolvePeer();
-    final callerFpOk = await _verifyCallerFp(
-      callId: callId,
-      idA: peerId,
-      idB: _myDeviceId,
-      ephA: ephA,
-      offerFps: offerDtlsFps,
-      callerSig: callerSig,
-      callerEd25519Pub: peer.ed25519Pub,
-    );
-    if (!callerFpOk) {
-      throw const CallSignalingCryptoException('crypto_failed');
+    final cryptoStepWatch = Stopwatch()..start();
+    if (!prepped) {
+      final callerFpOk = await _verifyCallerFp(
+        callId: callId,
+        idA: peerId,
+        idB: _myDeviceId,
+        ephA: ephA,
+        offerFps: offerDtlsFps,
+        callerSig: callerSig,
+        callerEd25519Pub: peer.ed25519Pub,
+      );
+      if (!callerFpOk) {
+        throw const CallSignalingCryptoException('crypto_failed');
+      }
     }
+    debugPrint(
+      '⏱️ beginAnswer.verifyCallerFp: ${cryptoStepWatch.elapsedMilliseconds}ms'
+      '${prepped ? ' (pre-verified during ring)' : ''}',
+    );
+    cryptoStepWatch.reset();
     _answerStarted = true;
     try {
-      _ephLocal = _guarded && ephSeed != null
-          ? await _x25519.newKeyPairFromSeed(Uint8List.fromList(ephSeed))
-          : await _x25519.newKeyPair();
-      _ephLocalPub = Uint8List.fromList(
-          (await _ephLocal!.extract() as SimpleKeyPairData).publicKey.bytes);
+      if (prepped) {
+        debugPrint('⏱️ beginAnswer.ephKeygen: 0ms (pre-generated)');
+      } else {
+        _ephLocal = _guarded && ephSeed != null
+            ? await _x25519.newKeyPairFromSeed(Uint8List.fromList(ephSeed))
+            : await _x25519.newKeyPair();
+        _ephLocalPub = Uint8List.fromList(
+            (await _ephLocal!.extract() as SimpleKeyPairData).publicKey.bytes);
+      }
+      debugPrint(
+        '⏱️ beginAnswer.ephKeygen: ${cryptoStepWatch.elapsedMilliseconds}ms',
+      );
+      cryptoStepWatch.reset();
 
       final fp = await _signCalleeFp(
         callId: callId,
@@ -706,7 +815,14 @@ class CallSignalingCrypto {
         answerFps: answerDtlsFps,
         callerSig: callerSig,
       );
-      await _deriveSessionKeys(peer.x25519Pub);
+      debugPrint(
+        '⏱️ beginAnswer.signCalleeFp: ${cryptoStepWatch.elapsedMilliseconds}ms',
+      );
+      cryptoStepWatch.reset();
+      if (!prepped) await _deriveSessionKeys(peer.x25519Pub);
+      debugPrint(
+        '⏱️ beginAnswer.deriveSessionKeys: ${cryptoStepWatch.elapsedMilliseconds}ms',
+      );
       _peerBundle = peer;
       _handshakeComplete = true;
       return (eph: _requireLocalEphPub(), fp: fp);

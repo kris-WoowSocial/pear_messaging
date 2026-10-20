@@ -389,7 +389,11 @@ class CallController extends GetxController {
       final callId = prefs.getString('ringing_call_id');
       if (callId != null && callId.isNotEmpty) {
         _ringingCallId = callId;
+        _socketService.callUrgency = true;
         debugPrint('📞 Ringing call marker loaded: $callId');
+        // Build the PeerConnection now — no offer or registration needed, and
+        // it removes PC creation + ICE resolve from the accept path.
+        unawaited(_webrtcService.prewarmPeerConnection());
       }
     } catch (e) {
       debugPrint('⚠️ Failed to load ringing call marker: $e');
@@ -2085,8 +2089,15 @@ class CallController extends GetxController {
       return null;
     }
 
-    final crypto = _createSignalingCrypto(callerId);
     final sessionId = _wireString(cryptoPayload, 'sessionId');
+    // Reuse the live crypto for the same call/session — a ring-time resync
+    // may already have verified the caller and derived session keys
+    // (prepareAnswer); recreating it would discard that work.
+    final reuseCrypto = _cryptoActive &&
+        _cryptoSessionId == sessionId &&
+        _signalingCrypto != null;
+    final crypto =
+        reuseCrypto ? _signalingCrypto! : _createSignalingCrypto(callerId);
     final callerEph = _wireBytes(cryptoPayload, 'callerEph');
     final callerFp = _wireBytes(cryptoPayload, 'callerFp');
     final callerBundle = _wireString(cryptoPayload, 'callerBundle');
@@ -2113,7 +2124,7 @@ class CallController extends GetxController {
       throw const CallSignalingCryptoException('peer_key_changed');
     }
 
-    _resetCryptoState();
+    if (!reuseCrypto) _resetCryptoState();
     _signalingCrypto = crypto;
     _cryptoSessionId = sessionId;
     _peerCryptoBundle = callerBundle;
@@ -2128,6 +2139,17 @@ class CallController extends GetxController {
     _incomingCallerFp = callerFp;
     _incomingOfferFps = CallSignalingCrypto.extractDtlsFingerprints(sdpOffer);
     _updateCallEncryptionState(callerId);
+    // Overlap the expensive answer crypto (caller verify + ephemeral keygen +
+    // session keys) with whatever the accept path still has to do — mic
+    // permission, audio setup, getUserMedia, createAnswer. beginAnswer then
+    // only signs. No-op if ring-time prepare already ran or is in flight.
+    unawaited(
+      crypto.prepareAnswer(
+        peerId: callerId,
+        callerSig: callerFp,
+        offerDtlsFps: _incomingOfferFps,
+      ),
+    );
     return sdpOffer;
   }
 
@@ -2929,13 +2951,21 @@ class CallController extends GetxController {
         return;
       }
       try {
+        final cryptoWatch = Stopwatch()..start();
+        var stepMs = 0;
         final answerFps = CallSignalingCrypto.extractDtlsFingerprints(sdp);
+        stepMs = cryptoWatch.elapsedMilliseconds;
         final answer = await crypto.beginAnswer(
           peerId: remoteDeviceId.value,
           callerSig: callerFp,
           offerDtlsFps: _incomingOfferFps,
           answerDtlsFps: answerFps,
         );
+        debugPrint(
+          '⏱️ answer crypto: fingerprints=${stepMs}ms, '
+          'beginAnswer=${cryptoWatch.elapsedMilliseconds - stepMs}ms',
+        );
+        stepMs = cryptoWatch.elapsedMilliseconds;
         final peerBundle = _peerCryptoBundle;
         if (peerBundle == null) {
           throw const CallSignalingCryptoException('missing_peer_bundle');
@@ -2950,10 +2980,20 @@ class CallController extends GetxController {
             throw const CallSignalingCryptoException('pin_unavailable');
           }
         }
+        debugPrint(
+          '⏱️ answer crypto: bundleLookup+pin='
+          '${cryptoWatch.elapsedMilliseconds - stepMs}ms',
+        );
+        stepMs = cryptoWatch.elapsedMilliseconds;
         await _storageService.markPeerEncryptedCall(remoteDeviceId.value);
         final encrypted = await crypto.encryptMessage(
           event: 'call_accept',
           plaintext: sdp,
+        );
+        debugPrint(
+          '⏱️ answer crypto: markPeer+encrypt='
+          '${cryptoWatch.elapsedMilliseconds - stepMs}ms, '
+          'total=${cryptoWatch.elapsedMilliseconds}ms',
         );
         _cryptoHandshakeReady = true;
         _updateCallEncryptionState(remoteDeviceId.value);
@@ -3135,12 +3175,17 @@ class CallController extends GetxController {
     String callId,
     String callerId,
   ) {
+    // Overlap PC creation with offer decryption — no-op if one already exists.
+    unawaited(_webrtcService.prewarmPeerConnection());
     unawaited(
       Future<String?>.value(data['decryptedSdpOffer'] as String?)
           .then((cached) async =>
               cached ?? await _decryptIncomingOffer(data, callId, callerId))
           .then((sdpOffer) {
             if (sdpOffer == null) return Future.value(false);
+            // Note: _decryptIncomingOffer already kicked prepareAnswer —
+            // verify + keygen + session keys are running now; beginAnswer
+            // at Accept only produces the fingerprint signature.
             return _webrtcService.prepareIncomingCall(
               callId: callId,
               callerDeviceId: callerId,
@@ -3305,6 +3350,8 @@ class CallController extends GetxController {
     _cameraWasOnBeforeNativeHold = false;
     _iceRestartInFlight = false;
     _iceServersPrefetched = false;
+    _acceptInFlightCallId = null;
+    _socketService.callUrgency = false;
     _stopDurationUpdateTimer();
     _stopProximitySensor();
     _setCallScreenVisible(false);
@@ -3441,6 +3488,7 @@ class CallController extends GetxController {
   /// Set pending auto-accept flag (used for cold-start after background CallKit accept)
   Future<void> setPendingAutoAccept(String callId) async {
     _pendingAutoAcceptCallId = callId;
+    _socketService.callUrgency = true;
     debugPrint('📞 CallController: auto-accept set for $callId');
     // Persist so it survives app restart when user accepts from native notification
     try {
@@ -3532,6 +3580,15 @@ class CallController extends GetxController {
     }
 
     if (_wireCrypto(data) != null) {
+      // Flags hydrate from disk at startup, but on a first-ever run Remote
+      // Config may still be in flight — give it a bounded window before
+      // deciding encrypted signaling is truly unavailable.
+      if (!_encryptedSignalingEnabled &&
+          Get.isRegistered<FeatureFlagService>()) {
+        await Get.find<FeatureFlagService>()
+            .initialFetchCompleted
+            .timeout(const Duration(seconds: 3), onTimeout: () {});
+      }
       if (!_encryptedSignalingEnabled) {
         _socketService.rejectCall(
           callId: incomingCallId,
@@ -3560,6 +3617,15 @@ class CallController extends GetxController {
       }
     }
 
+    // Store the call data so accept paths (notification action, resync)
+    // always have the SDP offer available.
+    _latestIncomingCallData = data;
+    _socketService.callUrgency = true;
+
+    // Warm the PeerConnection + remote offer while the phone rings —
+    // skipped internally if a call is already active.
+    _prepareIncomingWebRtc(data, incomingCallId, incomingCallerId);
+
     // Avoid duplicate UI if the incoming call screen is already open
     final currentRoute = Get.currentRoute;
     if (currentRoute == '/call/incoming' ||
@@ -3575,14 +3641,6 @@ class CallController extends GetxController {
     remoteDisplayName.value = data['callerName'] as String? ?? 'Incoming Call';
     remoteAvatarUrl.value =
         data['avatarUrl'] as String? ?? data['avatar_url'] as String? ?? '';
-
-    // Store the call data so accept paths (notification action, resync)
-    // always have the SDP offer available.
-    _latestIncomingCallData = data;
-
-    // Warm the PeerConnection + remote offer while the phone rings —
-    // skipped internally if a call is already active.
-    _prepareIncomingWebRtc(data, incomingCallId, incomingCallerId);
 
     // Mark this callId as handled so FCMService dedup guard skips it if FCM
     // arrives shortly after (server sends both socket + FCM in parallel)
@@ -3705,10 +3763,21 @@ class CallController extends GetxController {
   }
 
   /// Accept incoming call during resync (app was killed, user accepted from CallKit)
+  /// CallId currently being accepted. Duplicate resync responses (the
+  /// pending-accept watcher + isRegistered listener can both request resync)
+  /// would otherwise run a second accept that tears down the PeerConnection
+  /// mid-answer.
+  String? _acceptInFlightCallId;
+
   Future<void> _acceptIncomingCallResync(Map<String, dynamic> data) async {
     try {
       final callId = data['callId'] as String;
       final callerId = data['callerId'] as String;
+      if (_acceptInFlightCallId == callId || isInCall) {
+        debugPrint('📞 Accept already in progress for $callId — skipping dup');
+        return;
+      }
+      _acceptInFlightCallId = callId;
       final calleeDeviceId = _storageService.deviceId;
 
       if (calleeDeviceId == null) {

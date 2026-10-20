@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:firebase_remote_config/firebase_remote_config.dart';
 import 'package:flutter/foundation.dart';
 import 'package:get/get.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 /// Remote feature flags — every new capability ships OFF by default and is
 /// enabled gradually from Firebase Remote Config (no server deploy needed,
@@ -55,6 +56,10 @@ class FeatureFlagService extends GetxService {
         kEncryptedSignaling: false,
         kVideoCalling: false,
       });
+      // Hydrate the last applied values from disk BEFORE the network fetch so
+      // cold-start call flows see real flags immediately — Remote Config only
+      // ever tightens from the last applied state anyway.
+      await _hydrateFromDisk();
       await _rc!.fetchAndActivate();
       _apply();
       _rc!.onConfigUpdated.listen((_) async {
@@ -79,10 +84,38 @@ class FeatureFlagService extends GetxService {
     } catch (_) {} // network/config hiccup → keep current flags
   }
 
+  /// Restore the last applied flag values written by [_apply]. Mirrors
+  /// Remote Config's own activated-value cache so a cold start (e.g. a
+  /// pre-warmed call engine) doesn't sit at the OFF defaults while the
+  /// network fetch is still in flight.
+  Future<void> _hydrateFromDisk() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      verificationUi.value =
+          prefs.getBool('ff_cache_$kVerificationUi') ?? verificationUi.value;
+      encryptedSignaling.value =
+          prefs.getBool('ff_cache_$kEncryptedSignaling') ??
+              encryptedSignaling.value;
+      videoCalling.value =
+          prefs.getBool('ff_cache_$kVideoCalling') ?? videoCalling.value;
+      debugPrint(
+        '🎛️ Flags hydrated: verification=${verificationUi.value}, '
+        'encrypted=${encryptedSignaling.value}, video=${videoCalling.value}',
+      );
+    } catch (e) {
+      debugPrint('⚠️ Flag hydration failed, using defaults: $e');
+    }
+  }
+
   void _apply() {
     verificationUi.value = _rc!.getBool(kVerificationUi);
     encryptedSignaling.value = _rc!.getBool(kEncryptedSignaling);
     videoCalling.value = _rc!.getBool(kVideoCalling);
+    SharedPreferences.getInstance().then((prefs) {
+      prefs.setBool('ff_cache_$kVerificationUi', verificationUi.value);
+      prefs.setBool('ff_cache_$kEncryptedSignaling', encryptedSignaling.value);
+      prefs.setBool('ff_cache_$kVideoCalling', videoCalling.value);
+    });
     debugPrint(
       '🎛️ Feature flags: verification=${verificationUi.value}, '
       'encrypted=${encryptedSignaling.value}, video=${videoCalling.value} '
