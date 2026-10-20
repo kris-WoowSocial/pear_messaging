@@ -8,6 +8,8 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
@@ -81,34 +83,45 @@ class VantFirebaseMessagingService : FirebaseMessagingService() {
                 return
             }
 
-            if (!flutterEngineStarted.get()) {
-                startFlutterBackgroundEngine(callbackHandle)
-            }
+            // FlutterLoader.startInitialization must run on the main thread —
+            // onMessageReceived arrives on a worker thread, so hop over before
+            // touching the engine. Everything downstream (MethodChannel invoke)
+            // must be on the main thread anyway.
+            Handler(Looper.getMainLooper()).post {
+                try {
+                    if (!flutterEngineStarted.get()) {
+                        startFlutterBackgroundEngine(callbackHandle)
+                    }
+                    val engine = backgroundFlutterEngine
+                    if (engine != null) {
+                        val channel = MethodChannel(
+                            engine.dartExecutor.binaryMessenger,
+                            "plugins.flutter.io/firebase_messaging_background"
+                        )
 
-            val engine = backgroundFlutterEngine
-            if (engine != null) {
-                val channel = MethodChannel(
-                    engine.dartExecutor.binaryMessenger,
-                    "plugins.flutter.io/firebase_messaging_background"
-                )
+                        val messageMap = mutableMapOf<String, Any?>(
+                            "data" to remoteMessage.data,
+                            "messageId" to remoteMessage.messageId,
+                            "sentTime" to remoteMessage.sentTime,
+                            "from" to remoteMessage.from,
+                            "ttl" to remoteMessage.ttl
+                        )
 
-                val messageMap = mutableMapOf<String, Any?>(
-                    "data" to remoteMessage.data,
-                    "messageId" to remoteMessage.messageId,
-                    "sentTime" to remoteMessage.sentTime,
-                    "from" to remoteMessage.from,
-                    "ttl" to remoteMessage.ttl
-                )
+                        remoteMessage.notification?.let { notification ->
+                            messageMap["notification"] = mapOf(
+                                "title" to notification.title,
+                                "body" to notification.body
+                            )
+                        }
 
-                remoteMessage.notification?.let { notification ->
-                    messageMap["notification"] = mapOf(
-                        "title" to notification.title,
-                        "body" to notification.body
-                    )
+                        channel.invokeMethod("MessagingBackground#onMessage", messageMap)
+                        Log.d(TAG, "Message forwarded to Flutter background handler")
+                    } else {
+                        Log.w(TAG, "Background engine unavailable, message dropped")
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error forwarding to Flutter on main thread: ${e.message}", e)
                 }
-
-                channel.invokeMethod("MessagingBackground#onMessage", messageMap)
-                Log.d(TAG, "Message forwarded to Flutter background handler")
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error forwarding to Flutter: ${e.message}", e)

@@ -15,7 +15,15 @@ import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.media.ToneGenerator
 import android.provider.Settings
+import android.view.Gravity
+import android.view.View
+import android.view.ViewGroup
 import android.view.WindowManager
+import android.widget.FrameLayout
+import android.widget.LinearLayout
+import android.widget.ProgressBar
+import android.widget.TextView
+import android.graphics.Color
 import io.flutter.embedding.android.FlutterFragmentActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -38,9 +46,17 @@ class MainActivity : FlutterFragmentActivity() {
     private var ringbackHandler: Handler? = null
     private var ringbackRunnable: Runnable? = null
     private var callAudioFocusRequest: AudioFocusRequest? = null
+    private var callTransitionOverlay: View? = null
+    private val callOverlayHandler = Handler(Looper.getMainLooper())
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // Cold-start answer: the engine needs ~5s to boot — cover the blank
+        // window with a native "Connecting…" surface until the first frame.
+        if (intent?.action == "com.vant.chat.ANSWER_CALL") {
+            showCallTransitionOverlay()
+        }
 
         // Pre-register Telecom phone account so incoming calls work immediately
         VantCallManager.ensurePhoneAccountRegistered(this)
@@ -283,6 +299,7 @@ class MainActivity : FlutterFragmentActivity() {
                     val visible = call.argument<Boolean>("visible") ?: false
                     val prefs = getSharedPreferences("vant_chat_prefs", Context.MODE_PRIVATE)
                     prefs.edit().putBoolean("flutter_call_screen_visible", visible).apply()
+                    if (visible) removeCallTransitionOverlay("call-screen-visible")
                     result.success(null)
                 }
                 "getPendingCallAction" -> {
@@ -1107,6 +1124,65 @@ class MainActivity : FlutterFragmentActivity() {
             
             cancelCallNotification()
             println("Pending call action captured: $pendingCallAction, from_native: $fromNative, answeredFromBackground: $answeredFromBackground")
+        }
+    }
+
+    /**
+     * Show a dark "Connecting…" surface over the window while a cold-started
+     * Flutter engine boots after answering from the native incoming-call UI.
+     * Matches the call screens' black background so the hand-off reads as one
+     * continuous surface instead of a black flash. Removed on the first
+     * rendered Flutter frame (with a timeout safeguard).
+     */
+    private fun showCallTransitionOverlay() {
+        if (callTransitionOverlay != null) return
+        println("callUX: showing connect overlay for cold-start answer")
+        val label = TextView(this).apply {
+            text = "Connecting…"
+            setTextColor(Color.WHITE)
+            textSize = 16f
+            gravity = Gravity.CENTER
+            val pad = (16 * resources.displayMetrics.density).toInt()
+            setPadding(0, pad, 0, 0)
+        }
+        val column = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            addView(ProgressBar(this@MainActivity))
+            addView(label)
+        }
+        val overlay = FrameLayout(this).apply {
+            setBackgroundColor(Color.BLACK)
+            isClickable = true
+            isFocusable = true
+            addView(
+                column,
+                FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    Gravity.CENTER
+                )
+            )
+        }
+        addContentView(
+            overlay,
+            ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+        )
+        callTransitionOverlay = overlay
+        callOverlayHandler.postDelayed(
+            { removeCallTransitionOverlay("timeout") },
+            10_000L
+        )
+    }
+
+    private fun removeCallTransitionOverlay(reason: String) {
+        callTransitionOverlay?.let {
+            println("callUX: removing connect overlay ($reason)")
+            (it.parent as? ViewGroup)?.removeView(it)
+            callTransitionOverlay = null
         }
     }
 

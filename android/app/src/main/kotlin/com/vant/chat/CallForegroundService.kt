@@ -49,6 +49,44 @@ class CallForegroundService : Service() {
         const val ACTION_STOP_RINGING = "com.vant.chat.STOP_RINGING"
         const val ACTION_START_ONGOING_CALL = "com.vant.chat.START_ONGOING_CALL"
         const val ACTION_STOP_ONGOING_CALL = "com.vant.chat.STOP_ONGOING_CALL"
+
+        /**
+         * Create the call notification channels. Called from
+         * MainApplication.onCreate so the channels exist before the first call
+         * (users can configure them in system settings and diagnostics can read
+         * them), and again from Service.onCreate as a fallback. Idempotent.
+         */
+        fun createNotificationChannels(context: Context) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val notificationManager = context.getSystemService(NotificationManager::class.java)
+
+                val ringtoneUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
+                val callChannel = NotificationChannel(
+                    CHANNEL_ID, "Incoming Calls", NotificationManager.IMPORTANCE_HIGH
+                ).apply {
+                    description = "Incoming voice and video calls"
+                    lockscreenVisibility = NotificationCompat.VISIBILITY_PUBLIC
+                    setSound(ringtoneUri, AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                        .build())
+                    enableVibration(true)
+                    vibrationPattern = longArrayOf(0, 1000, 1000)
+                }
+
+                val ongoingChannel = NotificationChannel(
+                    ONGOING_CHANNEL_ID, "Ongoing Calls", NotificationManager.IMPORTANCE_LOW
+                ).apply {
+                    description = "Shown while a call is in progress"
+                    setSound(null, null)
+                    enableVibration(false)
+                    setShowBadge(false)
+                }
+
+                notificationManager.createNotificationChannel(callChannel)
+                notificationManager.createNotificationChannel(ongoingChannel)
+            }
+        }
     }
 
     private var wakeLock: PowerManager.WakeLock? = null
@@ -63,7 +101,7 @@ class CallForegroundService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        createNotificationChannel()
+        createNotificationChannels(this)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -404,38 +442,6 @@ class CallForegroundService : Service() {
             .setAutoCancel(false)
             .setSilent(true)
             .build()
-    }
-
-    private fun createNotificationChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val notificationManager = getSystemService(NotificationManager::class.java)
-
-            val ringtoneUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
-            val callChannel = NotificationChannel(
-                CHANNEL_ID, "Incoming Calls", NotificationManager.IMPORTANCE_HIGH
-            ).apply {
-                description = "Incoming voice and video calls"
-                lockscreenVisibility = NotificationCompat.VISIBILITY_PUBLIC
-                setSound(ringtoneUri, AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                    .build())
-                enableVibration(true)
-                vibrationPattern = longArrayOf(0, 1000, 1000)
-            }
-
-            val ongoingChannel = NotificationChannel(
-                ONGOING_CHANNEL_ID, "Ongoing Calls", NotificationManager.IMPORTANCE_LOW
-            ).apply {
-                description = "Shown while a call is in progress"
-                setSound(null, null)
-                enableVibration(false)
-                setShowBadge(false)
-            }
-
-            notificationManager.createNotificationChannel(callChannel)
-            notificationManager.createNotificationChannel(ongoingChannel)
-        }
     }
 
     override fun onBind(intent: Intent?): IBinder? = null

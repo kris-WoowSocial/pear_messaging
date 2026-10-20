@@ -148,4 +148,92 @@ void main() {
       },
     );
   });
+
+  group('native call-UX fixes (source checks)', () {
+    const callManager =
+        'android/app/src/main/kotlin/com/vant/chat/VantCallManager.kt';
+    const fcmService =
+        'android/app/src/main/kotlin/com/vant/chat/VantFirebaseMessagingService.kt';
+    const mainActivity =
+        'android/app/src/main/kotlin/com/vant/chat/MainActivity.kt';
+    const mainApplication =
+        'android/app/src/main/kotlin/com/vant/chat/MainApplication.kt';
+    const callFgService =
+        'android/app/src/main/kotlin/com/vant/chat/CallForegroundService.kt';
+
+    test(
+      'PhoneAccount diagnostic reports unknown with the exception type and '
+      'prefers permission-free selfManagedPhoneAccounts',
+      () {
+        final src = source(callManager);
+        expect(src, contains('tm.selfManagedPhoneAccounts'));
+        expect(src, contains('"unknown(\${e.javaClass.simpleName})"'));
+        expect(src, isNot(contains('"error"')));
+      },
+    );
+
+    test(
+      'call channels are created at Application.onCreate, not only at first '
+      'call',
+      () {
+        final app = source(mainApplication);
+        expect(app, contains('CallForegroundService.createNotificationChannels(this)'));
+        final svc = source(callFgService);
+        // Single definition lives in the companion so both entry points share it.
+        expect(
+          svc,
+          contains('fun createNotificationChannels(context: Context)'),
+        );
+      },
+    );
+
+    test(
+      'background engine start and channel invoke run on the main thread',
+      () {
+        final src = source(fcmService);
+        expect(src, contains('Handler(Looper.getMainLooper()).post'));
+        final postIdx = src.indexOf('Handler(Looper.getMainLooper()).post');
+        final engineIdx = src.indexOf(
+          'startFlutterBackgroundEngine(callbackHandle)',
+          postIdx,
+        );
+        final invokeIdx = src.indexOf(
+          'channel.invokeMethod("MessagingBackground#onMessage"',
+          postIdx,
+        );
+        expect(engineIdx, greaterThan(postIdx));
+        expect(invokeIdx, greaterThan(postIdx));
+      },
+    );
+
+    test(
+      'cold-start answer shows a connect overlay until the Dart call screen '
+      'reports visible, with a timeout safeguard',
+      () {
+        final src = source(mainActivity);
+        expect(src, contains('showCallTransitionOverlay()'));
+        expect(
+          src,
+          contains('removeCallTransitionOverlay("call-screen-visible")'),
+        );
+        expect(src, contains('removeCallTransitionOverlay("timeout")'));
+        // Overlay only on the ANSWER_CALL cold start.
+        final guard = src.indexOf('"com.vant.chat.ANSWER_CALL"');
+        final show = src.indexOf('showCallTransitionOverlay()');
+        expect(guard, greaterThanOrEqualTo(0));
+        expect(show, greaterThan(guard));
+      },
+    );
+
+    test(
+      'audio routing uses availableCommunicationDevices (never TYPE_TELEPHONY '
+      'as a setCommunicationDevice target)',
+      () {
+        final src = source(callManager);
+        expect(src, contains('availableCommunicationDevices'));
+        expect(src, contains('AudioDeviceInfo.TYPE_BUILTIN_EARPIECE'));
+        expect(src, isNot(contains('AudioDeviceInfo.TYPE_TELEPHONY')));
+      },
+    );
+  });
 }

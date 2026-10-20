@@ -257,9 +257,13 @@ object VantCallManager {
         try {
             val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                val devices = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+                // setCommunicationDevice only accepts endpoints from
+                // getAvailableCommunicationDevices(). getDevices() can report
+                // TYPE_TELEPHONY (type 18) on One UI 8 / API 36, which is not a
+                // settable endpoint and throws IllegalArgumentException.
+                val devices = audioManager.availableCommunicationDevices
                 val speakerDevice = devices.find { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
-                val earpieceDevice = devices.find { it.type == AudioDeviceInfo.TYPE_TELEPHONY }
+                val earpieceDevice = devices.find { it.type == AudioDeviceInfo.TYPE_BUILTIN_EARPIECE }
                 when {
                     speakerOn && speakerDevice != null -> audioManager.setCommunicationDevice(speakerDevice)
                     !speakerOn && earpieceDevice != null -> audioManager.setCommunicationDevice(earpieceDevice)
@@ -517,12 +521,23 @@ object VantCallManager {
             }
             val accountState = try {
                 val tm = context.getSystemService(Context.TELECOM_SERVICE) as TelecomManager
-                when (val account = tm.getPhoneAccount(getPhoneAccountHandle(context))) {
-                    null -> "unregistered"
-                    else -> if (account.isEnabled) "enabled" else "disabled"
+                val handle = getPhoneAccountHandle(context)
+                // selfManagedPhoneAccounts needs no extra permission for our own
+                // package; getPhoneAccount() requires READ_PHONE_NUMBERS.
+                val selfManaged = if (Build.VERSION.SDK_INT >= 26) {
+                    tm.selfManagedPhoneAccounts
+                } else {
+                    emptyList()
+                }
+                when {
+                    selfManaged.contains(handle) -> "registered(self-managed)"
+                    else -> when (val account = tm.getPhoneAccount(handle)) {
+                        null -> "unregistered"
+                        else -> if (account.isEnabled) "enabled" else "disabled"
+                    }
                 }
             } catch (e: Exception) {
-                "error"
+                "unknown(${e.javaClass.simpleName})"
             }
             val km = context.getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
             val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
