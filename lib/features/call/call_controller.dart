@@ -205,7 +205,7 @@ class CallController extends GetxController {
   final Rxn<MediaStream> localVideoStream = Rxn<MediaStream>();
   final Rxn<MediaStream> remoteVideoStream = Rxn<MediaStream>();
   final Rx<CallEncryptionState> callEncryptionState =
-      CallEncryptionState.legacyUnencrypted.obs;
+      CallEncryptionState.connecting.obs;
 
   // Proximity sensor state - managed by ProximityService
   final RxBool isNearEar = false.obs;
@@ -306,6 +306,22 @@ class CallController extends GetxController {
           '📞 Socket reconnected with pending auto-accept, requesting resync for $callId',
         );
         _socketService.requestCallResync(callId: callId);
+      } else if (_ringingCallId != null) {
+        // Ringing-time fetch (pre-warmed engine): pull the offer while the
+        // phone rings so Accept can use the cached SDP instead of waiting a
+        // resync round trip. Only caches — _handleCallResync accepts only when
+        // a pending auto-accept is set.
+        final callId = _ringingCallId!;
+        _ringingCallId = null;
+        unawaited(
+          SharedPreferences.getInstance().then(
+            (prefs) => prefs.remove('ringing_call_id'),
+          ),
+        );
+        debugPrint(
+          '📞 Socket registered during ringing, fetching offer for $callId',
+        );
+        _socketService.requestCallResync(callId: callId);
       } else if (currentCallId.value.isNotEmpty && isInCall) {
         if (isCaller.value && !isConnected) {
           debugPrint(
@@ -324,7 +340,19 @@ class CallController extends GetxController {
     _setupCallKitListener();
     _setupNotificationActionListener();
     _setupNativeCallEventListener();
+
+    // Native pushes this when ANSWER/DECLINE arrives while the engine is
+    // already attached (warm activity via onNewIntent) — consume the stored
+    // action now instead of waiting for the onReady poll. The native flag is
+    // cleared on read, so push and poll can never double-process.
+    _incomingCallChannel.setMethodCallHandler((call) async {
+      if (call.method == 'onPendingCallAction') {
+        await _checkPendingCallAction();
+      }
+    });
+
     _checkFullScreenIntentPermission();
+    unawaited(_loadRingingCallMarker());
     debugPrint(
       '📞 CallController setup complete, checking pending auto-accept',
     );
@@ -343,6 +371,58 @@ class CallController extends GetxController {
     // Get.offNamed to /call/active could execute before the navigator exists
     // and the incoming-call accept would silently land on the chat list.
     _checkPendingCallAction();
+  }
+
+  bool _iceServersPrefetched = false;
+
+  /// callId of a call currently ringing on the native UI, written to
+  /// FlutterSharedPreferences by VantFirebaseMessagingService before the
+  /// pre-warmed engine boots. Consumed by the isRegistered listener to fetch
+  /// the offer via call_resync while the phone still rings.
+  String? _ringingCallId;
+
+  /// Read the ringing-call marker written natively when a pre-warm engine was
+  /// started for an incoming call. No-op when absent (normal app launches).
+  Future<void> _loadRingingCallMarker() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final callId = prefs.getString('ringing_call_id');
+      if (callId != null && callId.isNotEmpty) {
+        _ringingCallId = callId;
+        debugPrint('📞 Ringing call marker loaded: $callId');
+      }
+    } catch (e) {
+      debugPrint('⚠️ Failed to load ringing call marker: $e');
+    }
+  }
+
+  /// Fetch STUN/TURN config while the phone rings so the ICE list is primed
+  /// via [WebRTCCallService.primeIceServers] before the user accepts — removes
+  /// the `call_ice_servers` round trip from the accept→connect path when the
+  /// socket is already registered. Fire-and-forget; failures fall back to the
+  /// normal accept-time fetch.
+  void _prefetchIceServersDuringRinging() {
+    if (_iceServersPrefetched) return;
+    _iceServersPrefetched = true;
+    unawaited(
+      Future(() async {
+        // On a pre-warmed engine the socket may still be connecting when the
+        // ring starts — requestIceServers() returns null until registered, so
+        // wait briefly first.
+        if (!_socketService.isRegistered.value) {
+          await _waitForSocketConnection(
+            timeout: const Duration(seconds: 8),
+          );
+        }
+        final servers = await _socketService.requestIceServers();
+        if (servers != null && servers.isNotEmpty) {
+          _webrtcService.primeIceServers(servers);
+          debugPrint('📞 ICE servers primed during ringing (${servers.length})');
+        }
+      }).catchError((Object e) {
+        debugPrint('⚠️ ICE prefetch during ringing failed: $e');
+      }),
+    );
   }
 
   /// Check for any pending call action stored by MainActivity when the app was killed
@@ -535,6 +615,7 @@ class CallController extends GetxController {
     };
     remoteAvatarUrl.value = callData['avatarUrl'] as String? ?? '';
     _latestIncomingCallData = callData;
+    _prefetchIceServersDuringRinging();
     _setCallScreenVisible(true);
     _showWhenLocked();
     Get.toNamed('/call/incoming', arguments: callData);
@@ -666,7 +747,9 @@ class CallController extends GetxController {
     final cachedData = _latestIncomingCallData;
     if (cachedData != null &&
         cachedData['callId'] == callId &&
-        cachedData['sdpOffer'] != null) {
+        (cachedData['sdpOffer'] != null ||
+            cachedData['decryptedSdpOffer'] != null ||
+            _wireCrypto(cachedData) != null)) {
       debugPrint('📞 Native answer: accepting from cached SDP data');
       _latestIncomingCallData = null;
       _pendingAutoAcceptCallId = null;
@@ -924,6 +1007,13 @@ class CallController extends GetxController {
       Get.find<FeatureFlagService>().encryptedSignaling.value;
 
   void _updateCallEncryptionState(String peerDeviceId) {
+    // Keep a single neutral "Connecting…" label until the call is actually
+    // connected — showing "not encrypted" while WebRTC is still establishing
+    // reads as a warning flicker rather than a state.
+    if (!isConnected) {
+      callEncryptionState.value = CallEncryptionState.connecting;
+      return;
+    }
     if (!_cryptoActive) {
       callEncryptionState.value = CallEncryptionState.legacyUnencrypted;
       return;
@@ -2923,6 +3013,11 @@ class CallController extends GetxController {
         hasPoorConnection.value = false;
         _wasConnected = true;
         unawaited(_setNativeInCall(true));
+        // The encryption indicator stays on "Connecting…" until this point —
+        // now resolve it to the real crypto state.
+        if (remoteDeviceId.value.isNotEmpty) {
+          _updateCallEncryptionState(remoteDeviceId.value);
+        }
 
         // Restore speaker state if call was answered from background
         if (_answeredFromBackground) {
@@ -3006,12 +3101,58 @@ class CallController extends GetxController {
 
     debugPrint('📞 Call resync received for $callId from $callerId');
 
+    // Resyncs requested while the phone was still ringing (pre-warmed engine)
+    // only prime the offer — accept requires a pending auto-accept flag, which
+    // is set when the user actually answers. A resync for our own outgoing
+    // call (dial-reconnect path) or while already in a call is ignored.
+    if (_pendingAutoAcceptCallId == callId) {
+      // fall through to the accept path below
+    } else if (!isInCall && !isCaller.value) {
+      _latestIncomingCallData = data;
+      _prepareIncomingWebRtc(data, callId, callerId);
+      debugPrint('📞 Resync offer cached during ringing for $callId');
+      return;
+    } else {
+      debugPrint(
+        '📞 Ignoring stale resync for $callId (inCall=$isInCall, caller=${isCaller.value})',
+      );
+      return;
+    }
+
     // Cancel incoming call notification if it exists
     NotificationService().cancelNotification(callId.hashCode);
 
     // Delegate to the full accept-resync path so permission checks, audio
     // mode, native in-call state, and error handling are all applied.
     _acceptIncomingCallResync(data);
+  }
+
+  /// Stage 3: create the PeerConnection and apply the remote offer while the
+  /// phone still rings, so Accept only needs getUserMedia + createAnswer.
+  /// Fire-and-forget; any failure simply falls back to the normal accept path.
+  void _prepareIncomingWebRtc(
+    Map<String, dynamic> data,
+    String callId,
+    String callerId,
+  ) {
+    unawaited(
+      Future<String?>.value(data['decryptedSdpOffer'] as String?)
+          .then((cached) async =>
+              cached ?? await _decryptIncomingOffer(data, callId, callerId))
+          .then((sdpOffer) {
+            if (sdpOffer == null) return Future.value(false);
+            return _webrtcService.prepareIncomingCall(
+              callId: callId,
+              callerDeviceId: callerId,
+              sdpOffer: sdpOffer,
+              isVideo: data['isVideo'] == true,
+            );
+          })
+          .catchError((Object e) {
+            debugPrint('⚠️ WebRTC ringing-time prepare failed: $e');
+            return false;
+          }),
+    );
   }
 
   /// Handle server response to a call status probe.
@@ -3163,6 +3304,7 @@ class CallController extends GetxController {
     _nativeCallHeld = false;
     _cameraWasOnBeforeNativeHold = false;
     _iceRestartInFlight = false;
+    _iceServersPrefetched = false;
     _stopDurationUpdateTimer();
     _stopProximitySensor();
     _setCallScreenVisible(false);
@@ -3348,6 +3490,8 @@ class CallController extends GetxController {
       }),
     );
 
+    _prefetchIceServersDuringRinging();
+
     final incomingCallerId = data['callerId'] as String? ?? '';
     if (data['isVideo'] == true && !_videoCallingEnabled) {
       _socketService.rejectCall(
@@ -3435,6 +3579,10 @@ class CallController extends GetxController {
     // Store the call data so accept paths (notification action, resync)
     // always have the SDP offer available.
     _latestIncomingCallData = data;
+
+    // Warm the PeerConnection + remote offer while the phone rings —
+    // skipped internally if a call is already active.
+    _prepareIncomingWebRtc(data, incomingCallId, incomingCallerId);
 
     // Mark this callId as handled so FCMService dedup guard skips it if FCM
     // arrives shortly after (server sends both socket + FCM in parallel)

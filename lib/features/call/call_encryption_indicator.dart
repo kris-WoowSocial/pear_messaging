@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 enum CallEncryptionState {
+  connecting,
   securing,
   encryptedVerified,
   encryptedUnverified,
@@ -16,9 +17,22 @@ class CallEncryptionIndicator extends StatelessWidget {
 
   final CallEncryptionState state;
 
+  /// Only the final encryption outcome is shown. Intermediate
+  /// connecting/securing states render nothing so users never see a
+  /// "not encrypted" flicker while the call is still being set up.
+  bool get _isFinal =>
+      state == CallEncryptionState.encryptedVerified ||
+      state == CallEncryptionState.encryptedUnverified ||
+      state == CallEncryptionState.legacyUnencrypted;
+
   @override
   Widget build(BuildContext context) {
     final (icon, text, color) = switch (state) {
+      CallEncryptionState.connecting => (
+          Icons.more_horiz,
+          'Connecting…',
+          Colors.white70,
+        ),
       CallEncryptionState.securing => (
           Icons.lock_outline,
           'Securing encrypted call…',
@@ -42,36 +56,42 @@ class CallEncryptionIndicator extends StatelessWidget {
         ),
     };
 
-    return ConstrainedBox(
-      constraints: BoxConstraints(
-        maxWidth: MediaQuery.of(context).size.width - 64,
-      ),
-      child: Container(
-        key: const ValueKey('call_encryption_indicator'),
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-        decoration: BoxDecoration(
-          color: Colors.black.withValues(alpha: 0.55),
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: color.withValues(alpha: 0.65)),
+    return Visibility(
+      visible: _isFinal,
+      maintainSize: true,
+      maintainAnimation: true,
+      maintainState: true,
+      child: ConstrainedBox(
+        constraints: BoxConstraints(
+          maxWidth: MediaQuery.of(context).size.width - 64,
         ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(icon, size: 15, color: color),
-            const SizedBox(height: 4),
-            Text(
-              text,
-              maxLines: 4,
-              overflow: TextOverflow.ellipsis,
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                color: color,
-                fontSize: 11.5,
-                height: 1.3,
-                fontWeight: FontWeight.w600,
+        child: Container(
+          key: const ValueKey('call_encryption_indicator'),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+          decoration: BoxDecoration(
+            color: Colors.black.withValues(alpha: 0.55),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: color.withValues(alpha: 0.65)),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icon, size: 15, color: color),
+              const SizedBox(height: 4),
+              Text(
+                text,
+                maxLines: 4,
+                overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: color,
+                  fontSize: 11.5,
+                  height: 1.3,
+                  fontWeight: FontWeight.w600,
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );

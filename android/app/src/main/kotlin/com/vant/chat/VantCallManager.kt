@@ -199,6 +199,15 @@ object VantCallManager {
         pendingCallData = null
         callUiShown.set(false)
 
+        // Ringing-time pre-warmed engine is only valid while the call exists —
+        // decline/cancel/end all land here. No-op once MainActivity attached it.
+        VantFirebaseMessagingService.discardPrewarmEngine()
+        context.getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+            .edit()
+            .remove("flutter.ringing_call_id")
+            .remove("flutter.ringing_caller_id")
+            .apply()
+
         try {
             val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {

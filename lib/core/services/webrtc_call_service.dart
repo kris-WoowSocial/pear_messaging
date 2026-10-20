@@ -71,6 +71,7 @@ class WebRTCCallService {
   // secret is embedded in the app.
   Future<List<Map<String, dynamic>>?> Function()? iceServersProvider;
   List<Map<String, dynamic>>? _pendingIceServers;
+  bool _incomingPrepared = false;
   final Map<String, dynamic> _fallbackIceServers = {
     'iceServers': [
       {'urls': 'stun:stun.l.google.com:19302'},
@@ -249,8 +250,25 @@ class WebRTCCallService {
         onCameraPermissionDenied?.call();
       }
 
-      // Create peer connection
-      await _createPeerConnection();
+      // Create peer connection — reuse the one built during ringing when
+      // prepareIncomingCall already applied this exact offer.
+      final prepared = _incomingPrepared &&
+          _peerConnection != null &&
+          _remoteSdp == sdpOffer;
+      _incomingPrepared = false;
+      if (prepared) {
+        debugPrint('📞 Reusing PeerConnection prepared during ringing');
+      } else {
+        // A stale/partial prepare for a different offer must not leak.
+        if (_peerConnection != null) {
+          _peerConnection?.close();
+          _peerConnection?.dispose();
+          _peerConnection = null;
+          _remoteDescriptionSet = false;
+          _pendingRemoteIceCandidates.clear();
+        }
+        await _createPeerConnection();
+      }
       if (_currentCallId != callId) return false;
 
       // CRITICAL: Stop any active ringtone/vibration, tell Telecom the call is
@@ -305,12 +323,15 @@ class WebRTCCallService {
       // thread. The AudioTrack reads the current audio mode at creation time.
       await _forceAudioDevice();
 
-      // Set remote description (offer)
-      _remoteSdp = sdpOffer;
-      await _peerConnection!.setRemoteDescription(
-        RTCSessionDescription(sdpOffer, 'offer'),
-      );
-      _remoteDescriptionSet = true;
+      // Set remote description (offer) — skipped when ringing-time prepare
+      // already applied it.
+      if (!prepared) {
+        _remoteSdp = sdpOffer;
+        await _peerConnection!.setRemoteDescription(
+          RTCSessionDescription(sdpOffer, 'offer'),
+        );
+        _remoteDescriptionSet = true;
+      }
       // Add any candidates that arrived before the remote description was ready
       await _flushPendingRemoteIceCandidates();
       if (_currentCallId != callId) return false;
@@ -333,6 +354,47 @@ class WebRTCCallService {
       return true;
     } catch (e) {
       debugPrint('❌ Failed to accept call: $e');
+      return false;
+    }
+  }
+
+  /// Create the PeerConnection and apply the caller's offer while the phone
+  /// still rings. Accept then only needs getUserMedia + createAnswer. Never
+  /// runs while a call is active or another PC exists — declined/cancelled
+  /// rings are cleaned up through the normal endCall() path.
+  Future<bool> prepareIncomingCall({
+    required String callId,
+    required String callerDeviceId,
+    required String sdpOffer,
+    bool isVideo = false,
+  }) async {
+    if (_peerConnection != null || _incomingPrepared) {
+      debugPrint('📞 Skipping ringing-time prepare — call already in progress');
+      return false;
+    }
+    try {
+      _currentCallId = callId;
+      _remoteDeviceId = callerDeviceId;
+      _isCaller = false;
+      _isVideoCall = isVideo;
+      _isSpeakerOn = isVideo;
+
+      await _createPeerConnection();
+      _remoteSdp = sdpOffer;
+      await _peerConnection!.setRemoteDescription(
+        RTCSessionDescription(sdpOffer, 'offer'),
+      );
+      _remoteDescriptionSet = true;
+      await _flushPendingRemoteIceCandidates();
+      _incomingPrepared = true;
+      debugPrint('📞 PeerConnection prepared during ringing for $callId');
+      return true;
+    } catch (e) {
+      debugPrint('⚠️ Ringing-time prepare failed, will rebuild on accept: $e');
+      _peerConnection?.close();
+      _peerConnection?.dispose();
+      _peerConnection = null;
+      _remoteDescriptionSet = false;
       return false;
     }
   }
@@ -705,6 +767,7 @@ class WebRTCCallService {
     _remoteDeviceId = null;
     _isCaller = false;
     _isMuted = false;
+    _incomingPrepared = false;
     _isVideoCall = false;
     _isCameraEnabled = false;
     _isFrontCamera = true;

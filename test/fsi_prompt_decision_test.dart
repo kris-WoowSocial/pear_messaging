@@ -212,16 +212,28 @@ void main() {
       () {
         final src = source(mainActivity);
         expect(src, contains('showCallTransitionOverlay()'));
-        expect(
-          src,
-          contains('removeCallTransitionOverlay("call-screen-visible")'),
-        );
+        expect(src, contains('"call-screen-visible"'));
         expect(src, contains('removeCallTransitionOverlay("timeout")'));
         // Overlay only on the ANSWER_CALL cold start.
         final guard = src.indexOf('"com.vant.chat.ANSWER_CALL"');
         final show = src.indexOf('showCallTransitionOverlay()');
         expect(guard, greaterThanOrEqualTo(0));
         expect(show, greaterThan(guard));
+      },
+    );
+
+    test(
+      'overlay is also removed on decline, call-screen-hidden and destroy — '
+      'and only ever created under the ANSWER_CALL guard',
+      () {
+        final src = source(mainActivity);
+        expect(src, contains('removeCallTransitionOverlay("decline")'));
+        expect(src, contains('"call-screen-hidden"'));
+        expect(src, contains('callOverlayHandler.removeCallbacksAndMessages'));
+        // The only creation site is the onCreate ANSWER_CALL check.
+        final creations = 'showCallTransitionOverlay()'.allMatches(src);
+        // one call site in onCreate + the function definition itself
+        expect(creations.length, lessThanOrEqualTo(2));
       },
     );
 
@@ -233,6 +245,233 @@ void main() {
         expect(src, contains('availableCommunicationDevices'));
         expect(src, contains('AudioDeviceInfo.TYPE_BUILTIN_EARPIECE'));
         expect(src, isNot(contains('AudioDeviceInfo.TYPE_TELEPHONY')));
+      },
+    );
+  });
+
+  group('forwarding guards and accept latency (source checks)', () {
+    const fcmService =
+        'android/app/src/main/kotlin/com/vant/chat/VantFirebaseMessagingService.kt';
+    const mainActivity =
+        'android/app/src/main/kotlin/com/vant/chat/MainActivity.kt';
+    const callController = 'lib/features/call/call_controller.dart';
+
+    test(
+      'background forwarding is skipped while a Telecom connection exists',
+      () {
+        final src = source(fcmService);
+        expect(
+          src,
+          contains('VantCallManager.activeConnection != null'),
+        );
+        // Guard sits before the main-thread engine start.
+        final guard = src.indexOf('VantCallManager.activeConnection != null');
+        final post = src.indexOf('Handler(Looper.getMainLooper()).post');
+        expect(guard, greaterThanOrEqualTo(0));
+        expect(guard, lessThan(post));
+      },
+    );
+
+    test(
+      'engine start is still gated by the flutterEngineStarted atomic inside '
+      'the main-thread post (burst-safe)',
+      () {
+        final src = source(fcmService);
+        final post = src.indexOf('Handler(Looper.getMainLooper()).post');
+        final gate = src.indexOf('!flutterEngineStarted.get()', post);
+        expect(gate, greaterThan(post));
+      },
+    );
+
+    test(
+      'handleCallIntent pushes onPendingCallAction when the engine is '
+      'attached and keeps the flag for the poll fallback',
+      () {
+        final src = source(mainActivity);
+        expect(src, contains('pushPendingCallActionToDart()'));
+        expect(src, contains('"onPendingCallAction"'));
+        // The unsafe getter (NPEs while the delegate is unattached) must not
+        // be used in handleCallIntent.
+        expect(
+          src.indexOf('flutterEngine?.let', src.indexOf('handleCallIntent')),
+          lessThan(0),
+        );
+        // The flag is only cleared inside the getPendingCallAction handler —
+        // the push/retry path must never clear it first.
+        final push = src.indexOf('pushPendingCallActionToDart()');
+        expect(
+          src.indexOf('pendingCallAction = null', push),
+          lessThan(0),
+        );
+      },
+    );
+
+    test(
+      'Dart consumes the pushed nudge through the same getPendingCallAction '
+      'path (single consumption)',
+      () {
+        final src = source(callController);
+        expect(src, contains('_incomingCallChannel.setMethodCallHandler'));
+        expect(src, contains("call.method == 'onPendingCallAction'"));
+        expect(src, contains('_checkPendingCallAction()'));
+      },
+    );
+
+    test(
+      'TURN/STUN prefetch fires during ringing and primes the ICE list',
+      () {
+        final src = source(callController);
+        expect(src, contains('_prefetchIceServersDuringRinging()'));
+        expect(src, contains('requestIceServers()'));
+        expect(src, contains('primeIceServers(servers)'));
+        // Fired from both incoming-call entry points.
+        expect(
+          '_prefetchIceServersDuringRinging()'.allMatches(src).length,
+          greaterThanOrEqualTo(3), // helper body + two call sites
+        );
+        expect(src, contains('_iceServersPrefetched = false'));
+      },
+    );
+  });
+
+  group('ringing-time latency stages (source checks)', () {
+    const fcmService =
+        'android/app/src/main/kotlin/com/vant/chat/VantFirebaseMessagingService.kt';
+    const mainActivity =
+        'android/app/src/main/kotlin/com/vant/chat/MainActivity.kt';
+    const callManager =
+        'android/app/src/main/kotlin/com/vant/chat/VantCallManager.kt';
+    const callController = 'lib/features/call/call_controller.dart';
+    const webrtcService = 'lib/core/services/webrtc_call_service.dart';
+    const encIndicator = 'lib/features/call/call_encryption_indicator.dart';
+
+    test(
+      'FCM pre-warms a cached engine during ringing, guarded against an '
+      'active call and duplicate pushes, with a timeout destroy',
+      () {
+        final src = source(fcmService);
+        expect(src, contains('prewarmCallEngine(callId)'));
+        expect(src, contains('FlutterEngineCache.getInstance()'));
+        expect(src, contains('CALL_PREWARM_ENGINE_ID'));
+        expect(
+          src.indexOf('VantCallManager.activeConnection != null',
+              src.indexOf('private fun prewarmCallEngine')),
+          greaterThanOrEqualTo(0),
+        );
+        expect(src, contains('DartExecutor.DartEntrypoint.createDefault()'));
+        expect(src, contains('PREWARM_TIMEOUT_MS'));
+        expect(src, contains('discardPrewarmEngine'));
+      },
+    );
+
+    test(
+      'pre-warm engine is discarded on cancel, missed call, and call '
+      'teardown — and the ringing marker is cleared',
+      () {
+        final fcm = source(fcmService);
+        final cancelIdx = fcm.indexOf('private fun handleCallCancelled');
+        final missedIdx = fcm.indexOf('private fun handleMissedCall');
+        expect(
+          fcm.indexOf('discardPrewarmEngine()', cancelIdx),
+          lessThan(fcm.indexOf('private fun handleMissedCall')),
+        );
+        expect(
+          fcm.indexOf('discardPrewarmEngine()', missedIdx),
+          greaterThan(missedIdx),
+        );
+        expect(fcm, contains('"flutter.ringing_call_id"'));
+        // Call teardown (decline/end) also discards it.
+        final mgr = source(callManager);
+        expect(
+          mgr,
+          contains('VantFirebaseMessagingService.discardPrewarmEngine()'),
+        );
+      },
+    );
+
+    test(
+      'MainActivity attaches the cached engine and owns its lifecycle after '
+      'removal from the cache',
+      () {
+        final src = source(mainActivity);
+        expect(src, contains('override fun getCachedEngineId()'));
+        expect(
+          src,
+          contains('contains(VantFirebaseMessagingService.CALL_PREWARM_ENGINE_ID)'),
+        );
+        expect(src, contains('usedPrewarmEngine = true'));
+        // The cached engine is destroyed with the host activity (the
+        // framework default for cached engines is to outlive the host).
+        expect(src, contains('override fun shouldDestroyEngineWithHost()'));
+        // Never pre-warm while the main engine is alive — a duplicate
+        // isolate re-registers the deviceId and the server kicks the
+        // primary socket (killed the warm call's signaling).
+        final fcm = source(fcmService);
+        expect(fcm, contains('MainActivity.isMainActivityAlive'));
+        expect(src, contains('liveInstanceCount'));
+      },
+    );
+
+    test(
+      'pending-action push retries while Dart may still be registering its '
+      'handler on a pre-warmed engine',
+      () {
+        final src = source(mainActivity);
+        expect(src, contains('fun retryPendingPush'));
+        expect(src, contains('pendingPushRetries'));
+        expect(src, contains('notImplemented()'));
+      },
+    );
+
+    test(
+      'ringing marker drives a proactive resync that only caches the offer '
+      'until a pending auto-accept exists',
+      () {
+        final src = source(callController);
+        expect(src, contains("prefs.getString('ringing_call_id')"));
+        expect(src, contains('_ringingCallId'));
+        expect(src, contains('requestCallResync(callId: callId)'));
+        expect(src, contains('_pendingAutoAcceptCallId == callId'));
+        expect(src, contains('Resync offer cached during ringing'));
+      },
+    );
+
+    test(
+      'PeerConnection + remote offer are prepared during ringing and reused '
+      'on accept; stale prepares are cleaned up',
+      () {
+        final svc = source(webrtcService);
+        expect(svc, contains('prepareIncomingCall'));
+        expect(svc, contains('_incomingPrepared'));
+        expect(svc, contains('Reusing PeerConnection prepared during ringing'));
+        // acceptCall skips a duplicate remote-description set when prepared.
+        expect(svc, contains('if (!prepared)'));
+        // _endCall resets the flag.
+        final endIdx = svc.indexOf('Future<void> _endCall()');
+        expect(svc.indexOf('_incomingPrepared = false', endIdx), greaterThan(0));
+        final cc = source(callController);
+        expect(cc, contains('_prepareIncomingWebRtc'));
+      },
+    );
+
+    test(
+      'encryption indicator holds a single Connecting state until the call '
+      'is connected',
+      () {
+        final ind = source(encIndicator);
+        expect(ind, contains('CallEncryptionState.connecting'));
+        expect(ind, contains("'Connecting…'"));
+        // Intermediate states render nothing — only the final outcome shows.
+        expect(ind, contains('Visibility('));
+        expect(ind, contains('_isFinal'));
+        final cc = source(callController);
+        expect(cc, contains('CallEncryptionState.connecting.obs'));
+        expect(
+          cc.indexOf(
+            'callEncryptionState.value = CallEncryptionState.connecting',
+          ),
+          greaterThanOrEqualTo(0),
+        );
       },
     );
   });
