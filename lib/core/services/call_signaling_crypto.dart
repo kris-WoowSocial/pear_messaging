@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:cryptography/cryptography.dart';
 import 'package:flutter/foundation.dart'
     show debugPrint, kDebugMode, visibleForTesting;
+import 'call_diag.dart';
 
 import 'identity_service.dart';
 
@@ -784,7 +785,7 @@ class CallSignalingCrypto {
         throw const CallSignalingCryptoException('crypto_failed');
       }
     }
-    debugPrint(
+    callDiag(
       '⏱️ beginAnswer.verifyCallerFp: ${cryptoStepWatch.elapsedMilliseconds}ms'
       '${prepped ? ' (pre-verified during ring)' : ''}',
     );
@@ -792,7 +793,7 @@ class CallSignalingCrypto {
     _answerStarted = true;
     try {
       if (prepped) {
-        debugPrint('⏱️ beginAnswer.ephKeygen: 0ms (pre-generated)');
+        callDiag('⏱️ beginAnswer.ephKeygen: 0ms (pre-generated)');
       } else {
         _ephLocal = _guarded && ephSeed != null
             ? await _x25519.newKeyPairFromSeed(Uint8List.fromList(ephSeed))
@@ -800,7 +801,7 @@ class CallSignalingCrypto {
         _ephLocalPub = Uint8List.fromList(
             (await _ephLocal!.extract() as SimpleKeyPairData).publicKey.bytes);
       }
-      debugPrint(
+      callDiag(
         '⏱️ beginAnswer.ephKeygen: ${cryptoStepWatch.elapsedMilliseconds}ms',
       );
       cryptoStepWatch.reset();
@@ -815,12 +816,12 @@ class CallSignalingCrypto {
         answerFps: answerDtlsFps,
         callerSig: callerSig,
       );
-      debugPrint(
+      callDiag(
         '⏱️ beginAnswer.signCalleeFp: ${cryptoStepWatch.elapsedMilliseconds}ms',
       );
       cryptoStepWatch.reset();
       if (!prepped) await _deriveSessionKeys(peer.x25519Pub);
-      debugPrint(
+      callDiag(
         '⏱️ beginAnswer.deriveSessionKeys: ${cryptoStepWatch.elapsedMilliseconds}ms',
       );
       _peerBundle = peer;
@@ -1248,6 +1249,11 @@ class CallSignalingCrypto {
     decryptFailures = 0;
     _lastOfferFps = null;
     _lastCallerSig = null;
+    _prepareInFlight = null;
+    _answerPrepared = false;
+    _preppedPeerId = null;
+    _preppedCallerSig = null;
+    _preppedOfferFps = null;
   }
 }
 

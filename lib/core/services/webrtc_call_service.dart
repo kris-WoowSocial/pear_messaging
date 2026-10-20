@@ -3,6 +3,7 @@ import 'dart:io' show Platform;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
+import 'call_diag.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'call_foreground_service.dart';
 import 'call_media_helper.dart';
@@ -329,7 +330,7 @@ class WebRTCCallService {
       // here and added to the peer connection before createAnswer.
       final mediaWatch = Stopwatch()..start();
       _localStream = await _getUserMedia(video: _isVideoCall);
-      debugPrint(
+      callDiag(
         '⏱️ getUserMedia: ${mediaWatch.elapsedMilliseconds}ms',
       );
       if (_localStream == null || _currentCallId != callId) {
@@ -383,7 +384,7 @@ class WebRTCCallService {
       final answerWatch = Stopwatch()..start();
       final answer = await _peerConnection!.createAnswer();
       await _peerConnection!.setLocalDescription(answer);
-      debugPrint(
+      callDiag(
         '⏱️ createAnswer+setLocalDescription: '
         '${answerWatch.elapsedMilliseconds}ms',
       );
