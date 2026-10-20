@@ -220,8 +220,12 @@ object VantCallManager {
         }
 
         context.sendBroadcast(Intent("com.vant.chat.CANCEL_CALL").apply {
+            setPackage(context.packageName)
             putExtra("call_id", callId)
         })
+        // Unexported-receiver broadcasts can be dropped on OEM builds —
+        // finish the live activity directly too.
+        IncomingCallActivity.finishActiveCall(callId)
     }
 
     fun clearActiveConnection(connection: VantConnection) {
