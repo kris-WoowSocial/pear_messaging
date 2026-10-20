@@ -81,6 +81,19 @@ class SocketService extends GetxService {
   /// per socket connection. Reset on each new connect.
   Completer<String?>? _challengeCompleter;
 
+  /// Connect-path instrumentation: elapsed since IO.io() was created. The
+  /// 'connect' event elapsed = DNS + TLS + WebSocket upgrade combined
+  /// (websocket-only transport — no polling upgrade).
+  final Stopwatch _connectWatch = Stopwatch();
+
+  /// Elapsed since the 'register' emit until 'device_registered' arrives.
+  final Stopwatch _registerWatch = Stopwatch();
+
+  /// When true, the connect handler skips the Remote Config wait so call
+  /// signaling registers immediately. Set by CallController while a call is
+  /// ringing or being answered; safe because flags hydrate from disk.
+  bool callUrgency = false;
+
   /// Callback for inbound identity announcements (peer bundle + signature).
   /// Wired by the announcement flow.
   void Function(Map<String, dynamic>)? onIdentityAnnounce;
@@ -179,6 +192,9 @@ class SocketService extends GetxService {
     }
 
     _isConnecting = true;
+    _connectWatch
+      ..reset()
+      ..start();
 
     try {
       connectionStatus.value = 'connecting';
@@ -206,7 +222,7 @@ class SocketService extends GetxService {
       debugPrint('🔧 Socket configuration:');
       debugPrint('   - URL: $_serverUrl');
       debugPrint('   - Path: /socket/secureconnection');
-      debugPrint('   - Transports: polling, websocket');
+      debugPrint('   - Transports: websocket only');
       debugPrint('   - Timeout: 10s');
       debugPrint('   - Reconnection attempts: 5');
 
@@ -243,7 +259,10 @@ class SocketService extends GetxService {
   /// Setup socket event listeners
   void _setupSocketListeners() {
     _socket?.on('connect', (_) async {
-      debugPrint('✅ Socket connected');
+      debugPrint(
+        '✅ Socket connected (transport=websocket, '
+        '${_connectWatch.elapsedMilliseconds}ms DNS+TLS+WS)',
+      );
       isConnected.value = true;
       isRegistered.value = false;
       connectionStatus.value = 'connected';
@@ -263,8 +282,18 @@ class SocketService extends GetxService {
 
       // Wait for the first Remote Config fetch (up to 3s) so the initial
       // capability announcement reflects the real feature flags instead of
-      // the safe OFF defaults.
-      await _waitForFeatureFlags();
+      // the safe OFF defaults. Skipped while a call is ringing/being
+      // answered — flags are hydrated from disk at startup, so capabilities
+      // still announce correctly, and the fetch is not on the accept path.
+      if (callUrgency) {
+        debugPrint('⚡ Skipping Remote Config wait — call in progress');
+      } else {
+        final rcWatch = Stopwatch()..start();
+        await _waitForFeatureFlags();
+        debugPrint(
+          '🎛️ Remote Config wait: ${rcWatch.elapsedMilliseconds}ms',
+        );
+      }
 
       _registerDevice();
       _trackCapabilityAnnouncements();
@@ -324,7 +353,11 @@ class SocketService extends GetxService {
       final deviceId = data is Map ? data['deviceId'] : null;
       if (deviceId == _deviceId) {
         isRegistered.value = true;
-        debugPrint('✅ Socket registration confirmed for $_deviceId');
+        debugPrint(
+          '✅ Socket registration confirmed for $_deviceId '
+          '(register→registered: ${_registerWatch.elapsedMilliseconds}ms, '
+          'total from connect: ${_connectWatch.elapsedMilliseconds}ms)',
+        );
         unawaited(_registerFCMTokenIfAvailable());
       }
     });
@@ -352,7 +385,10 @@ class SocketService extends GetxService {
     });
 
     _socket?.on('connect_error', (error) {
-      debugPrint('❌ Socket connection error: $error');
+      debugPrint(
+        '❌ Socket connection error after '
+        '${_connectWatch.elapsedMilliseconds}ms: $error',
+      );
       debugPrint('❌ Error type: ${error.runtimeType}');
       debugPrint('❌ Error details: ${error.toString()}');
       isConnected.value = false;
@@ -650,6 +686,7 @@ class SocketService extends GetxService {
     // Wait briefly for the register_challenge nonce — arrives on connect.
     // If the server doesn't issue one (old deployment), we register without
     // identity fields (transition window).
+    final regWatch = Stopwatch()..start();
     String? nonce;
     final challenge = _challengeCompleter;
     if (challenge != null && !challenge.isCompleted) {
@@ -660,22 +697,34 @@ class SocketService extends GetxService {
     } else if (challenge != null) {
       nonce = await challenge.future;
     }
+    debugPrint(
+      '⏱️ register_challenge wait: ${regWatch.elapsedMilliseconds}ms '
+      '(nonce=${nonce != null})',
+    );
 
     // Sign the identity bundle + login when we have keys and a nonce.
     // identitySig proves possession of the bundle's key ("vant-bind");
     // registerSig is the login signature ("vant-reg").
+    final signWatch = Stopwatch()..start();
     String? identitySig;
     String? registerSig;
     final bundle = _identityBundle();
     try {
       if (Get.isRegistered<IdentityService>() && nonce != null) {
         final identity = Get.find<IdentityService>();
-        identitySig = await identity.signBinding(_deviceId!, nonce);
-        registerSig = await identity.signRegistration(_deviceId!, nonce);
+        final sigs = await Future.wait([
+          identity.signBinding(_deviceId!, nonce),
+          identity.signRegistration(_deviceId!, nonce),
+        ]);
+        identitySig = sigs[0];
+        registerSig = sigs[1];
       }
     } catch (e) {
       debugPrint('⚠️ Identity signing failed, registering unsigned: $e');
     }
+    debugPrint(
+      '⏱️ identity signing: ${signWatch.elapsedMilliseconds}ms',
+    );
 
     _socket?.emit('register', {
       'deviceId': _deviceId,
@@ -688,6 +737,9 @@ class SocketService extends GetxService {
       'registerSig': registerSig,
     });
     _lastAnnouncedCapabilities = _announcedCapabilities;
+    _registerWatch
+      ..reset()
+      ..start();
     debugPrint(
         '📝 Device registration requested: $_deviceId (platform: $platform, version: $_clientVersion)');
   }
@@ -1266,6 +1318,15 @@ class SocketService extends GetxService {
   }
 
   Future<void> reconnectForCallResync() async {
+    // A socket that is already connected (or still finishing registration)
+    // is good enough for resync — tearing it down restarts registration and
+    // wastes seconds on the accept path.
+    if (isConnected.value || _isConnecting) {
+      debugPrint(
+        '⚡ Call resync: socket already connected/connecting, reusing',
+      );
+      return;
+    }
     _reconnectAttempts = 0;
     _cancelReconnectTimer();
     _socket?.disconnect();
@@ -1800,11 +1861,26 @@ class SocketService extends GetxService {
 
   /// Request call resync - used when app cold-starts after accepting from CallKit
   /// Server will resend the SDP offer so the callee can answer
+  /// Last resync emit per callId — duplicate triggers (pending-accept
+  /// watcher + isRegistered listener firing together) produce duplicate
+  /// server responses that race the accept path.
+  String? _lastResyncCallId;
+  DateTime? _lastResyncAt;
+
   void requestCallResync({required String callId}) {
     if (!isRegistered.value) {
       debugPrint('❌ Cannot request call resync: socket is not registered');
       return;
     }
+    final now = DateTime.now();
+    if (_lastResyncCallId == callId &&
+        _lastResyncAt != null &&
+        now.difference(_lastResyncAt!) < const Duration(seconds: 3)) {
+      debugPrint('📞 Resync for $callId already sent — skipping duplicate');
+      return;
+    }
+    _lastResyncCallId = callId;
+    _lastResyncAt = now;
 
     _socket?.emit('call_resync', {'callId': callId});
     debugPrint('📞 Call resync requested for $callId');

@@ -96,6 +96,30 @@ class WebRTCCallService {
       if (item is Map) servers.add(Map<String, dynamic>.from(item));
     }
     if (servers.isNotEmpty) _pendingIceServers = servers;
+    debugPrint(
+      '📞 ICE servers primed: ${servers.map(_describeIceServer).toList()}',
+    );
+  }
+
+  /// Scheme + host summary of an ICE server entry — safe to log (never prints
+  /// username/credential).
+  static String _describeIceServer(Map<String, dynamic> server) {
+    final urls = server['urls'];
+    final hasCreds =
+        server['username'] != null || server['credential'] != null;
+    final list = <String>[];
+    if (urls is List) {
+      for (final u in urls) {
+        final s = u.toString();
+        final scheme = s.contains(':') ? s.split(':').first : 'unknown';
+        final host = s.split(':').length > 1 ? s.split(':')[1] : '';
+        list.add('$scheme:$host');
+      }
+    } else if (urls != null) {
+      final s = urls.toString();
+      list.add(s.contains(':') ? s.split(':').first : 'unknown');
+    }
+    return '[${list.join(',')}]${hasCreds ? '+creds' : ''}';
   }
 
   Future<Map<String, dynamic>> _resolveIceServers() async {
@@ -103,10 +127,19 @@ class WebRTCCallService {
       final primed = _pendingIceServers;
       _pendingIceServers = null;
       if (primed != null && primed.isNotEmpty) {
+        debugPrint(
+          '📞 Using primed ICE servers: ${primed.map(_describeIceServer).toList()}',
+        );
         return {..._fallbackIceServers, 'iceServers': primed};
       }
       final servers = await iceServersProvider?.call();
-      if (servers == null || servers.isEmpty) return _fallbackIceServers;
+      if (servers == null || servers.isEmpty) {
+        debugPrint('📞 No ICE servers from server — STUN-only fallback');
+        return _fallbackIceServers;
+      }
+      debugPrint(
+        '📞 Using server ICE list: ${servers.map(_describeIceServer).toList()}',
+      );
       return {
         ..._fallbackIceServers,
         'iceServers': servers,
@@ -255,9 +288,15 @@ class WebRTCCallService {
       final prepared = _incomingPrepared &&
           _peerConnection != null &&
           _remoteSdp == sdpOffer;
+      // A bare PC prewarmed during ringing (no remote description applied
+      // yet) is reusable — offer is applied below.
+      final reusablePrewarm =
+          !prepared && _peerConnection != null && !_remoteDescriptionSet;
       _incomingPrepared = false;
       if (prepared) {
         debugPrint('📞 Reusing PeerConnection prepared during ringing');
+      } else if (reusablePrewarm) {
+        debugPrint('📞 Reusing PeerConnection prewarmed during ringing');
       } else {
         // A stale/partial prepare for a different offer must not leak.
         if (_peerConnection != null) {
@@ -288,7 +327,11 @@ class WebRTCCallService {
 
       // Get local audio/video stream. For video calls the camera is captured
       // here and added to the peer connection before createAnswer.
+      final mediaWatch = Stopwatch()..start();
       _localStream = await _getUserMedia(video: _isVideoCall);
+      debugPrint(
+        '⏱️ getUserMedia: ${mediaWatch.elapsedMilliseconds}ms',
+      );
       if (_localStream == null || _currentCallId != callId) {
         debugPrint('❌ Failed to get local stream or call was cancelled');
         final staleStream = _localStream;
@@ -337,8 +380,13 @@ class WebRTCCallService {
       if (_currentCallId != callId) return false;
 
       // Create answer
+      final answerWatch = Stopwatch()..start();
       final answer = await _peerConnection!.createAnswer();
       await _peerConnection!.setLocalDescription(answer);
+      debugPrint(
+        '⏱️ createAnswer+setLocalDescription: '
+        '${answerWatch.elapsedMilliseconds}ms',
+      );
       _logSdpVideoDirections('local answer', answer.sdp);
 
       // Send the answer immediately (trickle ICE). Candidates are exchanged
@@ -358,20 +406,50 @@ class WebRTCCallService {
     }
   }
 
+  /// Create a bare PeerConnection while the phone still rings — before the
+  /// SDP offer arrives and before socket registration completes. The PC is
+  /// only a container at this point (no local desc → no ICE trickle, no
+  /// remote desc → no media), so it is safe to build early. Reused by
+  /// [prepareIncomingCall] and [acceptCall]; disposed by [endCall] on
+  /// decline/cancel/timeout.
+  Future<bool> prewarmPeerConnection() async {
+    if (_peerConnection != null || isInCall) {
+      debugPrint(
+        '📞 prewarmPeerConnection skipped '
+        '(pc=${_peerConnection != null}, inCall=$isInCall)',
+      );
+      return false;
+    }
+    final watch = Stopwatch()..start();
+    try {
+      await _createPeerConnection();
+      debugPrint(
+        '📞 PeerConnection prewarmed during ringing '
+        '(${watch.elapsedMilliseconds}ms)',
+      );
+      return true;
+    } catch (e) {
+      debugPrint('⚠️ PeerConnection prewarm failed: $e');
+      return false;
+    }
+  }
+
   /// Create the PeerConnection and apply the caller's offer while the phone
-  /// still rings. Accept then only needs getUserMedia + createAnswer. Never
-  /// runs while a call is active or another PC exists — declined/cancelled
-  /// rings are cleaned up through the normal endCall() path.
+  /// still rings. Accept then only needs getUserMedia + createAnswer. Reuses
+  /// a bare PC created by [prewarmPeerConnection]; declined/cancelled rings
+  /// are cleaned up through the normal endCall() path.
   Future<bool> prepareIncomingCall({
     required String callId,
     required String callerDeviceId,
     required String sdpOffer,
     bool isVideo = false,
   }) async {
-    if (_peerConnection != null || _incomingPrepared) {
+    if (_incomingPrepared ||
+        (_peerConnection != null && _remoteDescriptionSet)) {
       debugPrint('📞 Skipping ringing-time prepare — call already in progress');
       return false;
     }
+    final watch = Stopwatch()..start();
     try {
       _currentCallId = callId;
       _remoteDeviceId = callerDeviceId;
@@ -379,7 +457,9 @@ class WebRTCCallService {
       _isVideoCall = isVideo;
       _isSpeakerOn = isVideo;
 
-      await _createPeerConnection();
+      if (_peerConnection == null) {
+        await _createPeerConnection();
+      }
       _remoteSdp = sdpOffer;
       await _peerConnection!.setRemoteDescription(
         RTCSessionDescription(sdpOffer, 'offer'),
@@ -387,7 +467,10 @@ class WebRTCCallService {
       _remoteDescriptionSet = true;
       await _flushPendingRemoteIceCandidates();
       _incomingPrepared = true;
-      debugPrint('📞 PeerConnection prepared during ringing for $callId');
+      debugPrint(
+        '📞 PeerConnection prepared during ringing for $callId '
+        '(${watch.elapsedMilliseconds}ms, prewarmed=${watch.elapsedMilliseconds < 500})',
+      );
       return true;
     } catch (e) {
       debugPrint('⚠️ Ringing-time prepare failed, will rebuild on accept: $e');
@@ -407,7 +490,7 @@ class WebRTCCallService {
     );
     for (var i = 0; i < iceConfig['iceServers'].length; i++) {
       final server = iceConfig['iceServers'][i];
-      debugPrint('  ICE Server $i: ${server['urls']}');
+      debugPrint('  ICE Server $i: ${_describeIceServer(server)}');
     }
     _peerConnection = await createPeerConnection(iceConfig);
 
