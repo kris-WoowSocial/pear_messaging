@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -33,6 +34,65 @@ class LocalStorageService extends GetxService {
   late SharedPreferences _prefs;
   bool _messagesBoxInitialized = false;
 
+  /// Upper bound for entries written to the native contact-name cache.
+  static const int _contactNameCacheLimit = 1000;
+
+  /// iOS only: write `callerId -> displayName` into the App Group
+  /// UserDefaults (`group.com.vant.chatting`) so PushKit/CallKit can resolve
+  /// a saved contact name before Flutter starts. Pass null to remove.
+  static Future<void> writeContactNameToAppGroup(
+      String deviceId, String? name) async {
+    try {
+      if (name == null || name.isEmpty) {
+        await _appGroupChannel.invokeMethod('removeFromAppGroup', {
+          'key': 'chat_name_$deviceId',
+        });
+      } else {
+        await _appGroupChannel.invokeMethod('saveToAppGroup', {
+          'key': 'chat_name_$deviceId',
+          'value': name,
+        });
+      }
+    } on MissingPluginException {
+      // App Group channel only exists on iOS — ignore elsewhere.
+    } catch (e) {
+      debugPrint('⚠️ App Group contact-name cache write failed: $e');
+    }
+  }
+
+  /// Extracts `callerId -> displayName` pairs from the `chat_name_*`
+  /// SharedPreferences keys, for seeding the native cache. Names only —
+  /// no messages, no keys. Exposed for tests.
+  static Map<String, String> contactNameCacheEntries(
+      SharedPreferences prefs, {int limit = _contactNameCacheLimit}) {
+    final result = <String, String>{};
+    for (final key in prefs.getKeys()) {
+      if (result.length >= limit) break;
+      if (!key.startsWith('chat_name_')) continue;
+      final id = key.substring('chat_name_'.length);
+      final name = prefs.getString(key);
+      if (id.isNotEmpty && name != null && name.isNotEmpty) {
+        result[id] = name;
+      }
+    }
+    return result;
+  }
+
+  /// Seed the App Group name cache from existing saved names. Runs on every
+  /// app start so existing contacts (and any direct chat_name_ writes that
+  /// bypassed saveChat) stay in sync; idempotent and names-only.
+  Future<void> syncContactNamesToAppGroup() async {
+    if (!Platform.isIOS) return;
+    final entries = contactNameCacheEntries(_prefs);
+    for (final entry in entries.entries) {
+      await writeContactNameToAppGroup(entry.key, entry.value);
+    }
+    if (entries.isNotEmpty) {
+      debugPrint(
+          '📇 Contact-name cache synced to App Group: ${entries.length} names');
+    }
+  }
+
   // In-memory index: chatId -> list of message keys for fast lookup
   final Map<String, List<String>> _chatMessageIndex = {};
 
@@ -64,6 +124,9 @@ class LocalStorageService extends GetxService {
     _messagesBox = await Hive.openBox(_messagesBoxName);
     _messagesBoxInitialized = true;
     _buildMessageIndex();
+
+    // Seed the native (PushKit-visible) contact-name cache on every start.
+    unawaited(syncContactNamesToAppGroup());
 
     return this;
   }
@@ -291,6 +354,12 @@ class LocalStorageService extends GetxService {
         debugPrint(
             '💾 Chat name saved to SharedPreferences: ${chat.id} -> ${chat.userName}');
 
+        // Mirror to the App Group store so native iOS code (PushKit incoming
+        // call, background notification titles) can read it before Flutter.
+        if (Platform.isIOS) {
+          unawaited(writeContactNameToAppGroup(chat.id, chat.userName));
+        }
+
         // Sync contact name to backend for personalized notification titles
         try {
           final usernameSyncService = Get.find<UsernameSyncService>();
@@ -398,14 +467,8 @@ class LocalStorageService extends GetxService {
       debugPrint('🗑️ Chat name removed from SharedPreferences: $chatId');
       // On iOS, also remove from App Group UserDefaults
       if (Platform.isIOS) {
-        try {
-          await _appGroupChannel.invokeMethod('removeFromAppGroup', {
-            'key': 'chat_name_$chatId',
-          });
-          debugPrint('🗑️ Chat name removed from App Group: $chatId');
-        } catch (e) {
-          debugPrint('⚠️ Failed to remove chat name from App Group: $e');
-        }
+        await writeContactNameToAppGroup(chatId, null);
+        debugPrint('🗑️ Chat name removed from App Group: $chatId');
       }
 
       debugPrint('✅ Chat $chatId deleted successfully');

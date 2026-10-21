@@ -141,8 +141,8 @@ import CommonCrypto
     if let senderId = userInfo["senderDeviceId"] as? String {
       print("📱 iOS Background: Sender ID: \(senderId)")
       
-      // Try to get saved username from UserDefaults
-      if let savedUsername = UserDefaults.standard.string(forKey: "chat_name_\(senderId)") {
+      // Try to get saved username from the App Group name cache
+      if let savedUsername = savedContactName(for: senderId) {
         print("📱 iOS Background: Found saved username: \(savedUsername)")
         
         // Create modified notification with correct username
@@ -197,7 +197,7 @@ import CommonCrypto
     
     // Check if we need to update the notification title with saved username
     if let senderId = userInfo["senderDeviceId"] as? String {
-      if let savedUsername = UserDefaults.standard.string(forKey: "chat_name_\(senderId)") {
+      if let savedUsername = savedContactName(for: senderId) {
         print("📱 iOS Foreground: Found saved username: \(savedUsername)")
         
         // Create a new notification request with updated title
@@ -444,8 +444,15 @@ import CommonCrypto
 
     // Extract call data from VoIP push payload
     let serverCallId = payload.dictionaryPayload["callId"] as? String ?? payload.dictionaryPayload["id"] as? String ?? ""
-    let nameCaller = payload.dictionaryPayload["callerName"] as? String ?? "Unknown"
     let handle = payload.dictionaryPayload["callerId"] as? String ?? ""
+    // Prefer the contact name the user saved locally — the push payload only
+    // carries the caller's server-side username (e.g. @user_1234). The cache
+    // lives in the App Group UserDefaults (mirrored from Dart's chat_name_*
+    // SharedPreferences keys) so it is readable here, before Flutter starts.
+    let pushName = payload.dictionaryPayload["callerName"] as? String ?? ""
+    let nameCaller = savedContactName(for: handle)
+      ?? (pushName.isEmpty ? nil : pushName)
+      ?? "Vant Call"
     // isVideo arrives as a String "true"/"false" from the server data dict
     let isVideoStr = payload.dictionaryPayload["isVideo"] as? String ?? "false"
     let isVideo = (payload.dictionaryPayload["isVideo"] as? Bool) ?? (isVideoStr == "true")
@@ -462,10 +469,28 @@ import CommonCrypto
     let callData = flutter_callkit_incoming.Data(id: callKitId, nameCaller: nameCaller, handle: handle, type: isVideo ? 1 : 0)
     var extra = payload.dictionaryPayload
     extra["callId"] = serverCallId
+    // Carry the resolved display name through so the post-accept path shows
+    // the same name the lock screen did.
+    extra["callerName"] = nameCaller
     callData.extra = extra as NSDictionary
     SwiftFlutterCallkitIncomingPlugin.sharedInstance?.showCallkitIncoming(callData, fromPushKit: true) {
       completion()
     }
+  }
+
+  /// Saved contact name for a device ID, readable before Flutter starts.
+  /// Dart mirrors `chat_name_<deviceId>` into this App Group store on every
+  /// save/rename/delete; the App Group container uses default file
+  /// protection, so before the first unlock after a reboot this returns nil
+  /// and callers fall back to the push payload name.
+  private func savedContactName(for deviceId: String) -> String? {
+    guard !deviceId.isEmpty,
+          let defaults = UserDefaults(suiteName: "group.com.vant.chatting"),
+          let name = defaults.string(forKey: "chat_name_\(deviceId)"),
+          !name.isEmpty else {
+      return nil
+    }
+    return name
   }
 
   // MARK: - CallkitIncomingAppDelegate
