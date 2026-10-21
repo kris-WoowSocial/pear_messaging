@@ -408,6 +408,46 @@ void main() {
     );
 
     test(
+      'the plugin FlutterFirebaseMessagingService is removed from the '
+      'merged manifest — two MESSAGING_EVENT receivers double every '
+      'background notification',
+      () {
+        final manifest = source('android/app/src/main/AndroidManifest.xml');
+        expect(
+          manifest,
+          contains(
+            'io.flutter.plugins.firebase.messaging.FlutterFirebaseMessagingService',
+          ),
+        );
+        // The plugin service entry must carry the removal node so it is
+        // stripped from the merged manifest.
+        final svcIdx = manifest.indexOf(
+          'io.flutter.plugins.firebase.messaging.FlutterFirebaseMessagingService',
+        );
+        expect(
+          manifest.indexOf('tools:node="remove"', svcIdx),
+          greaterThan(svcIdx),
+        );
+      },
+    );
+
+    test(
+      'call notifications use the app icon avatar and a phone small icon '
+      '(no V-letter drawable)',
+      () {
+        for (final file in [callManager, callFgService]) {
+          final src = source(file);
+          expect(src, contains('R.mipmap.launcher_icon'));
+          expect(
+            src,
+            contains('.setSmallIcon(R.drawable.ic_call_answer)'),
+          );
+          expect(src, isNot(contains('ic_call_notification')));
+        }
+      },
+    );
+
+    test(
       'Dart persists the one-shot install prompt flag',
       () {
         final src = source('lib/features/call/call_controller.dart');

@@ -349,7 +349,7 @@ class CallForegroundService : Service() {
             .setIcon(
                 androidx.core.graphics.drawable.IconCompat.createWithResource(
                     this,
-                    R.drawable.ic_call_notification
+                    R.mipmap.launcher_icon
                 )
             )
             .build()
@@ -361,7 +361,7 @@ class CallForegroundService : Service() {
         return NotificationCompat.Builder(this, ONGOING_CHANNEL_ID)
             .setContentTitle(ongoingCallerName)
             .setContentText(callType)
-            .setSmallIcon(R.drawable.ic_call_notification)
+            .setSmallIcon(R.drawable.ic_call_answer)
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)
             .setCategory(NotificationCompat.CATEGORY_CALL)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
@@ -438,7 +438,7 @@ class CallForegroundService : Service() {
             .setIcon(
                 androidx.core.graphics.drawable.IconCompat.createWithResource(
                     this,
-                    R.drawable.ic_call_notification
+                    R.mipmap.launcher_icon
                 )
             )
             .build()
@@ -446,7 +446,7 @@ class CallForegroundService : Service() {
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle(if (isVideo) "Incoming video call" else "Incoming call")
             .setContentText(callerName)
-            .setSmallIcon(R.drawable.ic_call_notification)
+            .setSmallIcon(R.drawable.ic_call_answer)
             .setPriority(NotificationCompat.PRIORITY_MAX)
             .setCategory(NotificationCompat.CATEGORY_CALL)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
