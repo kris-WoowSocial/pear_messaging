@@ -81,3 +81,12 @@ jobs:
             -destination generic/platform=iOS \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO
+
+      - name: Verify privacy manifest is bundled in the archive
+        run: |
+          MANIFEST=$(find "$RUNNER_TEMP/Runner.xcarchive" -name "PrivacyInfo.xcprivacy" -print -quit)
+          if [ -z "$MANIFEST" ]; then
+            echo "::error::PrivacyInfo.xcprivacy is missing from the .xcarchive — check it is in the Runner target's Copy Bundle Resources phase."
+            exit 1
+          fi
+          echo "Privacy manifest bundled at: $MANIFEST"
