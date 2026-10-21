@@ -69,11 +69,17 @@ class CallForegroundService : Service() {
                     description = "Incoming voice and video calls"
                     lockscreenVisibility = NotificationCompat.VISIBILITY_PUBLIC
                     // No channel sound — CallForegroundService's Ringtone is
-                    // the single sound source.
+                    // the single sound source. No channel vibration either —
+                    // the service's Vibrator (same pattern) is the single
+                    // vibration source; both firing would double-buzz.
                     setSound(null, null)
-                    enableVibration(true)
-                    vibrationPattern = longArrayOf(0, 1000, 1000)
+                    enableVibration(false)
                 }
+
+                // Drop the stale v1 channel so existing installs don't see a
+                // duplicate "Incoming Calls" entry in system settings. No-op
+                // if it was never created.
+                notificationManager.deleteNotificationChannel("vant_chat_calls")
 
                 val ongoingChannel = NotificationChannel(
                     ONGOING_CHANNEL_ID, "Ongoing Calls", NotificationManager.IMPORTANCE_LOW

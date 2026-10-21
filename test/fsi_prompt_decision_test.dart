@@ -278,7 +278,13 @@ void main() {
         for (final file in [callManager, callFgService]) {
           final src = source(file);
           expect(src, contains('"vant_chat_calls_v2"'));
-          expect(src, isNot(contains('"vant_chat_calls"')));
+          // The only permitted v1 reference is the deleteNotificationChannel
+          // cleanup of the stale channel.
+          final withoutCleanup = src.replaceAll(
+            'deleteNotificationChannel("vant_chat_calls")',
+            '',
+          );
+          expect(withoutCleanup, isNot(contains('"vant_chat_calls"')));
         }
         // Scope assertions to the incoming-call builders only — the ongoing-
         // call notification (ONGOING_CHANNEL_ID) legitimately stays silent.
@@ -308,11 +314,20 @@ void main() {
         expect(createFn, greaterThanOrEqualTo(0));
         final body = svc.substring(createFn, createFn + 3000);
         expect(body, contains('setSound(null, null)'));
+        // Channel vibration off — the service Vibrator is the single source.
+        expect(body, contains('enableVibration(false)'));
         // The incoming-call channel (CHANNEL_ID = vant_chat_calls_v2) must
         // not carry a ringtone URI anywhere in channel creation.
         expect(body, isNot(contains('TYPE_RINGTONE')));
         // Ringtone still played by the service itself.
         expect(svc, contains('RingtoneManager.getRingtone'));
+        expect(svc, contains('vibrator?.vibrate('));
+        // Stale v1 channel is deleted so existing installs don't keep a
+        // duplicate "Incoming Calls" entry.
+        expect(
+          body,
+          contains('deleteNotificationChannel("vant_chat_calls")'),
+        );
       },
     );
 
