@@ -48,6 +48,15 @@ object VantCallManager {
     // Fallback data in case Telecom rejects the call or doesn't trigger UI
     private var pendingCallData: Map<String, String>? = null
 
+    // The 800ms Telecom fallback runnable — cancelled once
+    // onShowIncomingCallUi fires so it can't double-present the call.
+    private var telecomFallbackRunnable: Runnable? = null
+
+    // callId the incoming-call UI was already presented for. Guards against
+    // double presentIncomingCall (Telecom + 800ms fallback race, duplicate
+    // FCM pushes) — a second presentation would post a second ringtone.
+    private var presentedCallId: String? = null
+
     /**
      * Register the PhoneAccount with Android Telecom.
      * Must be called before addNewIncomingCall.
@@ -117,12 +126,13 @@ object VantCallManager {
 
             // Samsung OneUI may not always call onShowIncomingCallUi reliably.
             // Fallback: if UI hasn't been shown within 800ms, show it directly.
-            Handler(Looper.getMainLooper()).postDelayed({
+            telecomFallbackRunnable = Runnable {
                 if (!callUiShown.get()) {
                     Log.w(TAG, "⚠️ Telecom didn't trigger onShowIncomingCallUi within 800ms, using fallback")
                     presentIncomingCall(context, callerName, callerId, callId, roomId, avatarUrl, isVideo)
                 }
-            }, 800)
+            }
+            Handler(Looper.getMainLooper()).postDelayed(telecomFallbackRunnable!!, 800)
 
             return true
         } catch (e: SecurityException) {
@@ -140,6 +150,12 @@ object VantCallManager {
      */
     fun markCallUiShown() {
         callUiShown.set(true)
+        // Telecom won the race — kill the pending 800ms fallback so it can't
+        // present (and ring) a second time.
+        telecomFallbackRunnable?.let {
+            Handler(Looper.getMainLooper()).removeCallbacks(it)
+        }
+        telecomFallbackRunnable = null
         Log.d(TAG, "Call UI shown by Telecom framework")
     }
 
@@ -198,6 +214,11 @@ object VantCallManager {
         cancelNotification(context)
         pendingCallData = null
         callUiShown.set(false)
+        presentedCallId = null
+        telecomFallbackRunnable?.let {
+            Handler(Looper.getMainLooper()).removeCallbacks(it)
+        }
+        telecomFallbackRunnable = null
 
         // Ringing-time pre-warmed engine is only valid while the call exists —
         // decline/cancel/end all land here. No-op once MainActivity attached it.
@@ -506,6 +527,11 @@ object VantCallManager {
         context: Context, callerName: String, callerId: String, callId: String,
         roomId: String, avatarUrl: String, isVideo: Boolean
     ) {
+        if (presentedCallId == callId) {
+            Log.d(TAG, "Call $callId already presented — skipping duplicate presentIncomingCall")
+            return
+        }
+        presentedCallId = callId
         startRinging(context, callerName, callerId, callId, roomId, avatarUrl, isVideo)
         // Always post the alert via notify(): this is what actually triggers the
         // system full-screen intent path. The direct launch below is best-effort.

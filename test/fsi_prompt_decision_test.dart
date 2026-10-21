@@ -332,6 +332,82 @@ void main() {
     );
 
     test(
+      'incoming-call presentation is idempotent per callId — no double '
+      'ring from Telecom/fallback race or duplicate FCM',
+      () {
+        final mgr = source(callManager);
+        // Guard at the top of presentIncomingCall.
+        final presentFn = mgr.indexOf('fun presentIncomingCall');
+        expect(presentFn, greaterThanOrEqualTo(0));
+        expect(
+          mgr.indexOf('presentedCallId == callId', presentFn),
+          greaterThan(presentFn),
+        );
+        // State cleared on teardown so the NEXT call can present.
+        final teardown = mgr.indexOf('fun teardownCall');
+        expect(
+          mgr.indexOf('presentedCallId = null', teardown),
+          greaterThan(teardown),
+        );
+        // The 800ms fallback runnable is cancelled once Telecom fires and
+        // on teardown.
+        expect(mgr, contains('telecomFallbackRunnable'));
+        final mark = mgr.indexOf('fun markCallUiShown');
+        expect(
+          mgr.indexOf('removeCallbacks', mark),
+          greaterThan(mark),
+        );
+        expect(
+          mgr.indexOf('removeCallbacks', teardown),
+          greaterThan(teardown),
+        );
+      },
+    );
+
+    test(
+      'service startRinging ignores a duplicate intent for the same callId '
+      'and stops the old Ringtone before creating a new one',
+      () {
+        final svc = source(callFgService);
+        expect(svc, contains('private fun startRinging(callId: String'));
+        expect(svc, contains('ringingCallId == callId'));
+        expect(svc, contains('ringtone?.isPlaying'));
+        // Previous ringtone released before the new instance is created.
+        final ringFn = svc.indexOf('private fun startRinging');
+        final stop = svc.indexOf('ringtone?.stop()', ringFn);
+        final create = svc.indexOf('RingtoneManager.getRingtone', ringFn);
+        expect(stop, greaterThan(ringFn));
+        expect(stop, lessThan(create));
+        // Marker cleared on stop so a later call can ring again.
+        final stopFn = svc.indexOf('private fun stopRinging');
+        expect(
+          svc.indexOf('ringingCallId = null', stopFn),
+          greaterThan(stopFn),
+        );
+      },
+    );
+
+    test(
+      'background/lock checks fail closed on headless engines — the Dart '
+      'ringtone stays silent in the pre-warmed isolate',
+      () {
+        final src = source('lib/features/call/call_controller.dart');
+        for (final check in ['isAppInBackground', 'isScreenLocked']) {
+          final fn = src.indexOf('$check check failed');
+          expect(fn, greaterThanOrEqualTo(0), reason: check);
+          // The catch block must return true (treat as background/locked)
+          // — a headless pre-warmed engine has no activity to answer the
+          // channel, and ringing there doubles the native ringtone.
+          expect(
+            src.indexOf('return true;', fn),
+            greaterThan(fn),
+            reason: '$check catch must return true',
+          );
+        }
+      },
+    );
+
+    test(
       'Dart persists the one-shot install prompt flag',
       () {
         final src = source('lib/features/call/call_controller.dart');

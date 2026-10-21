@@ -167,7 +167,7 @@ class CallForegroundService : Service() {
                     }
                 }
 
-                startRinging()
+                startRinging(callId)
                 return START_NOT_STICKY
             }
         }
@@ -181,7 +181,23 @@ class CallForegroundService : Service() {
         stopSelf()
     }
 
-    private fun startRinging() {
+    // callId currently ringing, if any. A second START_RINGING intent for the
+    // same call (Telecom + fallback race, duplicate FCM) must not spawn a
+    // second Ringtone — the overwritten reference would keep playing.
+    private var ringingCallId: String? = null
+
+    private fun startRinging(callId: String = "") {
+        if (ringingCallId == callId && ringtone?.isPlaying == true) {
+            Log.d(TAG, "startRinging: already ringing for $callId — ignoring duplicate intent")
+            return
+        }
+        ringingCallId = callId
+        // Stop/release any previous instance before creating a new one —
+        // Ringtone.play is async and an abandoned instance keeps sounding.
+        try { ringtone?.stop() } catch (_: Exception) {}
+        ringtone = null
+        try { vibrator?.cancel() } catch (_: Exception) {}
+
         try {
             // Use MODE_RINGTONE for the ringing phase — this is the appropriate mode
             // while alerting the user. MODE_IN_COMMUNICATION must NOT be set here because
@@ -223,6 +239,7 @@ class CallForegroundService : Service() {
     }
 
     private fun stopRinging() {
+        ringingCallId = null
         try { ringtone?.stop() } catch (_: Exception) {}
         try { vibrator?.cancel() } catch (_: Exception) {}
         try { wakeLock?.let { if (it.isHeld) it.release() } } catch (_: Exception) {}

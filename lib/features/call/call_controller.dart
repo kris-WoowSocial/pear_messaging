@@ -3681,7 +3681,10 @@ class CallController extends GetxController {
       return result ?? false;
     } catch (e) {
       debugPrint('⚠️ isAppInBackground check failed: $e');
-      return false;
+      // Fail closed: on a headless (pre-warmed) engine there is no activity to
+      // answer this channel — treat as background so the native side keeps
+      // sole ownership of the ringtone and call UI.
+      return true;
     }
   }
 
@@ -3692,7 +3695,8 @@ class CallController extends GetxController {
       return result ?? false;
     } catch (e) {
       debugPrint('⚠️ isScreenLocked check failed: $e');
-      return false;
+      // Fail closed — see _isAppInBackground.
+      return true;
     }
   }
 
