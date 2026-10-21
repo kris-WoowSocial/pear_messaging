@@ -67,7 +67,6 @@ jobs:
         run: |
           flutter build ios \
             --no-codesign \
-            --flavor prod \
             -t lib/main_prod.dart
 
       - name: Build unsigned iOS archive
@@ -77,7 +76,7 @@ jobs:
           xcodebuild archive \
             -workspace Runner.xcworkspace \
             -scheme Runner \
-            -configuration Release-prod \
+            -configuration Release \
             -archivePath "$RUNNER_TEMP/Runner.xcarchive" \
             -destination generic/platform=iOS \
             CODE_SIGNING_ALLOWED=NO \
