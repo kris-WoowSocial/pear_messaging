@@ -506,6 +506,8 @@ class CallController extends GetxController {
       if (missedCallPromptPending) {
         await prefs.remove('fsi_prompt_after_missed_call');
       }
+      final installPromptShown =
+          prefs.getBool('fsi_install_prompt_shown') == true;
 
       if (granted == true) {
         _fsiDenied = false;
@@ -524,19 +526,23 @@ class CallController extends GetxController {
                 canUseFullScreenIntent: false,
                 dontAskAgain: dontAskAgain,
                 missedCallPromptPending: missedCallPromptPending,
+                installPromptShown: installPromptShown,
               ) !=
               FsiPromptDecision.showDialog) {
         return;
       }
+
+      // Record the display before showing so a crash/kill can't re-arm it —
+      // one-shot per install. A later missed call re-arms via the flag above.
+      await prefs.setBool('fsi_install_prompt_shown', true);
 
       debugPrint('⚠️ Prompting user to enable full-screen intent');
       Get.dialog(
         AlertDialog(
           title: const Text('Show Calls Full Screen'),
           content: const Text(
-            'Vant needs permission to show incoming calls on the whole '
-            'screen, like WhatsApp. Without it, calls only appear as a '
-            'notification you have to pull down and tap.',
+            'Allow full-screen calls so incoming calls appear when your '
+            'phone is locked.',
           ),
           actions: [
             TextButton(

@@ -36,7 +36,7 @@ class VantFirebaseMessagingService : FirebaseMessagingService() {
 
     companion object {
         const val TAG = "VantFCM"
-        const val CHANNEL_ID = "vant_chat_calls"
+        const val CHANNEL_ID = "vant_chat_calls_v2"
         const val NOTIFICATION_ID = 9999
         const val MISSED_CALL_CHANNEL_ID = "missed_call_channel"
         const val MISSED_CALL_NOTIFICATION_ID = 2001

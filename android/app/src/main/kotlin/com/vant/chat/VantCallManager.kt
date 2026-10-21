@@ -37,7 +37,7 @@ object VantCallManager {
 
     const val TAG = "VantCallMgr"
     const val PHONE_ACCOUNT_ID = "vant_voip_account"
-    const val CHANNEL_ID = "vant_chat_calls"
+    const val CHANNEL_ID = "vant_chat_calls_v2"
     const val NOTIFICATION_ID = 9999
 
     var activeConnection: VantConnection? = null
@@ -448,7 +448,6 @@ object VantCallManager {
             .setFullScreenIntent(fullScreenPendingIntent, true)
             .setOngoing(true)
             .setAutoCancel(false)
-            .setSilent(true)
             .build()
 
         val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager

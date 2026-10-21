@@ -10,7 +10,6 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
-import android.media.AudioAttributes
 import android.media.AudioManager
 import android.media.Ringtone
 import android.media.RingtoneManager
@@ -41,7 +40,11 @@ class CallForegroundService : Service() {
 
     companion object {
         const val TAG = "VantCallFG"
-        const val CHANNEL_ID = "vant_chat_calls"
+        // v2: v1 carried a ringtone the app could not silence per-call, and a
+        // channel's sound/importance can never be changed once created. The
+        // v2 channel has no sound — the service's own Ringtone is the single
+        // sound source, so there is no double ring.
+        const val CHANNEL_ID = "vant_chat_calls_v2"
         const val ONGOING_CHANNEL_ID = "vant_ongoing_calls"
         const val NOTIFICATION_ID = 9999
         const val ONGOING_NOTIFICATION_ID = 8888
@@ -60,16 +63,14 @@ class CallForegroundService : Service() {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 val notificationManager = context.getSystemService(NotificationManager::class.java)
 
-                val ringtoneUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
                 val callChannel = NotificationChannel(
                     CHANNEL_ID, "Incoming Calls", NotificationManager.IMPORTANCE_HIGH
                 ).apply {
                     description = "Incoming voice and video calls"
                     lockscreenVisibility = NotificationCompat.VISIBILITY_PUBLIC
-                    setSound(ringtoneUri, AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                        .build())
+                    // No channel sound — CallForegroundService's Ringtone is
+                    // the single sound source.
+                    setSound(null, null)
                     enableVibration(true)
                     vibrationPattern = longArrayOf(0, 1000, 1000)
                 }
@@ -440,7 +441,6 @@ class CallForegroundService : Service() {
             .setFullScreenIntent(contentPendingIntent, true)
             .setOngoing(true)
             .setAutoCancel(false)
-            .setSilent(true)
             .build()
     }
 

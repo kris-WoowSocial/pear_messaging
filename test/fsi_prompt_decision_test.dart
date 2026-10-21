@@ -61,6 +61,40 @@ void main() {
       },
     );
 
+    test('install prompt is one-shot — shown once, then silent', () {
+      expect(
+        decideFsiPrompt(
+          canUseFullScreenIntent: false,
+          dontAskAgain: false,
+          installPromptShown: true,
+        ),
+        FsiPromptDecision.skipAlreadyShown,
+      );
+    });
+
+    test('a missed call re-arms the dialog even after the install prompt', () {
+      expect(
+        decideFsiPrompt(
+          canUseFullScreenIntent: false,
+          dontAskAgain: false,
+          installPromptShown: true,
+          missedCallPromptPending: true,
+        ),
+        FsiPromptDecision.showDialog,
+      );
+    });
+
+    test('"Don\'t ask again" still wins over the install prompt flag', () {
+      expect(
+        decideFsiPrompt(
+          canUseFullScreenIntent: false,
+          dontAskAgain: true,
+          installPromptShown: true,
+        ),
+        FsiPromptDecision.skipDontAskAgain,
+      );
+    });
+
     test(
       'the dialog is reachable again after denial — unlike the old '
       'fsi_prompt_shown flag, "Later" is not persisted',
@@ -234,6 +268,60 @@ void main() {
         final creations = 'showCallTransitionOverlay()'.allMatches(src);
         // one call site in onCreate + the function definition itself
         expect(creations.length, lessThanOrEqualTo(2));
+      },
+    );
+
+    test(
+      'incoming-call notifications post on the v2 channel and are not '
+      'marked silent — silent notifications are demoted from heads-up',
+      () {
+        for (final file in [callManager, callFgService]) {
+          final src = source(file);
+          expect(src, contains('"vant_chat_calls_v2"'));
+          expect(src, isNot(contains('"vant_chat_calls"')));
+        }
+        // Scope assertions to the incoming-call builders only — the ongoing-
+        // call notification (ONGOING_CHANNEL_ID) legitimately stays silent.
+        final mgr = source(callManager);
+        final showFn = mgr.indexOf('fun showCallNotification');
+        expect(showFn, greaterThanOrEqualTo(0));
+        final mgrBuilder = mgr.substring(
+          showFn,
+          showFn + 6000 > mgr.length ? mgr.length : showFn + 6000,
+        );
+        expect(mgrBuilder, isNot(contains('.setSilent(')));
+
+        final svc = source(callFgService);
+        final buildFn = svc.indexOf('private fun buildCallNotification');
+        expect(buildFn, greaterThanOrEqualTo(0));
+        final svcBuilder = svc.substring(buildFn);
+        expect(svcBuilder, isNot(contains('.setSilent(')));
+      },
+    );
+
+    test(
+      'the v2 call channel has no sound — the app Ringtone is the single '
+      'sound source (no double ring)',
+      () {
+        final svc = source(callFgService);
+        final createFn = svc.indexOf('fun createNotificationChannels');
+        expect(createFn, greaterThanOrEqualTo(0));
+        final body = svc.substring(createFn, createFn + 3000);
+        expect(body, contains('setSound(null, null)'));
+        // The incoming-call channel (CHANNEL_ID = vant_chat_calls_v2) must
+        // not carry a ringtone URI anywhere in channel creation.
+        expect(body, isNot(contains('TYPE_RINGTONE')));
+        // Ringtone still played by the service itself.
+        expect(svc, contains('RingtoneManager.getRingtone'));
+      },
+    );
+
+    test(
+      'Dart persists the one-shot install prompt flag',
+      () {
+        final src = source('lib/features/call/call_controller.dart');
+        expect(src, contains("prefs.getBool('fsi_install_prompt_shown')"));
+        expect(src, contains("prefs.setBool('fsi_install_prompt_shown', true)"));
       },
     );
 
