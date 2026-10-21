@@ -1,0 +1,188 @@
+name: iOS TestFlight (Signed IPA)
+
+# Manual only — never runs on push. Builds a signed IPA, validates it,
+# and uploads to TestFlight ONLY when confirm_upload is 'yes'.
+on:
+  workflow_dispatch:
+    inputs:
+      version_name:
+        description: "Marketing version (e.g. 1.8.8)"
+        required: true
+      build_number:
+        description: "App Store build number — real next number, NOT the 9999 placeholder"
+        required: true
+      confirm_upload:
+        description: "Type 'yes' to upload to TestFlight after validation"
+        required: true
+        type: choice
+        options:
+          - "no"
+          - "yes"
+        default: "no"
+
+jobs:
+  build_sign_validate:
+    name: Build, sign, validate (and optionally upload) iOS
+    runs-on: macos-15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Guard build number input
+        run: |
+          BN="${{ github.event.inputs.build_number }}"
+          if [ -z "$BN" ] || ! echo "$BN" | grep -qE '^[0-9]+$'; then
+            echo "::error::build_number must be a positive integer (got '$BN')"
+            exit 1
+          fi
+          if [ "$BN" = "9999" ]; then
+            echo "::error::9999 is a placeholder — supply the real next App Store build number"
+            exit 1
+          fi
+          echo "Building ${{ github.event.inputs.version_name }}+$BN (upload: ${{ github.event.inputs.confirm_upload }})"
+
+      - name: Select Xcode 26
+        run: |
+          if [ -d "/Applications/Xcode_26.0.app" ]; then
+            sudo xcode-select -s /Applications/Xcode_26.0.app/Contents/Developer
+          elif [ -d "/Applications/Xcode_26.app" ]; then
+            sudo xcode-select -s /Applications/Xcode_26.app/Contents/Developer
+          else
+            LATEST_XCODE=$(ls -d /Applications/Xcode*.app | sort -V | tail -1)
+            sudo xcode-select -s "$LATEST_XCODE/Contents/Developer"
+          fi
+          xcodebuild -version
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.27.0"
+          channel: "stable"
+
+      - name: Install Flutter iOS artifacts
+        run: flutter precache --ios
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Cache CocoaPods dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ios/Pods
+            ios/Podfile.lock
+            ~/Library/Caches/CocoaPods
+          key: ${{ runner.os }}-pods-${{ hashFiles('ios/Podfile.lock', 'ios/Podfile', 'pubspec.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-pods-
+
+      - name: Import Apple Distribution certificate
+        env:
+          CERTIFICATE_BASE64: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.IOS_KEYCHAIN_PASSWORD }}
+        run: |
+          KEYCHAIN_PATH=$RUNNER_TEMP/build.keychain
+          CERTIFICATE_PATH=$RUNNER_TEMP/certificate.p12
+
+          echo "$CERTIFICATE_BASE64" | base64 --decode > "$CERTIFICATE_PATH"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERTIFICATE_PATH" -k "$KEYCHAIN_PATH" -P "$CERTIFICATE_PASSWORD" -A -t cert -f pkcs12
+          security list-keychain -d user -s "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+      - name: Install distribution provisioning profile
+        env:
+          PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 }}
+        run: |
+          PP_PATH=$RUNNER_TEMP/profile.mobileprovision
+          echo "$PROVISIONING_PROFILE_BASE64" | base64 --decode > "$PP_PATH"
+          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+          cp "$PP_PATH" ~/Library/MobileDevice/Provisioning\ Profiles/
+          # Show the profile's entitlements so a missing capability is visible in the log
+          security cms -D -i "$PP_PATH" > $RUNNER_TEMP/profile.plist
+          /usr/libexec/PlistBuddy -c "Print :Entitlements" $RUNNER_TEMP/profile.plist || true
+
+      - name: Configure manual signing for Release
+        run: |
+          perl -i -pe '
+            BEGIN { $in = 0 }
+            if (/97C147071CF9000F007C117D \/\* Release \*\//) { $in = 1 }
+            if ($in && /name = Release;/) { $in = 0 }
+            s/CODE_SIGN_IDENTITY = "Apple Development";/CODE_SIGN_IDENTITY = "Apple Distribution";/ if $in;
+            s/CODE_SIGN_STYLE = Automatic;/CODE_SIGN_STYLE = Manual;/ if $in;
+            s/PROVISIONING_PROFILE_SPECIFIER = "";/PROVISIONING_PROFILE_SPECIFIER = "Vant_Chat_App_Store";/ if $in;
+          ' ios/Runner.xcodeproj/project.pbxproj
+          grep -n "CODE_SIGN_IDENTITY\|CODE_SIGN_STYLE\|PROVISIONING_PROFILE_SPECIFIER" ios/Runner.xcodeproj/project.pbxproj | sed -n '/Release/,$p' | head -6
+
+      - name: Install CocoaPods dependencies
+        run: |
+          cd ios
+          pod install
+
+      - name: Build signed IPA
+        run: |
+          flutter build ipa \
+            --release \
+            --target=lib/main_prod.dart \
+            --build-name=${{ github.event.inputs.version_name }} \
+            --build-number=${{ github.event.inputs.build_number }} \
+            --export-options-plist=ios/ExportOptions.plist
+
+      - name: Verify privacy manifest is inside the IPA
+        run: |
+          IPA=$(ls build/ios/ipa/*.ipa | head -1)
+          if ! unzip -l "$IPA" | grep -q "PrivacyInfo.xcprivacy"; then
+            echo "::error::PrivacyInfo.xcprivacy missing from IPA — check it is in the Runner target's Copy Bundle Resources phase."
+            exit 1
+          fi
+          echo "Privacy manifest present in $IPA"
+          unzip -l "$IPA" | grep "PrivacyInfo.xcprivacy"
+
+      - name: Store App Store Connect API key
+        env:
+          APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          APP_STORE_CONNECT_API_KEY_BASE64: ${{ secrets.APP_STORE_CONNECT_API_KEY_BASE64 }}
+        run: |
+          KEY_DIR=~/.appstoreconnect/private_keys
+          KEY_PATH="$KEY_DIR/AuthKey_${APP_STORE_CONNECT_API_KEY_ID}.p8"
+          mkdir -p "$KEY_DIR"
+          echo "$APP_STORE_CONNECT_API_KEY_BASE64" | base64 --decode > "$KEY_PATH"
+
+      - name: Validate IPA with App Store Connect
+        env:
+          APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+        run: |
+          xcrun altool --validate-app \
+            --type ios \
+            --file build/ios/ipa/*.ipa \
+            --apiKey "$APP_STORE_CONNECT_API_KEY_ID" \
+            --apiIssuer "$APP_STORE_CONNECT_ISSUER_ID"
+
+      - name: Upload to TestFlight
+        if: github.event.inputs.confirm_upload == 'yes'
+        env:
+          APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+        run: |
+          xcrun altool --upload-app \
+            --type ios \
+            --file build/ios/ipa/*.ipa \
+            --apiKey "$APP_STORE_CONNECT_API_KEY_ID" \
+            --apiIssuer "$APP_STORE_CONNECT_ISSUER_ID"
+
+      - name: Skip upload notice
+        if: github.event.inputs.confirm_upload != 'yes'
+        run: echo "Validation passed. Re-run with confirm_upload=yes to upload this exact build."
+
+      - name: Clean up keychain, profile, and API key
+        if: always()
+        run: |
+          security delete-keychain $RUNNER_TEMP/build.keychain 2>/dev/null || true
+          rm -f ~/Library/MobileDevice/Provisioning\ Profiles/profile.mobileprovision 2>/dev/null || true
+          rm -f ~/.appstoreconnect/private_keys/AuthKey_*.p8 2>/dev/null || true
