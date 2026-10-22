@@ -19,6 +19,13 @@ import CommonCrypto
   private var isInCall = false
   private var callStateChannel: FlutterMethodChannel?
   private var audioSessionObserversRegistered = false
+  // Re-activation safety: only re-activate the audio session after an
+  // interruption that actually began during a call, and never within the
+  // teardown window after a call ends (isInCall syncs async from Dart, so a
+  // late route-change/interruption-ended notification could otherwise
+  // re-activate a dead call's session — red mic bar / bad next call).
+  private var interruptedWhileInCall = false
+  private var lastCallEndedAt: Date?
 
   override func application(
     _ application: UIApplication,
@@ -606,6 +613,10 @@ import CommonCrypto
         if let args = call.arguments as? [String: Any],
            let inCall = args["inCall"] as? Bool {
           self?.isInCall = inCall
+          if !inCall {
+            self?.lastCallEndedAt = Date()
+            self?.interruptedWhileInCall = false
+          }
           UserDefaults.standard.set(inCall, forKey: "vant_in_active_call")
           print("📱 Call state synced: inCall=\(inCall)")
         }
@@ -654,14 +665,17 @@ import CommonCrypto
     case .began:
       print("🔊 Audio session interruption began (inCall=\(isInCall))")
       if isInCall {
+        interruptedWhileInCall = true
         notifyFlutterCallLifecycle("call_held")
       }
     case .ended:
       guard isInCall else { return }
       notifyFlutterCallLifecycle("call_unheld")
+      defer { interruptedWhileInCall = false }
       if let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt {
         let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
-        if options.contains(.shouldResume) {
+        if interruptedWhileInCall && options.contains(.shouldResume)
+            && canReactivateAudioSession() {
           do {
             try AVAudioSession.sharedInstance().setActive(true)
             print("🔊 Resumed audio session after interruption")
@@ -675,6 +689,17 @@ import CommonCrypto
     }
   }
 
+  /// True when re-activating the audio session is safe: a call is live and no
+  /// teardown happened in the last 2s (Dart -> native setInCall is async, so
+  /// isInCall can briefly lag the real call end).
+  private func canReactivateAudioSession() -> Bool {
+    guard isInCall else { return false }
+    if let ended = lastCallEndedAt, Date().timeIntervalSince(ended) < 2 {
+      return false
+    }
+    return true
+  }
+
   @objc private func handleAudioSessionRouteChange(_ notification: Notification) {
     guard isInCall,
           let userInfo = notification.userInfo,
@@ -685,7 +710,9 @@ import CommonCrypto
 
     // After an external call hangs up, the system often routes audio back to
     // the built-in receiver. Re-activate the session so WebRTC can recover.
-    if reason == .categoryChange || reason == .override || reason == .wakeFromSleep {
+    // Skipped inside the post-teardown grace window (canReactivateAudioSession).
+    if (reason == .categoryChange || reason == .override || reason == .wakeFromSleep)
+        && canReactivateAudioSession() {
       do {
         try AVAudioSession.sharedInstance().setActive(true)
       } catch {

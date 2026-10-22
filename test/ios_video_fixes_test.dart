@@ -166,5 +166,60 @@ void main() {
         reason: 'call_events EventChannel subscription must be Android-only',
       );
     });
+
+    test('audio session re-activation is guarded against post-teardown race', () {
+      final source =
+          File('ios/Runner/AppDelegate.swift').readAsStringSync();
+
+      // State markers exist
+      expect(source, contains('private var interruptedWhileInCall = false'));
+      expect(source, contains('private var lastCallEndedAt: Date?'));
+      expect(source, contains('func canReactivateAudioSession() -> Bool'));
+
+      // Call-end transition records the teardown timestamp (inside setInCall)
+      expect(source, contains('self?.lastCallEndedAt = Date()'));
+      expect(source, contains('self?.interruptedWhileInCall = false'));
+
+      // Every setActive(true) re-activation must pass through the guard.
+      final setActiveCalls =
+          'setActive(true)'.allMatches(source).map((m) => m.start).toList();
+      expect(setActiveCalls.length, greaterThanOrEqualTo(2),
+          reason: 'expected interruption + route-change re-activation sites');
+      for (final idx in setActiveCalls) {
+        final context = source.substring(
+          idx - 500 < 0 ? 0 : idx - 500,
+          idx,
+        );
+        expect(
+          context.contains('canReactivateAudioSession()'),
+          isTrue,
+          reason:
+              'setActive(true) must be gated by canReactivateAudioSession()',
+        );
+      }
+
+      // The interruption path additionally requires the interruption to have
+      // begun while actually in a call.
+      final interruptionStart =
+          source.indexOf('func handleAudioSessionInterruption');
+      final routeChangeStart =
+          source.indexOf('func handleAudioSessionRouteChange');
+      final interruptionBody = source.substring(
+        interruptionStart,
+        routeChangeStart > interruptionStart
+            ? routeChangeStart
+            : source.length,
+      );
+      expect(
+        interruptionBody,
+        contains('interruptedWhileInCall && options.contains(.shouldResume)'),
+        reason: 'resume must require an interruption that began in-call',
+      );
+      expect(
+        interruptionBody,
+        contains('interruptedWhileInCall = true'),
+        reason: 'interruption .began must mark in-call interruption',
+      );
+    });
   });
 }
