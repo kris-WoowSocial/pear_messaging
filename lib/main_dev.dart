@@ -37,6 +37,7 @@ import 'core/services/report_service.dart';
 import 'core/services/api_service.dart';
 import 'core/services/app_lifecycle_service.dart';
 import 'core/services/badge_service.dart';
+import 'core/services/feature_flag_service.dart';
 import 'core/services/secure_key_service.dart';
 import 'core/services/secure_encryption_service.dart';
 import 'core/services/secure_image_storage_service.dart';
@@ -112,6 +113,10 @@ Future<void> initializeCriticalServices() async {
     deviceId = DateTime.now().millisecondsSinceEpoch.toString();
     await storageService.setDeviceId(deviceId);
   }
+
+  // Feature flags must be registered before the socket connects so the first
+  // capability announcement can wait for the first Remote Config fetch.
+  Get.put(FeatureFlagService(), permanent: true);
 
   final earlySocketService = Get.put(SocketService());
   earlySocketService.init(deviceId);
@@ -301,6 +306,19 @@ void initializeNonCriticalServices() async {
   // Run remaining non-critical initializations in parallel for speed
   // Each wrapped in try-catch to prevent one failure from blocking others
   final futures = <Future>[];
+
+  // Feature flags control encrypted/video capabilities; fetch them as soon as
+  // Firebase is available so the socket can announce the right capabilities.
+  futures.add(
+    (() async {
+      try {
+        await Get.find<FeatureFlagService>().init();
+      } catch (e) {
+        debugPrint('❌ FeatureFlagService initialization failed: $e');
+        debugPrint('⚠️ App will continue with feature flags OFF');
+      }
+    })(),
+  );
 
   // FCM for push notifications - now Firebase is ready
   futures.add(
@@ -615,41 +633,5 @@ Future<void> requestMicrophonePermission() async {
     debugPrint('🎤 Microphone permission result: $result');
   } catch (e) {
     debugPrint('⚠️ Error requesting microphone permission: $e');
-  }
-}
-
-/// Handle cold-start after user accepted call from background/killed state
-/// This checks SharedPreferences for pendingAcceptedCallId set by CallKitService
-/// and triggers call_resync to get the SDP offer from server
-Future<void> _handlePendingAcceptedCall() async {
-  try {
-    final prefs = await SharedPreferences.getInstance();
-    final pendingCallId = prefs.getString('pendingAcceptedCallId');
-    if (pendingCallId == null || pendingCallId.isEmpty) return;
-
-    // Clear immediately to prevent re-processing on next launch
-    await prefs.remove('pendingAcceptedCallId');
-    debugPrint('📞 Cold start: pendingAcceptedCallId = $pendingCallId');
-
-    // Wait for socket to be connected and registered
-    final socketService = Get.find<SocketService>();
-    int attempts = 0;
-    while (!socketService.isConnected.value && attempts < 30) {
-      await Future.delayed(const Duration(milliseconds: 200));
-      attempts++;
-    }
-
-    if (!socketService.isConnected.value) {
-      debugPrint('📞 Cold start resync: socket connection timeout');
-      return;
-    }
-
-    // Set auto-accept flag and emit resync to get SDP offer
-    final callController = Get.find<CallController>();
-    await callController.setPendingAutoAccept(pendingCallId);
-    socketService.socket?.emit('call_resync', {'callId': pendingCallId});
-    debugPrint('📞 Cold start: emitted call_resync for $pendingCallId');
-  } catch (e) {
-    debugPrint('📞 Error handling pending accepted call: $e');
   }
 }

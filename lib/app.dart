@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:get/get.dart';
@@ -89,7 +91,10 @@ class _PearMessagingAppState extends State<PearMessagingApp>
       );
       if (!socketService.isConnected.value && !isInCall) {
         debugPrint('🔄 Socket disconnected on resume, forcing reconnect...');
-        socketService.forceReconnect();
+        // safeReconnect skips when a connect is already in flight — e.g. the
+        // ringing-time connect started by the pre-warmed engine. forceReconnect
+        // would tear that in-flight socket down and restart the handshake.
+        unawaited(socketService.safeReconnect());
       } else if (isInCall) {
         debugPrint('📱 Skipping socket reconnect — call is active');
       }

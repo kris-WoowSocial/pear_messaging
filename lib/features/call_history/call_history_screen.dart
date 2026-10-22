@@ -33,7 +33,7 @@ class CallHistoryScreen extends GetView<CallHistoryController> {
             ),
             SizedBox(height: 2),
             Text(
-              'E2E-PQC Encrypted Voice Calls',
+              'Voice and video calls with end-to-end encryption when both contacts have verified keys.',
               style: TextStyle(
                 color: AppColors.textPrimary,
                 fontSize: 10,
@@ -174,6 +174,7 @@ class CallHistoryScreen extends GetView<CallHistoryController> {
     final isMissed = entry.status == CallStatus.missed ||
         entry.status == CallStatus.declined;
     final isIncoming = entry.direction == CallDirection.incoming;
+    final isVideo = entry.callType == 'video';
 
     // Icon and color based on direction/status
     IconData directionIcon;
@@ -181,18 +182,29 @@ class CallHistoryScreen extends GetView<CallHistoryController> {
     String statusText;
 
     if (isMissed) {
-      directionIcon =
-          isIncoming ? Icons.call_missed : Icons.call_missed_outgoing;
+      directionIcon = isVideo
+          ? Icons.videocam_off
+          : isIncoming
+              ? Icons.call_missed
+              : Icons.call_missed_outgoing;
       iconColor = Colors.red;
       statusText = isIncoming ? 'Missed' : 'Cancelled';
     } else if (entry.status == CallStatus.completed) {
-      directionIcon = isIncoming ? Icons.call_received : Icons.call_made;
+      directionIcon = isVideo
+          ? Icons.videocam
+          : isIncoming
+              ? Icons.call_received
+              : Icons.call_made;
       iconColor = isIncoming ? Colors.green : Colors.blue;
       statusText = entry.formattedDuration.isNotEmpty
           ? entry.formattedDuration
           : 'Connected';
     } else {
-      directionIcon = isIncoming ? Icons.call_received : Icons.call_made;
+      directionIcon = isVideo
+          ? Icons.videocam_off
+          : isIncoming
+              ? Icons.call_received
+              : Icons.call_made;
       iconColor = Colors.grey;
       statusText = 'Failed';
     }

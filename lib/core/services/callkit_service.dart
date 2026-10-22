@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:uuid/uuid.dart';
 import '../constants/network_constants.dart';
@@ -13,6 +14,7 @@ import 'package:flutter_callkit_incoming/flutter_callkit_incoming.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
+import 'call_breadcrumbs.dart';
 
 /// CallKit Service - Handles native system incoming call UI
 /// This service runs in background isolate via FCM data messages
@@ -48,6 +50,14 @@ class CallKitService {
 
   // Check if CallKit should be enabled (disabled in China)
   bool get _isCallKitEnabled => !_isChinaRegion();
+
+  /// APNs environment reported at VoIP token registration.
+  /// Prefers the value read by native from the real aps-environment
+  /// entitlement; falls back to the build mode if it is not yet available.
+  static String _apnsEnvironmentFromPrefs(SharedPreferences prefs) {
+    return prefs.getString('apns_environment') ??
+        (kReleaseMode ? 'production' : 'sandbox');
+  }
 
   // Event controller for UI layer to listen to call events
   final StreamController<CallKitEvent> _eventController =
@@ -96,6 +106,16 @@ class CallKitService {
       }
     }
     return _getCallIdFromUuid(body['id'] as String?);
+  }
+
+  bool _extractIsVideo(Map<dynamic, dynamic> body) {
+    bool decode(dynamic value) =>
+        value == true || value == 'true' || value == 1;
+    final extra = body['extra'];
+    if (extra is Map) {
+      return decode(extra['isVideo']) || decode(extra['is_video']);
+    }
+    return decode(body['isVideo']) || decode(body['is_video']);
   }
 
   /// Initialize CallKit listeners
@@ -148,6 +168,7 @@ class CallKitService {
     required String callId,
     required String callerId,
     required String callerName,
+    bool isVideo = false,
   }) async {
     debugPrint('📞 CallKitService: Showing incoming call from $callerName');
 
@@ -182,66 +203,12 @@ class CallKitService {
 
       // Build CallKit params for full-screen incoming call UI
       // Use empty string for avatar to avoid nil crash on iOS (plugin shows first letter)
-      final params = CallKitParams(
-        id: callKitUuid,
-        nameCaller: callerName,
-        appName: 'Vant Chat',
-        avatar: '',
-        handle: callerId,
-        type: 0, // 0 = audio call, 1 = video call
-        textAccept: 'Accept',
-        textDecline: 'Decline',
-        duration: 30000, // Ring for 30 seconds
-        extra: <String, dynamic>{
-          'callerId': callerId,
-          'callId': callId,
-          // sdpOffer intentionally excluded for security
-        },
-        headers: <String, dynamic>{
-          'apiKey': 'Bearer abc',
-          'platform': 'flutter',
-        },
-        missedCallNotification: const NotificationParams(
-          showNotification: true,
-          isShowCallback: true,
-          subtitle: 'Missed call',
-          callbackText: 'Call back',
-        ),
-        callingNotification: const NotificationParams(
-          showNotification: true,
-          isShowCallback: true,
-          subtitle: 'Calling...',
-          callbackText: 'Hang Up',
-        ),
-        android: const AndroidParams(
-          isCustomNotification: true,
-          isShowLogo: false, // Hide app logo, show person icon instead
-          isShowCallID: false,
-          ringtonePath: 'system_ringtone_default',
-          backgroundColor:
-              '#000000', // Black background to match IncomingCallScreen
-          actionColor: '#4CAF50', // Green for accept button
-          textColor: '#ffffff', // White text
-          incomingCallNotificationChannelName: 'Incoming Call',
-          missedCallNotificationChannelName: 'Missed Call',
-          isShowFullLockedScreen: true, // Wake screen when device is locked
-        ),
-        ios: const IOSParams(
-          iconName: '',
-          handleType: 'generic',
-          supportsVideo: false,
-          maximumCallGroups: 2,
-          maximumCallsPerCallGroup: 1,
-          audioSessionMode: 'voiceChat',
-          audioSessionActive: true,
-          audioSessionPreferredSampleRate: 44100.0,
-          audioSessionPreferredIOBufferDuration: 0.005,
-          supportsDTMF: true,
-          supportsHolding: true,
-          supportsGrouping: false,
-          supportsUngrouping: false,
-          ringtonePath: 'system_ringtone_default',
-        ),
+      final params = buildIncomingCallParams(
+        callId: callId,
+        callKitUuid: callKitUuid,
+        callerId: callerId,
+        callerName: callerName,
+        isVideo: isVideo,
       );
 
       // Display native incoming call UI
@@ -254,6 +221,80 @@ class CallKitService {
     } catch (e) {
       debugPrint('❌ CallKitService: Error showing incoming call: $e');
     }
+  }
+
+  /// Build the CallKit params for an incoming call.
+  /// Extracted so the audio-session choices (mode, sample rate, etc.) are
+  /// source-order testable without invoking the native plugin.
+  static CallKitParams buildIncomingCallParams({
+    required String callId,
+    required String callKitUuid,
+    required String callerId,
+    required String callerName,
+    bool isVideo = false,
+  }) {
+    return CallKitParams(
+      id: callKitUuid,
+      nameCaller: callerName,
+      appName: 'Vant Chat',
+      avatar: '',
+      handle: callerId,
+      type: isVideo ? 1 : 0, // 0 = audio call, 1 = video call
+      textAccept: 'Accept',
+      textDecline: 'Decline',
+      duration: 30000, // Ring for 30 seconds
+      extra: <String, dynamic>{
+        'callerId': callerId,
+        'callId': callId,
+        'isVideo': isVideo,
+        // sdpOffer intentionally excluded for security
+      },
+      headers: <String, dynamic>{
+        'apiKey': 'Bearer abc',
+        'platform': 'flutter',
+      },
+      missedCallNotification: const NotificationParams(
+        showNotification: true,
+        isShowCallback: true,
+        subtitle: 'Missed call',
+        callbackText: 'Call back',
+      ),
+      callingNotification: const NotificationParams(
+        showNotification: true,
+        isShowCallback: true,
+        subtitle: 'Calling...',
+        callbackText: 'Hang Up',
+      ),
+      android: const AndroidParams(
+        isCustomNotification: true,
+        isShowLogo: false, // Hide app logo, show person icon instead
+        isShowCallID: false,
+        ringtonePath: 'system_ringtone_default',
+        backgroundColor:
+            '#000000', // Black background to match IncomingCallScreen
+        actionColor: '#4CAF50', // Green for accept button
+        textColor: '#ffffff', // White text
+        incomingCallNotificationChannelName: 'Incoming Call',
+        missedCallNotificationChannelName: 'Missed Call',
+        isShowFullLockedScreen: true, // Wake screen when device is locked
+      ),
+      ios: IOSParams(
+        iconName: '',
+        handleType: 'generic',
+        supportsVideo: isVideo,
+        maximumCallGroups: 2,
+        maximumCallsPerCallGroup: 1,
+        audioSessionMode: isVideo ? 'videoChat' : 'voiceChat',
+        audioSessionActive: true,
+        audioSessionPreferredSampleRate: 44100.0,
+        audioSessionPreferredIOBufferDuration: 0.005,
+        supportsDTMF: true,
+        supportsHolding: true,
+        supportsGrouping: false,
+        supportsUngrouping: false,
+        ringtonePath: 'system_ringtone_default',
+      ),
+    );
   }
 
   /// Accept call from CallKit UI
@@ -346,8 +387,11 @@ class CallKitService {
 
     switch (event.event) {
       case Event.actionCallIncoming:
-        // CallKit UI is showing — pre-warm by tracking the active call
+        // CallKit UI is showing — proves the VoIP push was received and
+        // reportNewIncomingCall completed (iOS requires it synchronously).
         debugPrint('📞 CallKitService: Incoming call showing');
+        logCallBreadcrumb(CallBreadcrumb.pushkitReceived);
+        logCallBreadcrumb(CallBreadcrumb.callkitReportDone);
         final incomingId = event.body['id'] as String?;
         if (incomingId != null) {
           _activeCallKitCalls.add(incomingId.toLowerCase());
@@ -362,6 +406,7 @@ class CallKitService {
       case Event.actionCallAccept:
         // User accepted the call via native UI
         debugPrint('📞 CallKitService: Call accepted via native UI');
+        logCallBreadcrumb(CallBreadcrumb.accept);
         final acceptedCallId = _extractCallId(event.body);
 
         // iOS cold-start safety: when the app is launched from a killed state by
@@ -372,6 +417,10 @@ class CallKitService {
           try {
             final prefs = await SharedPreferences.getInstance();
             await prefs.setString('pendingAcceptedCallId', acceptedCallId);
+            await prefs.setBool(
+              'pendingAcceptedCallIsVideo',
+              _extractIsVideo(event.body),
+            );
             await prefs.setBool('launchedForCall', true);
             debugPrint(
               '📞 CallKitService: persisted iOS accept for cold-start: $acceptedCallId',
@@ -393,6 +442,7 @@ class CallKitService {
       case Event.actionCallDecline:
         // User declined the call via native UI
         debugPrint('📞 CallKitService: Call declined via native UI');
+        logCallBreadcrumb(CallBreadcrumb.decline);
         _eventController.add(
           CallKitEvent(
             type: CallKitEventType.decline,
@@ -405,6 +455,7 @@ class CallKitService {
       case Event.actionCallEnded:
         // Call ended
         debugPrint('📞 CallKitService: Call ended');
+        logCallBreadcrumb(CallBreadcrumb.ended);
         final uuid = event.body['id'] as String?;
         if (uuid != null) {
           _activeCallKitCalls.remove(uuid.toLowerCase());
@@ -549,6 +600,7 @@ class CallKitService {
       final callId = data['callId'];
       final callerId = data['callerId'];
       final callerName = data['callerName'] ?? 'Unknown';
+      final isVideo = data['isVideo'] == 'true' || data['is_video'] == 'true';
 
       if (callId == null || callerId == null) {
         debugPrint('❌ CallKitService: Missing required call data');
@@ -562,6 +614,7 @@ class CallKitService {
         callId: callId,
         callerId: callerId,
         callerName: callerName,
+        isVideo: isVideo,
       );
 
       // Listen for accept/decline from the CallKit UI in this background isolate
@@ -574,7 +627,10 @@ class CallKitService {
           debugPrint(
             '📞 CallKitService [bg]: User accepted call $callId via native UI',
           );
-          await _handleBackgroundAccept(callId);
+          await _handleBackgroundAccept(
+            callId,
+            isVideo: CallKitService()._extractIsVideo(event.body),
+          );
         } else if (event.event == Event.actionCallDecline) {
           debugPrint(
             '📞 CallKitService [bg]: User declined call $callId via native UI',
@@ -591,7 +647,10 @@ class CallKitService {
 
   /// Called from background isolate when user taps Accept on CallKit UI
   /// Uses REST (not socket) — reliable in headless isolates
-  static Future<void> _handleBackgroundAccept(String callId) async {
+  static Future<void> _handleBackgroundAccept(
+    String callId, {
+    bool isVideo = false,
+  }) async {
     try {
       // Read device ID from SharedPreferences (used for authentication)
       final prefs = await SharedPreferences.getInstance();
@@ -608,6 +667,7 @@ class CallKitService {
         // Only store pending accepted call ID if REST accept succeeded
         if (success) {
           await prefs.setString('pendingAcceptedCallId', callId);
+          await prefs.setBool('pendingAcceptedCallIsVideo', isVideo);
           await prefs.setBool('launchedForCall', true);
           debugPrint(
             '📞 CallKitService: Stored pendingAcceptedCallId = $callId (launchedForCall=true)',
@@ -695,6 +755,8 @@ class CallKitService {
       final deviceId = prefs.getString('device_id');
       if (deviceId == null || deviceId.isEmpty) return;
 
+      final apnsEnvironment = _apnsEnvironmentFromPrefs(prefs);
+
       final uri = Uri.parse(
         '${NetworkConstants.apiBaseUrl}${NetworkConstants.voipTokenPath}',
       );
@@ -706,6 +768,7 @@ class CallKitService {
               'deviceId': deviceId,
               'voipToken': token,
               'platform': 'ios',
+              'apnsEnvironment': apnsEnvironment,
             }),
           )
           .timeout(const Duration(seconds: 10));
@@ -757,6 +820,8 @@ class CallKitService {
         '${NetworkConstants.apiBaseUrl}${NetworkConstants.voipTokenPath}',
       );
 
+      final apnsEnvironment = _apnsEnvironmentFromPrefs(prefs);
+
       final response = await http.post(
         uri,
         headers: {'Content-Type': 'application/json'},
@@ -764,6 +829,7 @@ class CallKitService {
           'deviceId': deviceId,
           'voipToken': token,
           'platform': 'ios',
+          'apnsEnvironment': apnsEnvironment,
         }),
       );
 

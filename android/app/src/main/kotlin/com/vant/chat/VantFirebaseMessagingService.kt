@@ -8,12 +8,15 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
 import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.embedding.engine.FlutterEngineCache
 import io.flutter.embedding.engine.dart.DartExecutor
 import io.flutter.embedding.engine.loader.FlutterLoader
 import io.flutter.plugin.common.MethodChannel
@@ -33,12 +36,37 @@ class VantFirebaseMessagingService : FirebaseMessagingService() {
 
     companion object {
         const val TAG = "VantFCM"
-        const val CHANNEL_ID = "vant_chat_calls"
+        const val CHANNEL_ID = "vant_chat_calls_v2"
         const val NOTIFICATION_ID = 9999
         const val MISSED_CALL_CHANNEL_ID = "missed_call_channel"
         const val MISSED_CALL_NOTIFICATION_ID = 2001
+
+        /** Engine cached while the phone rings so Accept can attach a warm one. */
+        const val CALL_PREWARM_ENGINE_ID = "vant_call_prewarm"
+        const val PREWARM_TIMEOUT_MS = 75_000L
+
         private val flutterEngineStarted = AtomicBoolean(false)
         private var backgroundFlutterEngine: FlutterEngine? = null
+        private val mainHandler = Handler(Looper.getMainLooper())
+        private var prewarmTimeoutRunnable: Runnable? = null
+
+        /**
+         * Remove + destroy the ringing-time pre-warm engine. Safe to call from
+         * any thread; no-op once MainActivity has attached it (the engine is
+         * removed from the cache on attach, so get() returns null).
+         */
+        fun discardPrewarmEngine() {
+            mainHandler.post {
+                prewarmTimeoutRunnable?.let { mainHandler.removeCallbacks(it) }
+                prewarmTimeoutRunnable = null
+                val cache = FlutterEngineCache.getInstance()
+                cache.get(CALL_PREWARM_ENGINE_ID)?.let { stale ->
+                    cache.remove(CALL_PREWARM_ENGINE_ID)
+                    stale.destroy()
+                    Log.d(TAG, "callUX: pre-warm engine discarded")
+                }
+            }
+        }
     }
 
     override fun onMessageReceived(remoteMessage: RemoteMessage) {
@@ -81,34 +109,57 @@ class VantFirebaseMessagingService : FirebaseMessagingService() {
                 return
             }
 
-            if (!flutterEngineStarted.get()) {
-                startFlutterBackgroundEngine(callbackHandle)
+            // Never spin up a second engine during a ringing/active call — it
+            // would compete for CPU/audio resources and run plugin init while
+            // the user is on the call screen.
+            if (VantCallManager.activeConnection != null) {
+                Log.d(TAG, "Call in progress — deferring background forwarding")
+                return
             }
 
-            val engine = backgroundFlutterEngine
-            if (engine != null) {
-                val channel = MethodChannel(
-                    engine.dartExecutor.binaryMessenger,
-                    "plugins.flutter.io/firebase_messaging_background"
-                )
+            // FlutterLoader.startInitialization must run on the main thread —
+            // onMessageReceived arrives on a worker thread, so hop over before
+            // touching the engine. Everything downstream (MethodChannel invoke)
+            // must be on the main thread anyway.
+            Handler(Looper.getMainLooper()).post {
+                try {
+                    // Burst-safe: posts are serialized on the main thread and
+                    // startFlutterBackgroundEngine sets this flag only after a
+                    // successful start, so a burst of pushes can never create
+                    // more than one engine.
+                    if (!flutterEngineStarted.get()) {
+                        startFlutterBackgroundEngine(callbackHandle)
+                    }
+                    val engine = backgroundFlutterEngine
+                    if (engine != null) {
+                        val channel = MethodChannel(
+                            engine.dartExecutor.binaryMessenger,
+                            "plugins.flutter.io/firebase_messaging_background"
+                        )
 
-                val messageMap = mutableMapOf<String, Any?>(
-                    "data" to remoteMessage.data,
-                    "messageId" to remoteMessage.messageId,
-                    "sentTime" to remoteMessage.sentTime,
-                    "from" to remoteMessage.from,
-                    "ttl" to remoteMessage.ttl
-                )
+                        val messageMap = mutableMapOf<String, Any?>(
+                            "data" to remoteMessage.data,
+                            "messageId" to remoteMessage.messageId,
+                            "sentTime" to remoteMessage.sentTime,
+                            "from" to remoteMessage.from,
+                            "ttl" to remoteMessage.ttl
+                        )
 
-                remoteMessage.notification?.let { notification ->
-                    messageMap["notification"] = mapOf(
-                        "title" to notification.title,
-                        "body" to notification.body
-                    )
+                        remoteMessage.notification?.let { notification ->
+                            messageMap["notification"] = mapOf(
+                                "title" to notification.title,
+                                "body" to notification.body
+                            )
+                        }
+
+                        channel.invokeMethod("MessagingBackground#onMessage", messageMap)
+                        Log.d(TAG, "Message forwarded to Flutter background handler")
+                    } else {
+                        Log.w(TAG, "Background engine unavailable, message dropped")
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error forwarding to Flutter on main thread: ${e.message}", e)
                 }
-
-                channel.invokeMethod("MessagingBackground#onMessage", messageMap)
-                Log.d(TAG, "Message forwarded to Flutter background handler")
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error forwarding to Flutter: ${e.message}", e)
@@ -166,6 +217,7 @@ class VantFirebaseMessagingService : FirebaseMessagingService() {
         }
 
         Log.d(TAG, "📞 Incoming call from $callerName (callId=$callId)")
+        VantCallManager.logIncomingCallDiagnostics(this)
 
         wakeUpDevice()
 
@@ -183,6 +235,19 @@ class VantFirebaseMessagingService : FirebaseMessagingService() {
         }
 
         // App is background/killed OR screen is locked.
+        // Boot the Dart engine now so socket registration + resync + ICE
+        // prefetch can complete during the ring — MainActivity attaches this
+        // engine on Accept instead of cold-booting a second one.
+        prewarmCallEngine(callId)
+
+        // Make the ringing callId visible to the (headless) Dart side so it can
+        // proactively fetch the offer via call_resync before Accept.
+        getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+            .edit()
+            .putString("flutter.ringing_call_id", callId)
+            .putString("flutter.ringing_caller_id", callerId)
+            .apply()
+
         // Use Android Telecom framework (like WhatsApp) for guaranteed full-screen intent.
         Log.d(TAG, "📞 Reporting incoming call to Telecom framework")
         val telecomSuccess = VantCallManager.reportIncomingCall(
@@ -197,11 +262,63 @@ class VantFirebaseMessagingService : FirebaseMessagingService() {
         }
     }
 
+    /**
+     * Boot the app's Dart entrypoint on a second engine while the native
+     * ringing UI is up and stash it in FlutterEngineCache under
+     * [CALL_PREWARM_ENGINE_ID]. CallController's onInit then connects +
+     * registers the signaling socket during the ring, and MainActivity
+     * attaches this warm engine on Accept. Guarded against an active call
+     * and against duplicate pushes for the same ring. Destroyed by
+     * [discardPrewarmEngine] (cancel/decline/end) or the timeout runnable.
+     */
+    private fun prewarmCallEngine(callId: String) {
+        if (VantCallManager.activeConnection != null) {
+            Log.d(TAG, "callUX: active call in progress — skipping engine pre-warm")
+            return
+        }
+        if (MainActivity.isMainActivityAlive) {
+            // App is already running — the main engine handles the call; a
+            // second isolate would double-register the deviceId and get the
+            // primary socket kicked by the server.
+            Log.d(TAG, "callUX: main activity alive — skipping engine pre-warm")
+            return
+        }
+        mainHandler.post {
+            try {
+                val cache = FlutterEngineCache.getInstance()
+                if (cache.get(CALL_PREWARM_ENGINE_ID) != null) {
+                    Log.d(TAG, "callUX: pre-warm engine already cached, reusing")
+                    return@post
+                }
+                val loader = FlutterLoader()
+                if (!loader.initialized()) {
+                    loader.startInitialization(applicationContext)
+                }
+                loader.ensureInitializationComplete(applicationContext, null)
+
+                val engine = FlutterEngine(applicationContext)
+                engine.dartExecutor.executeDartEntrypoint(
+                    DartExecutor.DartEntrypoint.createDefault()
+                )
+                cache.put(CALL_PREWARM_ENGINE_ID, engine)
+                Log.d(TAG, "callUX: pre-warmed engine cached while ringing ($callId)")
+
+                prewarmTimeoutRunnable = Runnable { discardPrewarmEngine() }
+                mainHandler.postDelayed(prewarmTimeoutRunnable!!, PREWARM_TIMEOUT_MS)
+            } catch (e: Exception) {
+                Log.e(TAG, "callUX: pre-warm engine failed: ${e.message}", e)
+            }
+        }
+    }
+
     private fun handleCallCancelled(data: Map<String, String>) {
         val callId = data["callId"] ?: data["call_id"] ?: ""
         Log.d(TAG, "📞 Cancelling call: $callId")
 
+        markMissedCallForFsiPrompt()
         VantCallManager.teardownCall(this, callId)
+        discardPrewarmEngine()
+        clearRingingCallMarker()
     }
 
     private fun handleMissedCall(data: Map<String, String>) {
@@ -215,6 +332,9 @@ class VantFirebaseMessagingService : FirebaseMessagingService() {
         }
 
         Log.d(TAG, "📞 Showing missed call notification for $callerName")
+        markMissedCallForFsiPrompt()
+        discardPrewarmEngine()
+        clearRingingCallMarker()
         createMissedCallChannel()
 
         val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -248,6 +368,28 @@ class VantFirebaseMessagingService : FirebaseMessagingService() {
     }
 
     // ==================== UTILITY METHODS ====================
+
+    /**
+     * A call the user didn't answer may mean the full-screen intent was
+     * suppressed — flag it so the next app open can offer the settings prompt
+     * (consumed one-shot by CallController; the prompt still only shows when
+     * canUseFullScreenIntent() is false). Written into the Flutter
+     * SharedPreferences backend so Dart's SharedPreferences can read it.
+     */
+    private fun markMissedCallForFsiPrompt() {
+        getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean("flutter.fsi_prompt_after_missed_call", true)
+            .apply()
+    }
+
+    private fun clearRingingCallMarker() {
+        getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+            .edit()
+            .remove("flutter.ringing_call_id")
+            .remove("flutter.ringing_caller_id")
+            .apply()
+    }
 
     private fun wakeUpDevice() {
         try {

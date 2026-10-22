@@ -16,6 +16,16 @@ import CommonCrypto
   // PushKit registry for VoIP pushes (required for CallKit on locked iOS)
   var pushRegistry: PKPushRegistry?
   private var isAppForeground = false
+  private var isInCall = false
+  private var callStateChannel: FlutterMethodChannel?
+  private var audioSessionObserversRegistered = false
+  // Re-activation safety: only re-activate the audio session after an
+  // interruption that actually began during a call, and never within the
+  // teardown window after a call ends (isInCall syncs async from Dart, so a
+  // late route-change/interruption-ended notification could otherwise
+  // re-activate a dead call's session — red mic bar / bad next call).
+  private var interruptedWhileInCall = false
+  private var lastCallEndedAt: Date?
 
   override func application(
     _ application: UIApplication,
@@ -23,7 +33,13 @@ import CommonCrypto
   ) -> Bool {
     // Configure Firebase
     FirebaseApp.configure()
-    
+
+    // Persist the real aps-environment entitlement from the embedded provisioning
+    // profile so both native Swift and Flutter use a single source of truth.
+    // SharedPreferences on iOS prefixes keys with "flutter.", so we store it
+    // with the same prefix that Dart will resolve.
+    UserDefaults.standard.set(realApsEnvironment(), forKey: "flutter.apns_environment")
+
     // Set up notification delegate BEFORE Firebase configuration
     UNUserNotificationCenter.current().delegate = self
     
@@ -42,7 +58,13 @@ import CommonCrypto
     application.registerForRemoteNotifications()
     
     GeneratedPluginRegistrant.register(with: self)
-    
+
+    // Register method channel so Flutter can tell native when a Vant call is active
+    setupCallStateChannel()
+
+    // Watch audio-session interruptions so external calls don't silently kill Vant audio
+    setupAudioSessionObservers()
+
     // Register for VoIP pushes so CallKit can appear on locked screen
     setupPushKit()
     
@@ -126,8 +148,8 @@ import CommonCrypto
     if let senderId = userInfo["senderDeviceId"] as? String {
       print("📱 iOS Background: Sender ID: \(senderId)")
       
-      // Try to get saved username from UserDefaults
-      if let savedUsername = UserDefaults.standard.string(forKey: "chat_name_\(senderId)") {
+      // Try to get saved username from the App Group name cache
+      if let savedUsername = savedContactName(for: senderId) {
         print("📱 iOS Background: Found saved username: \(savedUsername)")
         
         // Create modified notification with correct username
@@ -182,7 +204,7 @@ import CommonCrypto
     
     // Check if we need to update the notification title with saved username
     if let senderId = userInfo["senderDeviceId"] as? String {
-      if let savedUsername = UserDefaults.standard.string(forKey: "chat_name_\(senderId)") {
+      if let savedUsername = savedContactName(for: senderId) {
         print("📱 iOS Foreground: Found saved username: \(savedUsername)")
         
         // Create a new notification request with updated title
@@ -311,6 +333,55 @@ import CommonCrypto
     registerVoipTokenWithBackend(token: token)
   }
 
+  /// Fallback APNs environment derived from the Swift build configuration.
+  /// Used only when the real aps-environment entitlement cannot be read.
+  private func fallbackApsEnvironmentForCurrentBuild() -> String {
+    #if DEBUG
+    return "sandbox"
+    #else
+    return "production"
+    #endif
+  }
+
+  /// Reads the real `aps-environment` entitlement from the embedded
+  /// provisioning profile. This is the single source of truth for whether the
+  /// signed binary is sandbox or production, regardless of build flags.
+  private func realApsEnvironment() -> String {
+    guard let path = Bundle.main.path(forResource: "embedded", ofType: "mobileprovision"),
+          let data = FileManager.default.contents(atPath: path),
+          let raw = String(data: data, encoding: .isoLatin1) else {
+      return fallbackApsEnvironmentForCurrentBuild()
+    }
+
+    guard let startRange = raw.range(of: "<?xml"),
+          let endRange = raw.range(of: "</plist>", range: startRange.lowerBound..<raw.endIndex) else {
+      return fallbackApsEnvironmentForCurrentBuild()
+    }
+
+    let plistXML = String(raw[startRange.lowerBound..<endRange.upperBound])
+    guard let plistData = plistXML.data(using: .utf8),
+          let plist = try? PropertyListSerialization.propertyList(
+            from: plistData,
+            options: [],
+            format: nil
+          ) as? [String: Any],
+          let entitlements = plist["Entitlements"] as? [String: Any],
+          let apsEnv = entitlements["aps-environment"] as? String else {
+      return fallbackApsEnvironmentForCurrentBuild()
+    }
+
+    return apsEnv
+  }
+
+  /// Returns the APNs environment stored at launch from the real entitlement.
+  /// Falls back to the build configuration if the stored value is missing.
+  private func currentApsEnvironment() -> String {
+    if let stored = UserDefaults.standard.string(forKey: "flutter.apns_environment"), !stored.isEmpty {
+      return stored
+    }
+    return fallbackApsEnvironmentForCurrentBuild()
+  }
+
   /// Register VoIP token with the backend server directly from native Swift.
   /// Uses URLSession so it works even before Flutter is fully initialized.
   private func registerVoipTokenWithBackend(token: String) {
@@ -330,7 +401,8 @@ import CommonCrypto
     let body: [String: String] = [
       "deviceId": deviceId,
       "voipToken": token,
-      "platform": "ios"
+      "platform": "ios",
+      "apnsEnvironment": currentApsEnvironment()
     ]
 
     guard let httpBody = try? JSONSerialization.data(withJSONObject: body) else { return }
@@ -379,8 +451,15 @@ import CommonCrypto
 
     // Extract call data from VoIP push payload
     let serverCallId = payload.dictionaryPayload["callId"] as? String ?? payload.dictionaryPayload["id"] as? String ?? ""
-    let nameCaller = payload.dictionaryPayload["callerName"] as? String ?? "Unknown"
     let handle = payload.dictionaryPayload["callerId"] as? String ?? ""
+    // Prefer the contact name the user saved locally — the push payload only
+    // carries the caller's server-side username (e.g. @user_1234). The cache
+    // lives in the App Group UserDefaults (mirrored from Dart's chat_name_*
+    // SharedPreferences keys) so it is readable here, before Flutter starts.
+    let pushName = payload.dictionaryPayload["callerName"] as? String ?? ""
+    let nameCaller = savedContactName(for: handle)
+      ?? (pushName.isEmpty ? nil : pushName)
+      ?? "Vant Call"
     // isVideo arrives as a String "true"/"false" from the server data dict
     let isVideoStr = payload.dictionaryPayload["isVideo"] as? String ?? "false"
     let isVideo = (payload.dictionaryPayload["isVideo"] as? Bool) ?? (isVideoStr == "true")
@@ -397,10 +476,28 @@ import CommonCrypto
     let callData = flutter_callkit_incoming.Data(id: callKitId, nameCaller: nameCaller, handle: handle, type: isVideo ? 1 : 0)
     var extra = payload.dictionaryPayload
     extra["callId"] = serverCallId
+    // Carry the resolved display name through so the post-accept path shows
+    // the same name the lock screen did.
+    extra["callerName"] = nameCaller
     callData.extra = extra as NSDictionary
     SwiftFlutterCallkitIncomingPlugin.sharedInstance?.showCallkitIncoming(callData, fromPushKit: true) {
       completion()
     }
+  }
+
+  /// Saved contact name for a device ID, readable before Flutter starts.
+  /// Dart mirrors `chat_name_<deviceId>` into this App Group store on every
+  /// save/rename/delete; the App Group container uses default file
+  /// protection, so before the first unlock after a reboot this returns nil
+  /// and callers fall back to the push payload name.
+  private func savedContactName(for deviceId: String) -> String? {
+    guard !deviceId.isEmpty,
+          let defaults = UserDefaults(suiteName: "group.com.vant.chatting"),
+          let name = defaults.string(forKey: "chat_name_\(deviceId)"),
+          !name.isEmpty else {
+      return nil
+    }
+    return name
   }
 
   // MARK: - CallkitIncomingAppDelegate
@@ -468,7 +565,10 @@ import CommonCrypto
       return
     }
 
+    let extra = call.data.extra as? [String: Any] ?? [:]
+    let isVideo = (extra["isVideo"] as? Bool) ?? ((extra["isVideo"] as? String) == "true")
     UserDefaults.standard.set(callId, forKey: "flutter.pendingAcceptedCallId")
+    UserDefaults.standard.set(isVideo, forKey: "flutter.pendingAcceptedCallIsVideo")
     UserDefaults.standard.set(true, forKey: "flutter.launchedForCall")
     UserDefaults.standard.synchronize()
   }
@@ -495,5 +595,129 @@ import CommonCrypto
         print("📱 CallKit: server \(action) HTTP \(httpResponse.statusCode)")
       }
     }.resume()
+  }
+
+  // MARK: - Call-state sync from Flutter
+
+  private func setupCallStateChannel() {
+    guard let controller = window?.rootViewController as? FlutterViewController else { return }
+
+    callStateChannel = FlutterMethodChannel(
+      name: "com.pear.messaging/call",
+      binaryMessenger: controller.binaryMessenger
+    )
+
+    callStateChannel?.setMethodCallHandler { [weak self] (call, result) in
+      switch call.method {
+      case "setInCall":
+        if let args = call.arguments as? [String: Any],
+           let inCall = args["inCall"] as? Bool {
+          self?.isInCall = inCall
+          if !inCall {
+            self?.lastCallEndedAt = Date()
+            self?.interruptedWhileInCall = false
+          }
+          UserDefaults.standard.set(inCall, forKey: "vant_in_active_call")
+          print("📱 Call state synced: inCall=\(inCall)")
+        }
+        result(nil)
+      default:
+        result(FlutterMethodNotImplemented)
+      }
+    }
+  }
+
+  // MARK: - Audio session interruption / route-change recovery
+
+  private func notifyFlutterCallLifecycle(_ action: String) {
+    DispatchQueue.main.async { [weak self] in
+      self?.callStateChannel?.invokeMethod(
+        "onCallAction",
+        arguments: ["action": action]
+      )
+    }
+  }
+
+  private func setupAudioSessionObservers() {
+    guard !audioSessionObserversRegistered else { return }
+    audioSessionObserversRegistered = true
+
+    NotificationCenter.default.addObserver(
+      self,
+      selector: #selector(handleAudioSessionInterruption),
+      name: AVAudioSession.interruptionNotification,
+      object: nil
+    )
+    NotificationCenter.default.addObserver(
+      self,
+      selector: #selector(handleAudioSessionRouteChange),
+      name: AVAudioSession.routeChangeNotification,
+      object: nil
+    )
+  }
+
+  @objc private func handleAudioSessionInterruption(_ notification: Notification) {
+    guard let userInfo = notification.userInfo,
+          let typeValue = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
+          let type = AVAudioSession.InterruptionType(rawValue: typeValue) else { return }
+
+    switch type {
+    case .began:
+      print("🔊 Audio session interruption began (inCall=\(isInCall))")
+      if isInCall {
+        interruptedWhileInCall = true
+        notifyFlutterCallLifecycle("call_held")
+      }
+    case .ended:
+      guard isInCall else { return }
+      notifyFlutterCallLifecycle("call_unheld")
+      defer { interruptedWhileInCall = false }
+      if let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt {
+        let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
+        if interruptedWhileInCall && options.contains(.shouldResume)
+            && canReactivateAudioSession() {
+          do {
+            try AVAudioSession.sharedInstance().setActive(true)
+            print("🔊 Resumed audio session after interruption")
+          } catch {
+            print("⚠️ Failed to resume audio session: \(error)")
+          }
+        }
+      }
+    default:
+      break
+    }
+  }
+
+  /// True when re-activating the audio session is safe: a call is live and no
+  /// teardown happened in the last 2s (Dart -> native setInCall is async, so
+  /// isInCall can briefly lag the real call end).
+  private func canReactivateAudioSession() -> Bool {
+    guard isInCall else { return false }
+    if let ended = lastCallEndedAt, Date().timeIntervalSince(ended) < 2 {
+      return false
+    }
+    return true
+  }
+
+  @objc private func handleAudioSessionRouteChange(_ notification: Notification) {
+    guard isInCall,
+          let userInfo = notification.userInfo,
+          let reasonValue = userInfo[AVAudioSessionRouteChangeReasonKey] as? UInt,
+          let reason = AVAudioSession.RouteChangeReason(rawValue: reasonValue) else { return }
+
+    print("🔊 Audio route changed: \(reason.rawValue) (inCall=\(isInCall))")
+
+    // After an external call hangs up, the system often routes audio back to
+    // the built-in receiver. Re-activate the session so WebRTC can recover.
+    // Skipped inside the post-teardown grace window (canReactivateAudioSession).
+    if (reason == .categoryChange || reason == .override || reason == .wakeFromSleep)
+        && canReactivateAudioSession() {
+      do {
+        try AVAudioSession.sharedInstance().setActive(true)
+      } catch {
+        print("⚠️ Failed to re-activate audio session after route change: \(error)")
+      }
+    }
   }
 }

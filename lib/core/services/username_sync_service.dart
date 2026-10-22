@@ -1,3 +1,6 @@
+import 'dart:async';
+import 'dart:io';
+
 import 'package:flutter/foundation.dart';
 import 'package:get/get.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -110,6 +113,12 @@ class UsernameSyncService extends GetxService {
         await prefs.setString('chat_name_$deviceId', username);
         debugPrint(
             '💾 Chat name saved to SharedPreferences: $deviceId -> $username');
+        // Mirror to the App Group store so native iOS code can read it
+        // before Flutter starts (PushKit incoming-call name lookup).
+        if (Platform.isIOS) {
+          unawaited(
+              LocalStorageService.writeContactNameToAppGroup(deviceId, username));
+        }
       }
 
       // Sync to backend

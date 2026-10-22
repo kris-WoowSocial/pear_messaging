@@ -4,7 +4,11 @@ import 'package:pear_messaging/core/widgets/report_bottom_sheet.dart';
 import '../../core/constants/app_colors.dart';
 import '../../core/constants/app_sizes.dart';
 import '../../core/utils/string_utils.dart';
+import '../../core/services/feature_flag_service.dart';
+import '../../core/services/identity_announcement_service.dart';
+import '../../core/services/local_storage_service.dart';
 import 'chat_controller.dart';
+import 'verify_contact_screen.dart';
 
 class ChatSettingsScreen extends GetView<ChatController> {
   const ChatSettingsScreen({super.key});
@@ -41,6 +45,9 @@ class ChatSettingsScreen extends GetView<ChatController> {
 
               const SizedBox(height: 8),
 
+              // Identity verification — only when the remote flag is ON.
+              _buildVerifySection(),
+
               // Privacy & Security
               _buildPrivacySection(),
 
@@ -55,6 +62,48 @@ class ChatSettingsScreen extends GetView<ChatController> {
         ),
       ),
     );
+  }
+
+  Widget _buildVerifySection() {
+    if (!Get.isRegistered<FeatureFlagService>()) return const SizedBox();
+    final flags = Get.find<FeatureFlagService>();
+    return Obx(() {
+      if (!flags.verificationUi.value) return const SizedBox();
+      final peerId = controller.recipientDeviceId;
+      final storage = Get.find<LocalStorageService>();
+      final status = storage.getPeerVerificationStatus(peerId);
+      final announcements = Get.isRegistered<IdentityAnnouncementService>()
+          ? Get.find<IdentityAnnouncementService>()
+          : null;
+      final conflict = storage.getPeerConflictBundle(peerId) != null ||
+          announcements?.keyChangedConflicts.contains(peerId) == true;
+      final reset = storage.hasPeerCapabilityReset(peerId) ||
+          announcements?.capabilityResetContacts.contains(peerId) == true;
+      final warning = conflict || reset;
+      return ListTile(
+        leading: Icon(
+          warning ? Icons.warning_amber_rounded : Icons.verified_user_outlined,
+          color: warning
+              ? Colors.red
+              : (status == 'verified' ? Colors.green : Colors.grey),
+        ),
+        title: Text(
+          reset
+              ? 'Contact security reset — verify again'
+              : conflict
+                  ? 'Identity key changed — verify again'
+                  : status == 'verified'
+                      ? 'Identity key verified'
+                      : 'Identity key not verified',
+        ),
+        subtitle: Text(
+          warning
+              ? 'Re-verify identity; encrypted-call protections stay enforced'
+              : 'Compare safety codes or scan a QR',
+        ),
+        onTap: () => Get.to(() => VerifyContactScreen(peerId: peerId)),
+      );
+    });
   }
 
   Widget _buildProfileSection() {

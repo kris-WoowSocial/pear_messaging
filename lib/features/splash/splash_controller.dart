@@ -14,6 +14,7 @@ import '../../core/utils/device_utils.dart';
 import '../../routes/app_routes.dart';
 import '../../storage/models/connection_request_entity.dart';
 import '../../storage/models/message_entity.dart';
+import '../call/call_controller.dart';
 
 class SplashController extends GetxController {
   final LocalAuthService _authService = Get.find();
@@ -514,6 +515,14 @@ class SplashController extends GetxController {
     try {
       // Check if we're already in a chat route (Branch SDK handled navigation)
       final currentRoute = Get.currentRoute;
+      if (currentRoute == '/call/active' ||
+          (Get.isRegistered<CallController>() &&
+              Get.find<CallController>().currentCallId.value.isNotEmpty)) {
+        debugPrint(
+          '📞 Active call in progress — skipping chat list navigation',
+        );
+        return;
+      }
       if (currentRoute == AppRoutes.chat) {
         debugPrint(
           '📋 Already in chat route, skipping pending invitation processing',

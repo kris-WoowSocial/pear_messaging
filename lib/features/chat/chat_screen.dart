@@ -12,6 +12,7 @@ import 'package:pear_messaging/features/chat/chat_controller.dart';
 import 'package:pear_messaging/features/chat/chat_message_bubble.dart';
 import 'package:pear_messaging/features/chat/widgets/reply_preview_bar.dart';
 import 'package:pear_messaging/features/call/call_controller.dart';
+import '../../core/services/feature_flag_service.dart';
 import '../../core/services/membership_service.dart';
 import '../../routes/app_routes.dart';
 import 'package:image_picker/image_picker.dart';
@@ -143,6 +144,21 @@ class ChatScreen extends GetView<ChatController> {
                 },
                 tooltip: 'Audio Call',
               ),
+            Obx(() {
+              if (controller.isGroup ||
+                  !Get.isRegistered<FeatureFlagService>() ||
+                  !Get.find<FeatureFlagService>().videoCalling.value) {
+                return const SizedBox.shrink();
+              }
+              return IconButton(
+                icon: const Icon(Icons.videocam, color: Colors.black),
+                onPressed: () {
+                  debugPrint('📞 Video call button pressed');
+                  _startVideoCall();
+                },
+                tooltip: 'Video Call',
+              );
+            }),
             IconButton(
               icon: const Icon(Icons.settings, color: Colors.black),
               onPressed: () {
@@ -1182,8 +1198,8 @@ class ChatScreen extends GetView<ChatController> {
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
         child: Text(
           controller.isGroup
-              ? '🔒 Messages and photos in this group are end-to-end encrypted. Only members of this group can read or share them.'
-              : '🔒 Messages and photos in this chat are end-to-end encrypted and peer-to-peer, with no servers in between. Only the people in this chat can read or share them. We are physically incapable of complying with data requests from third parties or government agencies. Our answer to every request is simple: The data does not exist.',
+              ? '🔒 Messages in this group are encrypted in transit and stored encrypted on your device.'
+              : '🔒 Messages are encrypted in transit and stored encrypted on your device.',
           style: TextStyle(
             fontSize: 12,
             color: Colors.black,
@@ -1223,6 +1239,40 @@ class ChatScreen extends GetView<ChatController> {
       Get.snackbar(
         'Error',
         'Failed to start call',
+        snackPosition: SnackPosition.BOTTOM,
+      );
+    }
+  }
+
+  Future<void> _startVideoCall() async {
+    try {
+      if (Get.isRegistered<MembershipService>()) {
+        final membershipService = Get.find<MembershipService>();
+        if (!membershipService.canMakeCalls) {
+          Get.toNamed(AppRoutes.stripeSubscription);
+          return;
+        }
+      }
+
+      if (!Get.isRegistered<CallController>()) {
+        Get.put(CallController());
+      }
+
+      final callController = Get.find<CallController>();
+      final started = callController.startCall(
+        controller.recipientDeviceId,
+        isVideo: true,
+      );
+      Get.toNamed('/call/video');
+      final success = await started;
+      if (!success && Get.currentRoute == '/call/video') {
+        Get.back();
+      }
+    } catch (e) {
+      debugPrint('❌ Failed to start video call: $e');
+      Get.snackbar(
+        'Error',
+        'Failed to start video call',
         snackPosition: SnackPosition.BOTTOM,
       );
     }
@@ -1309,7 +1359,6 @@ class ChatScreen extends GetView<ChatController> {
   }
 }
 
-
 /// Gzip-compresses [bytes] if doing so actually reduces the size.
 /// Runs in a background isolate via [compute] to avoid blocking the UI
 /// thread for large files.
@@ -1369,7 +1418,7 @@ Future<Uint8List> _compressImageBytes(String filePath) async {
       debugPrint('❌ Compression failed completely');
     }
 
-      return result ?? Uint8List(0);
+    return result ?? Uint8List(0);
   } catch (e) {
     debugPrint('❌ Compression error: $e');
     return Uint8List(0);

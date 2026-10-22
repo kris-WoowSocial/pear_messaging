@@ -45,6 +45,11 @@ import 'core/services/call_history_service.dart';
 import 'core/services/webrtc_call_service.dart';
 import 'core/services/call_foreground_service.dart';
 import 'core/services/callkit_service.dart';
+import 'core/services/identity_service.dart';
+import 'core/services/identity_announcement_service.dart';
+import 'core/services/identity_verification_service.dart';
+import 'core/services/feature_flag_service.dart';
+import 'core/utils/device_utils.dart';
 import 'features/call/call_controller.dart';
 
 void main() async {
@@ -113,8 +118,75 @@ Future<void> initializeCriticalServices() async {
     await storageService.setDeviceId(deviceId);
   }
 
+  // IdentityService must initialize BEFORE SocketService so the identity
+  // bundle is available for the register payload on first connect.
+  try {
+    await Get.putAsync(() => IdentityService().init());
+    debugPrint('✅ IdentityService initialized');
+  } catch (e) {
+    debugPrint('❌ IdentityService initialization failed: $e');
+    debugPrint('⚠️ App will continue without identity keys (legacy mode)');
+    Get.put(IdentityService());
+  }
+
+  // Orphaned identity: this install has a deviceId but its private keys are
+  // gone (secure-storage reads succeeded and returned nothing). Only the
+  // confirmed-missing state auto-recovers — 'unreadable' never mints an ID.
+  final identityService = Get.find<IdentityService>();
+  if (identityService.requiresNewDeviceId.value &&
+      identityService.storageState.value == IdentityStorageState.missing) {
+    deviceId = await _recoverWithNewDeviceId(storageService, identityService);
+  }
+
+  // Register the flag service before the first UI build. The fetch itself
+  // still runs in non-critical startup, but the reactive OFF state lets
+  // screens subscribe and update as soon as remote values arrive.
+  Get.put(FeatureFlagService(), permanent: true);
+
   final earlySocketService = Get.put(SocketService());
   earlySocketService.init(deviceId);
+
+  // Identity recovery is gated: only the two conflict-class reasons may
+  // trigger it, only once per session, and only after the user confirms.
+  // Missing/expired challenge, rate limits, bad signatures and server
+  // outages must NEVER mint a new device ID.
+  var recoveryPromptShown = false;
+  void requestIdentityRecovery(String? reason) {
+    if (!IdentityService.shouldTriggerIdentityRecovery(reason)) {
+      debugPrint('⚠️ Registration rejected (no recovery): $reason');
+      return;
+    }
+    if (recoveryPromptShown) {
+      debugPrint('⚠️ Identity recovery already offered this session');
+      return;
+    }
+    recoveryPromptShown = true;
+    _showIdentityConflictDialog(() async {
+      final newId =
+          await _recoverWithNewDeviceId(storageService, identityService);
+      await earlySocketService.switchDeviceId(newId);
+    });
+  }
+
+  earlySocketService.onIdentityConflict = (data) =>
+      requestIdentityRecovery('identity_conflict');
+  earlySocketService.onRegisterRejected = (data) =>
+      requestIdentityRecovery(data['reason'] as String?);
+
+  // Unreadable secure storage is an error state, never an auto-recovery
+  // trigger. Surface it once the UI is up.
+  if (identityService.storageState.value == IdentityStorageState.unreadable) {
+    Future.delayed(const Duration(seconds: 2),
+        () => _showIdentityStorageError(identityService));
+  }
+
+  // Undecryptable pin store (key lost / backup restore without the key):
+  // every contact looks unpinned, which would let the next announcement
+  // win silently. Surface a visible notice instead.
+  if (storageService.pinStoreCorrupted.value) {
+    Future.delayed(const Duration(seconds: 3),
+        () => _showPinStoreCorruptedDialog(storageService));
+  }
   await Get.putAsync(() => CallHistoryService().init());
   Get.put(CallController());
 
@@ -224,6 +296,132 @@ Future<void> initializeCriticalServices() async {
   debugPrint('✅ CallController initialized');
 }
 
+/// Mint a fresh deviceId + identity keypair after an identity conflict or
+/// confirmed-orphan state. Returns the new deviceId. Existing chats are
+/// keyed by PEER deviceIds, so changing our own ID does not lose them —
+/// but our contacts WILL see us as a new device (surfaced in the dialog).
+Future<String> _recoverWithNewDeviceId(
+  LocalStorageService storageService,
+  IdentityService identityService,
+) async {
+  final newDeviceId = DeviceUtils.generateNewDeviceId();
+  await storageService.setDeviceId(newDeviceId);
+  await identityService.regenerateIdentity();
+  debugPrint('🆕 Identity recovery complete — new device ID registered');
+  return newDeviceId;
+}
+
+/// Confirmation gate for new-ID recovery — never auto-mint a device ID.
+void _showIdentityConflictDialog(Future<void> Function() onConfirm) {
+  Get.dialog(
+    AlertDialog(
+      title: const Text('Security verification needed'),
+      content: const Text(
+        'Your device ID is linked to a different security key on the '
+        'server. This can happen after a reinstall or a security event.\n\n'
+        'To keep your account secure, Vant can create a new identity for '
+        'this device. Your chats stay on this phone, but your contacts '
+        'will see you as a new device and may need to re-add you.',
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Get.back(),
+          child: const Text('Not now'),
+        ),
+        TextButton(
+          onPressed: () {
+            Get.back();
+            onConfirm();
+          },
+          child: const Text('Create new identity'),
+        ),
+      ],
+    ),
+    barrierDismissible: false,
+  );
+}
+
+/// Secure storage present but unreadable — an error state, never a signal
+/// to mint a new ID. The user gets a retry and an explicit reset path;
+/// reset re-provisions keys under the SAME deviceId (the server binding
+/// decides whether that ID is still ours — a conflict then goes through
+/// the confirmed new-ID flow).
+void _showIdentityStorageError(IdentityService identityService) {
+  Get.dialog(
+    AlertDialog(
+      title: const Text('Secure storage error'),
+      content: const Text(
+        'Vant could not read this device\'s security keys. Your identity '
+        'is unchanged — this can happen after a restore or system update.\n\n'
+        'Try again first. Resetting PERMANENTLY replaces this device\'s '
+        'identity keys — your contacts will see a new security key for you '
+        'and verification codes will change.',
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Get.back(),
+          child: const Text('Not now'),
+        ),
+        TextButton(
+          onPressed: () async {
+            Get.back();
+            // Re-run the read — transient keystore errors often clear.
+            await identityService.init();
+            if (identityService.storageState.value ==
+                IdentityStorageState.unreadable) {
+              _showIdentityStorageError(identityService);
+            }
+          },
+          child: const Text('Retry'),
+        ),
+        TextButton(
+          onPressed: () async {
+            Get.back();
+            await identityService.regenerateIdentity();
+            if (Get.isRegistered<SocketService>()) {
+              await Get.find<SocketService>().forceReconnect();
+            }
+          },
+          child: const Text('Reset identity keys'),
+        ),
+      ],
+    ),
+    barrierDismissible: false,
+  );
+}
+
+/// Pin store exists but can't be decrypted — explicit user choice to reset.
+/// After reset, all contacts return to unverified/TOFU: previously verified
+/// contacts must be re-verified (the reset wipes their pins too).
+void _showPinStoreCorruptedDialog(LocalStorageService storageService) {
+  Get.dialog(
+    AlertDialog(
+      title: const Text('Verification data unreadable'),
+      content: const Text(
+        'Your saved contact security keys can\'t be read on this device — '
+        'this can happen after restoring from a backup.\n\n'
+        'If you reset verification data, every contact becomes unverified '
+        'again and you should compare safety codes again for important '
+        'chats.',
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Get.back(),
+          child: const Text('Later'),
+        ),
+        TextButton(
+          onPressed: () async {
+            Get.back();
+            await storageService.resetPeerIdentityStore();
+          },
+          child: const Text('Reset verification data'),
+        ),
+      ],
+    ),
+    barrierDismissible: false,
+  );
+}
+
 /// Initialize non-critical services in background after app launches
 void initializeNonCriticalServices() async {
   try {
@@ -301,6 +499,41 @@ void initializeNonCriticalServices() async {
   // Run remaining non-critical initializations in parallel for speed
   // Each wrapped in try-catch to prevent one failure from blocking others
   final futures = <Future>[];
+
+  // Identity announcement — spreads our identity bundle to existing contacts
+  // (TOFU propagation). Safe to run in background; retries while offline.
+  futures.add(Future(() {
+    try {
+      Get.put(IdentityAnnouncementService());
+    } catch (e) {
+      debugPrint('❌ IdentityAnnouncementService init failed: $e');
+    }
+  }));
+
+  // Feature flags — Remote Config, all new capabilities default OFF.
+  futures.add(Future(() async {
+    try {
+      final flags = Get.isRegistered<FeatureFlagService>()
+          ? Get.find<FeatureFlagService>()
+          : Get.put(FeatureFlagService(), permanent: true);
+      await flags.init();
+    } catch (e) {
+      debugPrint('❌ FeatureFlagService init failed: $e');
+      if (!Get.isRegistered<FeatureFlagService>()) {
+        Get.put(FeatureFlagService(), permanent: true); // defaults stay off
+      }
+    }
+  }));
+
+  // Verification service — QR/safety-code key verification. The service
+  // itself is passive (listens for verify_echo only); UI is flag-gated.
+  futures.add(Future(() {
+    try {
+      Get.put(IdentityVerificationService());
+    } catch (e) {
+      debugPrint('❌ IdentityVerificationService init failed: $e');
+    }
+  }));
 
   // FCM for push notifications - now Firebase is ready
   futures.add(
@@ -615,41 +848,5 @@ Future<void> requestMicrophonePermission() async {
     debugPrint('🎤 Microphone permission result: $result');
   } catch (e) {
     debugPrint('⚠️ Error requesting microphone permission: $e');
-  }
-}
-
-/// Handle cold-start after user accepted call from background/killed state
-/// This checks SharedPreferences for pendingAcceptedCallId set by CallKitService
-/// and triggers call_resync to get the SDP offer from server
-Future<void> _handlePendingAcceptedCall() async {
-  try {
-    final prefs = await SharedPreferences.getInstance();
-    final pendingCallId = prefs.getString('pendingAcceptedCallId');
-    if (pendingCallId == null || pendingCallId.isEmpty) return;
-
-    // Clear immediately to prevent re-processing on next launch
-    await prefs.remove('pendingAcceptedCallId');
-    debugPrint('📞 Cold start: pendingAcceptedCallId = $pendingCallId');
-
-    // Wait for socket to be connected and registered
-    final socketService = Get.find<SocketService>();
-    int attempts = 0;
-    while (!socketService.isConnected.value && attempts < 30) {
-      await Future.delayed(const Duration(milliseconds: 200));
-      attempts++;
-    }
-
-    if (!socketService.isConnected.value) {
-      debugPrint('📞 Cold start resync: socket connection timeout');
-      return;
-    }
-
-    // Set auto-accept flag and emit resync to get SDP offer
-    final callController = Get.find<CallController>();
-    await callController.setPendingAutoAccept(pendingCallId);
-    socketService.socket?.emit('call_resync', {'callId': pendingCallId});
-    debugPrint('📞 Cold start: emitted call_resync for $pendingCallId');
-  } catch (e) {
-    debugPrint('📞 Error handling pending accepted call: $e');
   }
 }

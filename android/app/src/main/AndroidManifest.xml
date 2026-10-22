@@ -2,13 +2,12 @@
     xmlns:tools="http://schemas.android.com/tools"
     package="com.vant.chat">
 
-    <!-- Force-remove USE_FULL_SCREEN_INTENT that is pulled in by flutter_callkit_incoming -->
-    <uses-permission
-        android:name="android.permission.USE_FULL_SCREEN_INTENT"
-        tools:node="remove" />
+    <!-- Required so incoming-call notifications can launch the full-screen
+         call UI over the lock screen (granted automatically for call apps).
+         Without this, background activity starts are silently blocked and the
+         user only sees a heads-up notification. -->
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
 
-    <!-- Incoming call UI is shown via Android Telecom/CallStyle notifications,
-         not the deprecated USE_FULL_SCREEN_INTENT permission. -->
     <!-- Required for dismissing keyguard to show call UI over lock screen -->
     <uses-permission android:name="android.permission.DISABLE_KEYGUARD" />
     <!-- Permissions for biometric authentication -->
@@ -36,8 +35,9 @@
     <uses-permission android:name="com.huawei.android.launcher.permission.READ_SETTINGS" />
     <uses-permission android:name="com.huawei.android.launcher.permission.WRITE_SETTINGS" />
 
-    <!-- Audio call permissions -->
+    <!-- Audio/video call permissions -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <!-- Gallery/photo permissions for Android 13+ -->
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
@@ -52,10 +52,11 @@
     <!-- Foreground service to keep call alive when app is backgrounded -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_PHONE_CALL" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SHORT_SERVICE" />
     <!-- Self-managed ConnectionService: allows full-screen incoming call UI over lock screen -->
     <uses-permission android:name="android.permission.MANAGE_OWN_CALLS" />
-    <!-- <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" /> -->
     <!-- Proximity sensor wake lock for screen off during calls -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     
@@ -200,10 +201,16 @@
             </intent-filter>
         </service>
 
-        <!-- Keep default Flutter FCM service — our custom VantFirebaseMessagingService
-             handles the com.google.firebase.MESSAGING_EVENT intent filter so it receives
-             all messages first. Non-call messages are forwarded to Flutter manually.
-             Do NOT remove this service; it is needed for Flutter plugin initialization. -->
+        <!-- Remove the plugin's FCM service from the merged manifest: BOTH it and
+             VantFirebaseMessagingService receive every MESSAGING_EVENT, so each push
+             reached the Dart background handler twice — duplicated message
+             notifications when the app is killed. Plugin initialization does not
+             need this service (FlutterFirebaseMessagingInitProvider stays).
+             Ours handles calls natively and forwards everything else manually. -->
+        <service
+            android:name="io.flutter.plugins.firebase.messaging.FlutterFirebaseMessagingService"
+            android:exported="false"
+            tools:node="remove" />
 
         <!-- Incoming call full-screen activity shown over the lock screen -->
         <activity
@@ -236,7 +243,7 @@
             android:name=".CallForegroundService"
             android:enabled="true"
             android:exported="false"
-            android:foregroundServiceType="shortService|microphone|phoneCall" />
+            android:foregroundServiceType="shortService|microphone|camera|phoneCall" />
 
         <!-- Boot receiver for Samsung devices to restart services after device restart -->
         <receiver

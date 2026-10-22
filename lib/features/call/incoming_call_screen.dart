@@ -1,9 +1,11 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
+import 'package:pear_messaging/core/services/feature_flag_service.dart';
 import 'package:pear_messaging/core/services/notification_service.dart';
 import 'package:pear_messaging/core/services/socket_service.dart';
 import 'call_controller.dart';
+import 'call_encryption_indicator.dart';
 import '../../core/services/ringtone_service.dart';
 import '../../core/services/callkit_service.dart';
 
@@ -20,11 +22,30 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
   late AnimationController _animationController;
   late Animation<double> _pulseAnimation;
   bool _isAccepting = false;
+  Worker? _callStateWorker;
+
+  CallController get _controller => Get.find<CallController>();
 
   @override
   void initState() {
     super.initState();
     _setupAnimation();
+    _callStateWorker = ever(_controller.callState, _onCallStateChanged);
+  }
+
+  void _onCallStateChanged(CallState state) {
+    if (state == CallState.ended || state == CallState.idle) {
+      _closeCallRoute();
+    }
+  }
+
+  /// Pop this call route and anything that may have been pushed on top of it
+  /// (snackbars, dialogs) without touching routes underneath.
+  void _closeCallRoute() {
+    if (!mounted) return;
+    final routeName = ModalRoute.of(context)?.settings.name;
+    if (routeName == null || !routeName.startsWith('/call/')) return;
+    Navigator.of(context).popUntil((route) => route.settings.name != routeName);
   }
 
   void _setupAnimation() {
@@ -40,6 +61,7 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
 
   @override
   void dispose() {
+    _callStateWorker?.dispose();
     _animationController.dispose();
     super.dispose();
   }
@@ -48,6 +70,7 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
   Widget build(BuildContext context) {
     final callData = Get.arguments as Map<String, dynamic>?;
     final callerId = callData?['callerId'] as String? ?? '';
+    final isVideo = callData?['isVideo'] == true;
     final controller = Get.find<CallController>();
     if (callerId.isNotEmpty && controller.remoteDisplayName.value.isEmpty) {
       controller.resolveDisplayNamePublic(callerId);
@@ -117,9 +140,18 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
                       ),
                       const SizedBox(height: 8),
                       // Call status
-                      const Text(
-                        'Incoming call...',
-                        style: TextStyle(color: Colors.white70, fontSize: 16),
+                      Text(
+                        isVideo ? 'Incoming video call' : 'Incoming call...',
+                        style: const TextStyle(
+                          color: Colors.white70,
+                          fontSize: 16,
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      Obx(
+                        () => CallEncryptionIndicator(
+                          state: controller.callEncryptionState.value,
+                        ),
                       ),
                     ],
                   ),
@@ -215,11 +247,26 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
     });
 
     final callId = callData['callId'] as String?;
+    final callerId = callData['callerId'] as String? ?? '';
     final sdpOffer = callData['sdpOffer'] as String?;
+    final isVideo = callData['isVideo'] == true;
 
     try {
       final controller = Get.find<CallController>();
       final ringtoneService = RingtoneService();
+      final hasDirectOffer = (sdpOffer != null && sdpOffer.isNotEmpty) ||
+          callData['crypto'] is Map;
+      final videoUiEnabled = isVideo &&
+          Get.isRegistered<FeatureFlagService>() &&
+          Get.find<FeatureFlagService>().videoCalling.value;
+      if (videoUiEnabled) {
+        controller.prepareVideoCallScreen(callerId, incoming: true);
+        Get.offNamed('/call/video');
+      }
+      Future<bool>? acceptFuture;
+      if (hasDirectOffer && videoUiEnabled) {
+        acceptFuture = controller.acceptCall(callData);
+      }
 
       // Stop ringtone immediately so it doesn't keep ringing
       await ringtoneService.stopRingtone();
@@ -235,10 +282,16 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
         await CallKitService().setCallConnected(callId);
       }
 
-      // If we have SDP offer (socket was connected), accept directly
-      if (sdpOffer != null && sdpOffer.isNotEmpty) {
-        await controller.acceptCall(callData);
-        Get.offNamed('/call/active');
+      // If we have a plaintext SDP offer or a complete encrypted offer
+      // (socket was connected), accept directly without a resync round trip.
+      if (hasDirectOffer) {
+        acceptFuture ??= controller.acceptCall(callData);
+        final success = await acceptFuture;
+        if (!success && Get.currentRoute == '/call/video') {
+          Get.back();
+        } else if (success && Get.currentRoute != controller.activeCallRoute) {
+          Get.offNamed(controller.activeCallRoute);
+        }
       } else {
         // No SDP offer (socket was disconnected) - request resync from server
         debugPrint('📞 No SDP offer, requesting call resync for $callId');
@@ -276,9 +329,7 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
     try {
       final controller = Get.find<CallController>();
       controller.rejectCall(callData);
-
-      // Go back to previous screen
-      Get.back();
+      // The incoming call screen closes reactively when callState becomes idle/ended.
     } catch (e) {
       debugPrint('❌ Error declining call: $e');
       Get.back();

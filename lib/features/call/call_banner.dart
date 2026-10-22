@@ -23,10 +23,8 @@ class CallBanner extends StatelessWidget {
         return const SizedBox.shrink();
       }
 
-      final duration = controller.callDuration.value;
-      final name = controller.remoteDisplayName.value.isNotEmpty
-          ? controller.remoteDisplayName.value
-          : 'Unknown';
+      final duration = controller.callTimerLabel;
+      final name = controller.remoteDisplayLabel;
 
       return Material(
         color: const Color(0xFF1F1F1F),

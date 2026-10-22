@@ -1,15 +1,22 @@
 import 'dart:async';
 import 'dart:io' show Platform;
 import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:socket_io_client/socket_io_client.dart' as IO;
+import 'call_breadcrumbs.dart';
+import 'call_media_helper.dart';
+import 'call_diag.dart';
 import 'encryption_service.dart';
+import 'feature_flag_service.dart';
 import 'fcm_service.dart';
 import 'block_service.dart';
 import 'connection_request_service.dart';
+import 'identity_service.dart';
 import '../constants/network_constants.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 
 class SocketService extends GetxService {
   // Live server URL
@@ -21,6 +28,7 @@ class SocketService extends GetxService {
   bool _isConnecting = false; // Prevent duplicate connection attempts
   bool _isInForeground = true;
   int _reconnectAttempts = 0;
+
   final List<Map<String, dynamic>> _pendingMessagesAwaitingHandler = [];
 
   final RxBool isConnected = false.obs;
@@ -51,8 +59,10 @@ class SocketService extends GetxService {
   Function(Map<String, dynamic>)? onIceCandidate;
   Function(Map<String, dynamic>)? onPeerRinging;
   Function(Map<String, dynamic>)? onIceRestart;
+  Function(Map<String, dynamic>)? onCallMediaUpdate;
   Function(Map<String, dynamic>)? onCallResync;
   Function(Map<String, dynamic>)? onCalleeConnecting;
+  Function(Map<String, dynamic>)? onCallStatusResponse;
 
   // Callbacks for group chat events
   Function(Map<String, dynamic>)? onGroupMessageReceived;
@@ -68,10 +78,53 @@ class SocketService extends GetxService {
   // Getters
   String? get deviceId => _deviceId;
 
+  /// Single-use nonce from the server's register_challenge, completed once
+  /// per socket connection. Reset on each new connect.
+  Completer<String?>? _challengeCompleter;
+
+  /// Connect-path instrumentation: elapsed since IO.io() was created. The
+  /// 'connect' event elapsed = DNS + TLS + WebSocket upgrade combined
+  /// (websocket-only transport — no polling upgrade).
+  final Stopwatch _connectWatch = Stopwatch();
+
+  /// Elapsed since the 'register' emit until 'device_registered' arrives.
+  final Stopwatch _registerWatch = Stopwatch();
+
+  /// When true, the connect handler skips the Remote Config wait so call
+  /// signaling registers immediately. Set by CallController while a call is
+  /// ringing or being answered; safe because flags hydrate from disk.
+  bool callUrgency = false;
+
+  /// Callback for inbound identity announcements (peer bundle + signature).
+  /// Wired by the announcement flow.
+  void Function(Map<String, dynamic>)? onIdentityAnnounce;
+
+  /// Callback for server-side identity responses (bound / rejected / conflict).
+  void Function(Map<String, dynamic>)? onIdentityBound;
+  void Function(Map<String, dynamic>)? onRegisterRejected;
+  void Function(Map<String, dynamic>)? onIdentityConflict;
+  void Function(Map<String, dynamic>)? onIdentityAnnounceAcked;
+
+  /// Inbound verification echo ({from, bundle, mac}) during contact
+  /// verification — wired by IdentityVerificationService.
+  void Function(Map<String, dynamic>)? onVerifyEcho;
+
+  @visibleForTesting
+  static String formatClientVersion(String version, String buildNumber) =>
+      '$version+$buildNumber';
+
   /// Initialize the socket service with device ID
   Future<SocketService> init(String deviceId) async {
     _deviceId = deviceId;
     debugPrint('🔌 SocketService initialized with deviceId: $_deviceId');
+    // Cache client version for the register payload (rollout gating).
+    try {
+      final info = await PackageInfo.fromPlatform();
+      _cachedClientVersion = formatClientVersion(
+        info.version,
+        info.buildNumber,
+      );
+    } catch (_) {}
     _setupConnectivityListener();
     await connect();
     return this;
@@ -140,6 +193,9 @@ class SocketService extends GetxService {
     }
 
     _isConnecting = true;
+    _connectWatch
+      ..reset()
+      ..start();
 
     try {
       connectionStatus.value = 'connecting';
@@ -167,7 +223,7 @@ class SocketService extends GetxService {
       debugPrint('🔧 Socket configuration:');
       debugPrint('   - URL: $_serverUrl');
       debugPrint('   - Path: /socket/secureconnection');
-      debugPrint('   - Transports: polling, websocket');
+      debugPrint('   - Transports: websocket only');
       debugPrint('   - Timeout: 10s');
       debugPrint('   - Reconnection attempts: 5');
 
@@ -203,8 +259,11 @@ class SocketService extends GetxService {
 
   /// Setup socket event listeners
   void _setupSocketListeners() {
-    _socket?.on('connect', (_) {
-      debugPrint('✅ Socket connected');
+    _socket?.on('connect', (_) async {
+      callDiag(
+        '✅ Socket connected (transport=websocket, '
+        '${_connectWatch.elapsedMilliseconds}ms DNS+TLS+WS)',
+      );
       isConnected.value = true;
       isRegistered.value = false;
       connectionStatus.value = 'connected';
@@ -213,23 +272,97 @@ class SocketService extends GetxService {
           0; // Reset reconnection attempts on successful connection
       _cancelReconnectTimer();
 
+      // Fresh challenge nonce for this connection
+      _challengeCompleter = Completer<String?>();
+
       // Update UserDefaults for iOS background notification handling
       _updateSocketConnectionStatus(true);
 
       // Store backend URL for HTTP delivery ack
       _storeBackendUrl();
 
+      // Wait for the first Remote Config fetch (up to 3s) so the initial
+      // capability announcement reflects the real feature flags instead of
+      // the safe OFF defaults. Skipped while a call is ringing/being
+      // answered — flags are hydrated from disk at startup, so capabilities
+      // still announce correctly, and the fetch is not on the accept path.
+      if (callUrgency) {
+        callDiag('⚡ Skipping Remote Config wait — call in progress');
+      } else {
+        final rcWatch = Stopwatch()..start();
+        await _waitForFeatureFlags();
+        callDiag(
+          '🎛️ Remote Config wait: ${rcWatch.elapsedMilliseconds}ms',
+        );
+      }
+
       _registerDevice();
+
+      // Subscribe once to flag changes so any later Remote Config flip triggers
+      // a capabilities_update re-announcement (covers app resume refresh too).
+      _subscribeCapabilityFlagUpdates();
 
       // Send pending delivery acknowledgments for FCM messages received while offline
       FCMService.sendPendingAcknowledgments();
+    });
+
+    _socket?.on('register_challenge', (data) {
+      final nonce = data is Map ? data['nonce'] as String? : null;
+      if (nonce != null &&
+          _challengeCompleter != null &&
+          !_challengeCompleter!.isCompleted) {
+        _challengeCompleter!.complete(nonce);
+      }
+    });
+
+    _socket?.on('identity_announce', (data) {
+      if (data is Map && onIdentityAnnounce != null) {
+        onIdentityAnnounce!(Map<String, dynamic>.from(data));
+      }
+    });
+
+    _socket?.on('identity_bound', (data) {
+      if (data is Map && onIdentityBound != null) {
+        onIdentityBound!(Map<String, dynamic>.from(data));
+      }
+    });
+
+    _socket?.on('register_rejected', (data) {
+      debugPrint('⚠️ Register rejected by server: $data');
+      if (data is Map && onRegisterRejected != null) {
+        onRegisterRejected!(Map<String, dynamic>.from(data));
+      }
+    });
+
+    _socket?.on('identity_conflict', (data) {
+      debugPrint('⚠️ Identity conflict from server: $data');
+      if (data is Map && onIdentityConflict != null) {
+        onIdentityConflict!(Map<String, dynamic>.from(data));
+      }
+    });
+
+    _socket?.on('verify_echo', (data) {
+      if (data is Map && onVerifyEcho != null) {
+        onVerifyEcho!(Map<String, dynamic>.from(data));
+      }
+    });
+
+    _socket?.on('identity_announce_acked', (data) {
+      if (data is Map && onIdentityAnnounceAcked != null) {
+        onIdentityAnnounceAcked!(Map<String, dynamic>.from(data));
+      }
     });
 
     _socket?.on('device_registered', (data) {
       final deviceId = data is Map ? data['deviceId'] : null;
       if (deviceId == _deviceId) {
         isRegistered.value = true;
-        debugPrint('✅ Socket registration confirmed for $_deviceId');
+        callDiag(
+          '✅ Socket registration confirmed for $_deviceId '
+          '(register→registered: ${_registerWatch.elapsedMilliseconds}ms, '
+          'total from connect: ${_connectWatch.elapsedMilliseconds}ms)',
+        );
+        unawaited(_registerFCMTokenIfAvailable());
       }
     });
 
@@ -256,7 +389,10 @@ class SocketService extends GetxService {
     });
 
     _socket?.on('connect_error', (error) {
-      debugPrint('❌ Socket connection error: $error');
+      debugPrint(
+        '❌ Socket connection error after '
+        '${_connectWatch.elapsedMilliseconds}ms: $error',
+      );
       debugPrint('❌ Error type: ${error.runtimeType}');
       debugPrint('❌ Error details: ${error.toString()}');
       isConnected.value = false;
@@ -368,7 +504,9 @@ class SocketService extends GetxService {
 
     // WebRTC Call: Incoming call
     _socket?.on('incoming_call', (data) {
-      debugPrint('📞 Incoming call: $data');
+      debugPrint(
+        '📞 Incoming call: callId=${data is Map ? data['callId'] : null}, encrypted=${data is Map && data['crypto'] != null}',
+      );
       if (onIncomingCall != null && data != null) {
         onIncomingCall!(Map<String, dynamic>.from(data));
       }
@@ -391,7 +529,9 @@ class SocketService extends GetxService {
 
     // WebRTC Call: Call accepted
     _socket?.on('call_accepted', (data) {
-      debugPrint('📞 Call accepted: $data');
+      debugPrint(
+        '📞 Call accepted: callId=${data is Map ? data['callId'] : null}, encrypted=${data is Map && data['crypto'] != null}',
+      );
       if (onCallAccepted != null && data != null) {
         onCallAccepted!(Map<String, dynamic>.from(data));
       }
@@ -431,17 +571,39 @@ class SocketService extends GetxService {
 
     // WebRTC Call: ICE restart
     _socket?.on('ice_restart', (data) {
-      debugPrint('📞 ICE restart: $data');
+      debugPrint(
+        '📞 ICE restart: callId=${data is Map ? data['callId'] : null}, encrypted=${data is Map && data['crypto'] != null}',
+      );
       if (onIceRestart != null && data != null) {
         onIceRestart!(Map<String, dynamic>.from(data));
       }
     });
 
+    // WebRTC Call: remote camera state update
+    _socket?.on('call_media_update', (data) {
+      debugPrint('📞 Call media update: $data');
+      if (onCallMediaUpdate != null && data != null) {
+        onCallMediaUpdate!(Map<String, dynamic>.from(data));
+      }
+    });
+
     // WebRTC Call: Call resync - server resends SDP offer after cold-start accept
     _socket?.on('call_resync', (data) {
-      debugPrint('📞 Call resync: $data');
+      debugPrint(
+        '📞 Call resync: callId=${data is Map ? data['callId'] : null}',
+      );
       if (onCallResync != null && data != null) {
         onCallResync!(Map<String, dynamic>.from(data));
+      }
+    });
+
+    // WebRTC Call: Server response to a call status probe
+    _socket?.on('call_status_response', (data) {
+      debugPrint(
+        '📞 Call status response: callId=${data is Map ? data['callId'] : null}, exists=${data is Map ? data['exists'] : null}',
+      );
+      if (onCallStatusResponse != null && data != null) {
+        onCallStatusResponse!(Map<String, dynamic>.from(data));
       }
     });
 
@@ -516,7 +678,7 @@ class SocketService extends GetxService {
     }
   }
 
-  void _registerDevice() {
+  Future<void> _registerDevice() async {
     if (_deviceId == null) {
       debugPrint('⚠️ Cannot register: Device ID is null');
       return;
@@ -525,16 +687,137 @@ class SocketService extends GetxService {
     // Detect platform
     final platform = Platform.isAndroid ? 'android' : 'ios';
 
+    // Wait briefly for the register_challenge nonce — arrives on connect.
+    // If the server doesn't issue one (old deployment), we register without
+    // identity fields (transition window).
+    final regWatch = Stopwatch()..start();
+    String? nonce;
+    final challenge = _challengeCompleter;
+    if (challenge != null && !challenge.isCompleted) {
+      nonce = await challenge.future.timeout(
+        const Duration(seconds: 2),
+        onTimeout: () => null,
+      );
+    } else if (challenge != null) {
+      nonce = await challenge.future;
+    }
+    callDiag(
+      '⏱️ register_challenge wait: ${regWatch.elapsedMilliseconds}ms '
+      '(nonce=${nonce != null})',
+    );
+
+    // Sign the identity bundle + login when we have keys and a nonce.
+    // identitySig proves possession of the bundle's key ("vant-bind");
+    // registerSig is the login signature ("vant-reg").
+    final signWatch = Stopwatch()..start();
+    String? identitySig;
+    String? registerSig;
+    final bundle = _identityBundle();
+    try {
+      if (Get.isRegistered<IdentityService>() && nonce != null) {
+        final identity = Get.find<IdentityService>();
+        final sigs = await Future.wait([
+          identity.signBinding(_deviceId!, nonce),
+          identity.signRegistration(_deviceId!, nonce),
+        ]);
+        identitySig = sigs[0];
+        registerSig = sigs[1];
+      }
+    } catch (e) {
+      debugPrint('⚠️ Identity signing failed, registering unsigned: $e');
+    }
+    callDiag(
+      '⏱️ identity signing: ${signWatch.elapsedMilliseconds}ms',
+    );
+
     _socket?.emit('register', {
       'deviceId': _deviceId,
       'platform': platform,
       'isForeground': _isInForeground,
+      'clientVersion': _clientVersion,
+      'capabilities': _announcedCapabilities,
+      'identityBundle': bundle,
+      'identitySig': identitySig,
+      'registerSig': registerSig,
+    });
+    _registerWatch
+      ..reset()
+      ..start();
+    debugPrint(
+        '📝 Device registration requested: $_deviceId (platform: $platform, version: $_clientVersion)');
+  }
+
+  /// Client version reported to the server for rollout gating.
+  String get _clientVersion => _cachedClientVersion;
+  String _cachedClientVersion = 'unknown';
+
+  List<String> get _announcedCapabilities {
+    if (!Get.isRegistered<FeatureFlagService>()) return const [];
+    final flags = Get.find<FeatureFlagService>();
+    final encryptedAvailable = flags.encryptedSignaling.value &&
+        Get.isRegistered<IdentityService>() &&
+        Get.find<IdentityService>().hasIdentity.value;
+    return [
+      if (encryptedAvailable) 'encrypted_call',
+      if (encryptedAvailable && flags.videoCalling.value) 'video_call',
+    ];
+  }
+
+  bool _capabilityFlagListenerAdded = false;
+
+  /// Wait up to 3 seconds for the first Remote Config fetch. This keeps the
+  /// initial register from publishing capabilities while flags are still at
+  /// their safe OFF defaults.
+  Future<void> _waitForFeatureFlags() async {
+    if (!Get.isRegistered<FeatureFlagService>()) return;
+    try {
+      await Get.find<FeatureFlagService>()
+          .initialFetchCompleted
+          .timeout(const Duration(seconds: 3), onTimeout: () => null);
+    } catch (_) {
+      // Remote Config unreachable — proceed with defaults.
+    }
+  }
+
+  /// Subscribe to Remote Config flag changes so the server always sees the
+  /// current capability set, even when the socket already registered with
+  /// an earlier flag state.
+  void _subscribeCapabilityFlagUpdates() {
+    if (_capabilityFlagListenerAdded ||
+        !Get.isRegistered<FeatureFlagService>()) {
+      return;
+    }
+    _capabilityFlagListenerAdded = true;
+    Get.find<FeatureFlagService>().onFlagsUpdated(() {
+      if (isRegistered.value) {
+        sendCapabilitiesUpdate();
+      }
+    });
+  }
+
+  /// Re-announce capabilities over the existing socket. Used when Remote Config
+  /// flags change after registration and on app resume.
+  void sendCapabilitiesUpdate() {
+    if (_socket == null || _deviceId == null) return;
+    _socket?.emit('capabilities_update', {
+      'clientVersion': _clientVersion,
+      'capabilities': _announcedCapabilities,
     });
     debugPrint(
-        '📝 Device registration requested: $_deviceId (platform: $platform)');
+      '📡 Capabilities update sent: $_deviceId -> $_announcedCapabilities',
+    );
+  }
 
-    // Also register FCM token if available
-    _registerFCMTokenIfAvailable();
+  /// Identity bundle for the new identityBundle register field.
+  /// Null when IdentityService is unavailable or has no keys — the server
+  /// treats that as an unbound legacy device.
+  String? _identityBundle() {
+    try {
+      if (Get.isRegistered<IdentityService>()) {
+        return Get.find<IdentityService>().identityBundleBase64;
+      }
+    } catch (_) {}
+    return null;
   }
 
   int _fcmRetryCount = 0;
@@ -582,6 +865,12 @@ class SocketService extends GetxService {
       return;
     }
 
+    if (!isRegistered.value) {
+      debugPrint(
+          '📱 Deferring FCM token until device registration is confirmed');
+      return;
+    }
+
     if (_socket == null) {
       debugPrint('⚠️ Cannot register FCM token: Socket is null');
       return;
@@ -589,7 +878,7 @@ class SocketService extends GetxService {
 
     debugPrint('📱 Emitting register_fcm event...');
     debugPrint('📱 Device ID: $_deviceId');
-    debugPrint('📱 FCM Token: $fcmToken');
+    debugPrint('FCM token length: ${fcmToken.length}');
 
     _socket!.emit('register_fcm', {
       'deviceId': _deviceId,
@@ -1040,6 +1329,15 @@ class SocketService extends GetxService {
   }
 
   Future<void> reconnectForCallResync() async {
+    // A socket that is already connected (or still finishing registration)
+    // is good enough for resync — tearing it down restarts registration and
+    // wastes seconds on the accept path.
+    if (isConnected.value || _isConnecting) {
+      debugPrint(
+        '⚡ Call resync: socket already connected/connecting, reusing',
+      );
+      return;
+    }
     _reconnectAttempts = 0;
     _cancelReconnectTimer();
     _socket?.disconnect();
@@ -1058,6 +1356,24 @@ class SocketService extends GetxService {
     _cancelReconnectTimer();
     _isConnecting = false;
     debugPrint('🔄 Force reconnect requested');
+    await connect();
+  }
+
+  /// Switch to a new device ID and re-register. Used by the identity-conflict
+  /// recovery flow when this ID is already bound to a different key.
+  /// Reconnects so the fresh socket gets a new register_challenge nonce.
+  Future<void> switchDeviceId(String newDeviceId) async {
+    if (newDeviceId == _deviceId) return;
+    debugPrint('🆔 Switching device ID: $_deviceId -> $newDeviceId');
+    _deviceId = newDeviceId;
+    _reconnectAttempts = 0;
+    _cancelReconnectTimer();
+    _socket?.disconnect();
+    _socket?.dispose();
+    _socket = null;
+    isConnected.value = false;
+    isRegistered.value = false;
+    _isConnecting = false;
     await connect();
   }
 
@@ -1188,39 +1504,112 @@ class SocketService extends GetxService {
   void initiateCall({
     required String callerId,
     required String calleeId,
-    required String sdpOffer,
+    String? sdpOffer,
     String? callerName,
+    bool isVideo = false,
+    Map<String, dynamic>? crypto,
   }) {
     if (!isConnected.value) {
       debugPrint('❌ Cannot initiate call: not connected');
       return;
     }
 
-    _socket?.emit('call_initiate', {
-      'callerId': callerId,
-      'calleeId': calleeId,
-      'sdpOffer': sdpOffer,
-      if (callerName != null && callerName.isNotEmpty) 'callerName': callerName,
-    });
+    final payload = buildCallInitiatePayload(
+      callerId: callerId,
+      calleeId: calleeId,
+      sdpOffer: sdpOffer,
+      callerName: callerName,
+      crypto: crypto,
+    );
+    if (isVideo) payload['isVideo'] = true;
+    _socket?.emit('call_initiate', payload);
     debugPrint('📞 Call initiated: $callerId -> $calleeId');
   }
+
+  // ---------------------------------------------------------------------------
+  // Call event payloads — CONTRACT: the voice-call wire shape below is frozen.
+  // Any change breaks shipped clients. Pinned by test/call_contract_test.dart.
+  // ---------------------------------------------------------------------------
+
+  static Map<String, dynamic> buildCallInitiatePayload({
+    required String callerId,
+    required String calleeId,
+    String? sdpOffer,
+    String? callerName,
+    Map<String, dynamic>? crypto,
+  }) =>
+      {
+        'callerId': callerId,
+        'calleeId': calleeId,
+        if (sdpOffer != null) 'sdpOffer': sdpOffer,
+        if (callerName != null && callerName.isNotEmpty)
+          'callerName': callerName,
+        if (crypto != null) 'crypto': crypto,
+      };
+
+  static Map<String, dynamic> buildCallAcceptPayload({
+    required String callId,
+    required String callerId,
+    String? sdpAnswer,
+    Map<String, dynamic>? crypto,
+  }) =>
+      {
+        'callId': callId,
+        'callerId': callerId,
+        if (sdpAnswer != null) 'sdpAnswer': sdpAnswer,
+        if (crypto != null) 'crypto': crypto,
+      };
+
+  static Map<String, dynamic> buildCallRejectPayload({
+    required String callId,
+    required String callerId,
+    String? reason,
+  }) =>
+      {'callId': callId, 'callerId': callerId, 'reason': reason ?? 'rejected'};
+
+  static Map<String, dynamic> buildCallTerminatePayload({
+    required String callId,
+    String? reason,
+  }) =>
+      {'callId': callId, 'reason': reason ?? 'ended'};
+
+  static Map<String, dynamic> buildIceCandidatePayload({
+    required String callId,
+    required String targetDeviceId,
+    String? candidate,
+    String? sdpMid,
+    int? sdpMLineIndex,
+    Map<String, dynamic>? crypto,
+  }) =>
+      {
+        'callId': callId,
+        'targetDeviceId': targetDeviceId,
+        if (candidate != null) 'candidate': candidate,
+        'sdpMid': sdpMid,
+        'sdpMLineIndex': sdpMLineIndex,
+        if (crypto != null) 'crypto': crypto,
+      };
 
   /// Accept a call
   void acceptCall({
     required String callId,
     required String callerId,
-    required String sdpAnswer,
+    String? sdpAnswer,
+    Map<String, dynamic>? crypto,
   }) {
     if (!isConnected.value) {
       debugPrint('❌ Cannot accept call: not connected');
       return;
     }
 
-    _socket?.emit('call_accept', {
-      'callId': callId,
-      'callerId': callerId,
-      'sdpAnswer': sdpAnswer,
-    });
+    _socket?.emit(
+        'call_accept',
+        buildCallAcceptPayload(
+          callId: callId,
+          callerId: callerId,
+          sdpAnswer: sdpAnswer,
+          crypto: crypto,
+        ));
     debugPrint('📞 Call accepted: $callId');
   }
 
@@ -1235,11 +1624,13 @@ class SocketService extends GetxService {
       return;
     }
 
-    _socket?.emit('call_reject', {
-      'callId': callId,
-      'callerId': callerId,
-      'reason': reason ?? 'rejected',
-    });
+    _socket?.emit(
+        'call_reject',
+        buildCallRejectPayload(
+          callId: callId,
+          callerId: callerId,
+          reason: reason,
+        ));
     debugPrint('📞 Call rejected: $callId');
   }
 
@@ -1250,10 +1641,12 @@ class SocketService extends GetxService {
       return;
     }
 
-    _socket?.emit('call_terminate', {
-      'callId': callId,
-      'reason': reason ?? 'ended',
-    });
+    _socket?.emit(
+        'call_terminate',
+        buildCallTerminatePayload(
+          callId: callId,
+          reason: reason,
+        ));
     debugPrint('📞 Call terminated: $callId');
   }
 
@@ -1261,22 +1654,26 @@ class SocketService extends GetxService {
   void sendIceCandidate({
     required String callId,
     required String targetDeviceId,
-    required String candidate,
+    String? candidate,
     String? sdpMid,
     int? sdpMLineIndex,
+    Map<String, dynamic>? crypto,
   }) {
     if (!isConnected.value) {
       debugPrint('❌ Cannot send ICE candidate: not connected');
       return;
     }
 
-    _socket?.emit('ice_candidate', {
-      'callId': callId,
-      'targetDeviceId': targetDeviceId,
-      'candidate': candidate,
-      'sdpMid': sdpMid,
-      'sdpMLineIndex': sdpMLineIndex,
-    });
+    _socket?.emit(
+        'ice_candidate',
+        buildIceCandidatePayload(
+          callId: callId,
+          targetDeviceId: targetDeviceId,
+          candidate: candidate,
+          sdpMid: sdpMid,
+          sdpMLineIndex: sdpMLineIndex,
+          crypto: crypto,
+        ));
     debugPrint(
       '📞 ICE candidate sent: sdpMid=$sdpMid, sdpMLineIndex=$sdpMLineIndex',
     );
@@ -1297,6 +1694,9 @@ class SocketService extends GetxService {
   void requestIceRestart({
     required String callId,
     required String targetDeviceId,
+    String? sdpOffer,
+    String? sdpAnswer,
+    Map<String, dynamic>? crypto,
   }) {
     if (!isConnected.value) {
       debugPrint('❌ Cannot request ICE restart: not connected');
@@ -1306,20 +1706,196 @@ class SocketService extends GetxService {
     _socket?.emit('ice_restart', {
       'callId': callId,
       'targetDeviceId': targetDeviceId,
+      if (sdpOffer != null) 'sdpOffer': sdpOffer,
+      if (sdpAnswer != null) 'sdpAnswer': sdpAnswer,
+      if (crypto != null) 'crypto': crypto,
     });
     debugPrint('📞 ICE restart requested');
   }
 
+  /// Notify the peer that local camera transmission changed.
+  void sendCallMediaUpdate({
+    required String callId,
+    required bool video,
+  }) {
+    if (!isConnected.value) {
+      debugPrint('❌ Cannot send call media update: not connected');
+      return;
+    }
+    _socket?.emit(
+      'call_media_update',
+      CallMediaHelper.mediaUpdatePayload(callId: callId, video: video),
+    );
+  }
+
+  /// Fetch the current STUN/TURN ICE configuration for this registered device.
+  /// TURN credentials are generated by the server and expire server-side.
+  Future<List<Map<String, dynamic>>?> requestIceServers() async {
+    if (!isRegistered.value || _socket == null) return null;
+    final completer = Completer<List<Map<String, dynamic>>?>();
+    _socket!.emitWithAck(
+      'call_ice_servers',
+      <String, dynamic>{},
+      ack: (data) {
+        if (data is! Map || data['iceServers'] is! List) {
+          completer.complete(null);
+          return;
+        }
+        final servers = <Map<String, dynamic>>[];
+        for (final item in data['iceServers'] as List) {
+          if (item is Map) {
+            servers.add(Map<String, dynamic>.from(item));
+          }
+        }
+        completer.complete(servers.isEmpty ? null : servers);
+      },
+    );
+    return completer.future.timeout(
+      const Duration(seconds: 5),
+      onTimeout: () => null,
+    );
+  }
+
+  /// Ask the server for a peer's rollout capabilities.
+  Future<Map<String, dynamic>?> requestPeerCapabilities(
+    String deviceId,
+  ) async {
+    if (!isConnected.value || _socket == null) return null;
+    final completer = Completer<Map<String, dynamic>?>();
+    _socket!.emitWithAck(
+      'peer_capability',
+      {'deviceId': deviceId},
+      ack: (data) {
+        completer.complete(
+          data is Map ? Map<String, dynamic>.from(data) : null,
+        );
+      },
+    );
+    return completer.future.timeout(
+      const Duration(seconds: 5),
+      onTimeout: () => null,
+    );
+  }
+
+  /// Send an identity announcement (self-signed bundle) to a contact.
+  /// Returns true if the server relayed it to an online peer socket.
+  Future<bool> sendIdentityAnnounce({
+    required String to,
+    required String bundle,
+    required String signature,
+    List<String>? capabilities,
+    int? capabilitySeq,
+    String? capabilitySig,
+  }) async {
+    if (_socket == null || !_socket!.connected) return false;
+    final completer = Completer<bool>();
+    _socket!.emitWithAck(
+      'identity_announce',
+      {
+        'to': to,
+        'bundle': bundle,
+        'signature': signature,
+        if (capabilities != null &&
+            capabilitySeq != null &&
+            capabilitySig != null)
+          'capabilities': capabilities,
+        if (capabilities != null &&
+            capabilitySeq != null &&
+            capabilitySig != null)
+          'capabilitySeq': capabilitySeq,
+        if (capabilities != null &&
+            capabilitySeq != null &&
+            capabilitySig != null)
+          'capabilitySig': capabilitySig,
+      },
+      ack: (data) {
+        completer.complete(data is Map && data['delivered'] == true);
+      },
+    );
+    return completer.future.timeout(
+      const Duration(seconds: 5),
+      onTimeout: () => false,
+    );
+  }
+
+  /// Tell the announcer our pin result for their bundle, so they stop
+  /// retrying. The server relays it as 'identity_announce_acked'.
+  /// [bundleHash] lets the sender match the ack to the exact bundle sent —
+  /// stale or misattributed acks are ignored.
+  void sendIdentityAnnounceAck({
+    required String to,
+    required String status,
+    String? bundleHash,
+  }) {
+    if (_socket == null || !_socket!.connected) return;
+    _socket!.emit('identity_announce_ack', {
+      'to': to,
+      'status': status,
+      'bundleHash': bundleHash,
+    });
+  }
+
+  /// Send a verification echo to the QR displayer. The server requires the
+  /// echoed bundle to equal our durably bound bundle. Returns delivery ack.
+  Future<bool> sendVerifyEcho({
+    required String to,
+    required String bundle,
+    required String mac,
+  }) async {
+    if (_socket == null || !_socket!.connected) return false;
+    final completer = Completer<bool>();
+    _socket!.emitWithAck(
+      'verify_echo',
+      {'to': to, 'bundle': bundle, 'mac': mac},
+      ack: (data) {
+        completer.complete(data is Map && data['delivered'] == true);
+      },
+    );
+    return completer.future.timeout(
+      const Duration(seconds: 5),
+      onTimeout: () => false,
+    );
+  }
+
+  /// Request call status - used when the socket reconnects mid-call to ask the
+  /// server whether the call still exists. Server answers with
+  /// call_status_response; if the call is gone the client ends locally.
+  void requestCallStatus({required String callId}) {
+    if (!isRegistered.value) {
+      debugPrint('❌ Cannot request call status: socket is not registered');
+      return;
+    }
+
+    _socket?.emit('call_status', {'callId': callId});
+    debugPrint('📞 Call status requested for $callId');
+  }
+
   /// Request call resync - used when app cold-starts after accepting from CallKit
   /// Server will resend the SDP offer so the callee can answer
+  /// Last resync emit per callId — duplicate triggers (pending-accept
+  /// watcher + isRegistered listener firing together) produce duplicate
+  /// server responses that race the accept path.
+  String? _lastResyncCallId;
+  DateTime? _lastResyncAt;
+
   void requestCallResync({required String callId}) {
     if (!isRegistered.value) {
       debugPrint('❌ Cannot request call resync: socket is not registered');
       return;
     }
+    final now = DateTime.now();
+    if (_lastResyncCallId == callId &&
+        _lastResyncAt != null &&
+        now.difference(_lastResyncAt!) < const Duration(seconds: 3)) {
+      debugPrint('📞 Resync for $callId already sent — skipping duplicate');
+      return;
+    }
+    _lastResyncCallId = callId;
+    _lastResyncAt = now;
 
     _socket?.emit('call_resync', {'callId': callId});
     debugPrint('📞 Call resync requested for $callId');
+    logCallBreadcrumb(CallBreadcrumb.resyncRequest);
   }
 
   /// Get socket instance for direct event listening

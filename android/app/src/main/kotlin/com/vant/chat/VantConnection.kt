@@ -5,6 +5,7 @@ import android.content.Intent
 import android.media.AudioManager
 import android.os.Build
 import android.os.Bundle
+import android.telecom.CallAudioState
 import android.telecom.Connection
 import android.telecom.DisconnectCause
 import android.util.Log
@@ -81,6 +82,13 @@ class VantConnection(private val context: Context) : Connection() {
         val callerName = connectionExtras.getString("caller_name") ?: ""
         val callerId = connectionExtras.getString("caller_id") ?: ""
         val isVideo = connectionExtras.getBoolean("is_video", false)
+        if (isVideo && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            try {
+                setAudioRoute(CallAudioState.ROUTE_SPEAKER)
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to route answered video call to speaker: ${e.message}")
+            }
+        }
 
         val intent = Intent(context, MainActivity::class.java).apply {
             action = "com.vant.chat.ANSWER_CALL"
@@ -111,6 +119,25 @@ class VantConnection(private val context: Context) : Connection() {
             }
         }
         return false
+    }
+
+    override fun onHold() {
+        Log.d(TAG, "onHold called by Telecom — external call took over")
+        // Keep the VoIP connection alive while the system handles another call.
+        super.onHold()
+        // Notify Flutter so it can mute WebRTC audio and show "call on hold" UI
+        context.sendBroadcast(Intent("com.vant.chat.CALL_HELD"))
+    }
+
+    override fun onUnhold() {
+        Log.d(TAG, "onUnhold called by Telecom — external call ended")
+        super.onUnhold()
+        setActive()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            setAudioModeIsVoip(true)
+        }
+        // Notify Flutter so it can unmute WebRTC audio and resume the call UI
+        context.sendBroadcast(Intent("com.vant.chat.CALL_UNHELD"))
     }
 
     override fun onReject() {

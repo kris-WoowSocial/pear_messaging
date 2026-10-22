@@ -36,9 +36,11 @@ class BranchService extends GetxService {
     debugPrint('🌿 Initializing Branch SDK...');
 
     try {
-      // Initialize Branch SDK first
-      await FlutterBranchSdk.init();
-      debugPrint('✅ Branch SDK init() called');
+      // Initialize Branch SDK with tracking disabled for the no-tracking variant.
+      // Deep links and link generation still work, but no user/device data is
+      // sent for attribution or advertising.
+      await FlutterBranchSdk.init(disableTracking: true);
+      debugPrint('✅ Branch SDK init() called (tracking disabled)');
 
       // Get initial session data first (for cold start deep links and deferred deep links)
       try {

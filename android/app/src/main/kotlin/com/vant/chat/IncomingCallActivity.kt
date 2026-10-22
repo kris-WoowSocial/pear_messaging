@@ -9,14 +9,26 @@ import android.media.AudioManager
 import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
+import android.telecom.CallAudioState
 import android.util.Log
 import android.view.WindowManager
 import android.widget.ImageView
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import com.bumptech.glide.Glide
+import java.lang.ref.WeakReference
 
 class IncomingCallActivity : AppCompatActivity() {
+
+    companion object {
+        private var activeInstance: WeakReference<IncomingCallActivity>? = null
+
+        fun finishActiveCall(callId: String) {
+            activeInstance?.get()?.let { activity ->
+                if (callId.isEmpty() || activity.callId == callId) activity.finish()
+            }
+        }
+    }
 
     private var callId: String = ""
     private var callerId: String = ""
@@ -28,6 +40,7 @@ class IncomingCallActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        activeInstance = WeakReference(this)
         setupLockScreen()
         setContentView(R.layout.activity_incoming_call)
         readExtras()
@@ -86,14 +99,17 @@ class IncomingCallActivity : AppCompatActivity() {
         val btnDecline = findViewById<ImageView>(R.id.btnDecline)
 
         tvName.text = callerName
-        tvStatus.text = if (isVideo) "Incoming video call..." else "Incoming call..."
+        tvStatus.text = if (isVideo) "Incoming video call" else "Incoming call..."
 
         if (avatarUrl.isNotEmpty()) {
             Glide.with(this)
                 .load(avatarUrl)
-                .placeholder(R.drawable.ic_call_notification)
+                .placeholder(R.mipmap.launcher_icon)
+                .error(R.mipmap.launcher_icon)
                 .circleCrop()
                 .into(ivAvatar)
+        } else {
+            ivAvatar.setImageResource(R.mipmap.launcher_icon)
         }
 
         btnAnswer.setOnClickListener { answerCall() }
@@ -133,6 +149,13 @@ class IncomingCallActivity : AppCompatActivity() {
             connection.setActive()
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 connection.setAudioModeIsVoip(true)
+            }
+            if (isVideo && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                try {
+                    connection.setAudioRoute(CallAudioState.ROUTE_SPEAKER)
+                } catch (e: Exception) {
+                    Log.e("IncomingCallActivity", "Failed to route video call to speaker", e)
+                }
             }
             Log.d("IncomingCallActivity", "🔊 Telecom connection set to ACTIVE + VoIP mode")
         }
@@ -184,6 +207,7 @@ class IncomingCallActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        if (activeInstance?.get() === this) activeInstance = null
         cancelReceiver?.let { unregisterReceiver(it) }
         super.onDestroy()
         try {

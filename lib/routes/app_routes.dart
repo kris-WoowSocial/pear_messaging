@@ -16,6 +16,7 @@ import '../features/membership/stripe_subscription_screen.dart';
 import '../features/call/incoming_call_screen.dart';
 import '../features/call/outgoing_call_screen.dart';
 import '../features/call/active_call_screen.dart';
+import '../features/call/video_call_screen.dart';
 import '../features/call/call_controller.dart';
 import '../features/call_history/call_history_screen.dart';
 import '../features/call_history/call_history_controller.dart';
@@ -36,6 +37,7 @@ class AppRoutes {
   static const String callIncoming = '/call/incoming';
   static const String callOutgoing = '/call/outgoing';
   static const String callActive = '/call/active';
+  static const String callVideo = '/call/video';
   static const String callHistory = '/call-history';
   static const String createGroup = '/create-group';
   static const String groupSettings = '/group-settings';
@@ -143,6 +145,15 @@ class AppRoutes {
     GetPage(
       name: callActive,
       page: () => const ActiveCallScreen(),
+      binding: BindingsBuilder(() {
+        if (!Get.isRegistered<CallController>()) {
+          Get.put(CallController());
+        }
+      }),
+    ),
+    GetPage(
+      name: callVideo,
+      page: () => const VideoCallScreen(),
       binding: BindingsBuilder(() {
         if (!Get.isRegistered<CallController>()) {
           Get.put(CallController());

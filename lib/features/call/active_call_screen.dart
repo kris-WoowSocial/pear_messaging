@@ -1,11 +1,49 @@
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:get/get.dart';
 import 'call_controller.dart';
+import 'call_encryption_indicator.dart';
 
 /// Active Call Screen - Full-screen overlay for connected audio calls
-class ActiveCallScreen extends StatelessWidget {
+class ActiveCallScreen extends StatefulWidget {
   const ActiveCallScreen({super.key});
+
+  @override
+  State<ActiveCallScreen> createState() => _ActiveCallScreenState();
+}
+
+class _ActiveCallScreenState extends State<ActiveCallScreen> {
+  Worker? _callStateWorker;
+
+  CallController get _controller => Get.find<CallController>();
+
+  @override
+  void initState() {
+    super.initState();
+    _callStateWorker = ever(_controller.callState, _onCallStateChanged);
+  }
+
+  void _onCallStateChanged(CallState state) {
+    if (state == CallState.ended || state == CallState.idle) {
+      _closeCallRoute();
+    }
+  }
+
+  /// Pop this call route and anything that may have been pushed on top of it
+  /// (snackbars, dialogs) without touching routes underneath.
+  void _closeCallRoute() {
+    if (!mounted) return;
+    final routeName = ModalRoute.of(context)?.settings.name;
+    if (routeName == null || !routeName.startsWith('/call/')) return;
+    Navigator.of(context).popUntil((route) => route.settings.name != routeName);
+  }
+
+  @override
+  void dispose() {
+    _callStateWorker?.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -51,59 +89,34 @@ class ActiveCallScreen extends StatelessWidget {
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
                   // Avatar
-                  Container(
-                    width: 140,
-                    height: 140,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: Colors.grey[800],
-                      border: Border.all(
-                        color: Colors.white.withOpacity(0.3),
-                        width: 2,
-                      ),
-                    ),
-                    child: const Icon(
-                      Icons.person,
-                      size: 70,
-                      color: Colors.white,
-                    ),
-                  ),
-                  const SizedBox(height: 24),
+                  _buildAvatar(controller),
+                  const SizedBox(height: 16),
                   // Contact name
                   Obx(
                     () => Text(
-                      controller.remoteDisplayName.value.isNotEmpty
-                          ? controller.remoteDisplayName.value
-                          : 'Unknown',
+                      controller.remoteDisplayLabel,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      textAlign: TextAlign.center,
                       style: const TextStyle(
                         color: Colors.white,
-                        fontSize: 32,
+                        fontSize: 25,
                         fontWeight: FontWeight.bold,
                       ),
                     ),
                   ),
                   const SizedBox(height: 8),
                   // E2EE indicator
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      const Icon(Icons.lock, size: 16, color: Colors.green),
-                      const SizedBox(width: 4),
-                      const Text(
-                        'End-to-End Encrypted',
-                        style: TextStyle(
-                          color: Colors.green,
-                          fontSize: 14,
-                          fontWeight: FontWeight.w500,
-                        ),
-                      ),
-                    ],
+                  Obx(
+                    () => CallEncryptionIndicator(
+                      state: controller.callEncryptionState.value,
+                    ),
                   ),
-                  const SizedBox(height: 24),
+                  const SizedBox(height: 14),
                   // Call duration
                   Obx(
                     () => Text(
-                      controller.callDuration.value,
+                      controller.callTimerLabel,
                       style: const TextStyle(
                         color: Colors.white70,
                         fontSize: 24,
@@ -166,6 +179,45 @@ class ActiveCallScreen extends StatelessWidget {
     );
   }
 
+  Widget _buildAvatar(CallController controller) {
+    return Obx(() {
+      final avatarUrl = controller.remoteAvatarUrl.value.trim();
+      final hasAvatar = avatarUrl.isNotEmpty;
+      return Container(
+        width: 120,
+        height: 120,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: Colors.grey[800],
+          border: Border.all(
+            color: Colors.white.withOpacity(0.3),
+            width: 2,
+          ),
+        ),
+        child: ClipOval(
+          child: hasAvatar
+              ? CachedNetworkImage(
+                  imageUrl: avatarUrl,
+                  fit: BoxFit.cover,
+                  placeholder: (context, url) => const Center(
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                  errorWidget: (context, url, error) => const Icon(
+                    Icons.person,
+                    size: 58,
+                    color: Colors.white,
+                  ),
+                )
+              : const Icon(
+                  Icons.person,
+                  size: 58,
+                  color: Colors.white,
+                ),
+        ),
+      );
+    });
+  }
+
   Widget _buildControlButton({
     required IconData icon,
     required String label,
@@ -217,7 +269,6 @@ class ActiveCallScreen extends StatelessWidget {
         // Haptic feedback
         HapticFeedback.heavyImpact();
         controller.endCall();
-        Get.back();
       },
       child: Container(
         width: 72,

@@ -16,7 +16,20 @@ class ProfileScreen extends GetView<ProfileController> {
 
   Future<String> _generateQRData() async {
     final deviceId = controller.deviceId.value;
-    return '${NetworkConstants.chatShareUrl}?device_id=$deviceId';
+    // Branch quick-link: vantchatting.app.link resolves to the app when
+    // installed (deep-link data includes device_id) and falls back to the
+    // app store when it is not. The in-app scanner reads the device_id
+    // query param directly, so Vant users still go straight to chat.
+    final playStore = Uri.encodeComponent(
+      '${NetworkConstants.playStoreUrl}?id=com.vant.chat',
+    );
+    final appStore = Uri.encodeComponent(
+      '${NetworkConstants.appStoreReviewUrl}6758916131',
+    );
+    return 'https://vantchatting.app.link/?device_id=$deviceId'
+        '&\$android_url=$playStore'
+        '&\$ios_url=$appStore'
+        '&\$fallback_url=$playStore';
   }
 
   /// Show dialog to enter influencer link token
