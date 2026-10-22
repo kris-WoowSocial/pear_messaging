@@ -15,13 +15,34 @@ import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.media.ToneGenerator
 import android.provider.Settings
+import android.view.Gravity
+import android.view.View
+import android.view.ViewGroup
 import android.view.WindowManager
+import android.widget.FrameLayout
+import android.widget.LinearLayout
+import android.widget.ProgressBar
+import android.widget.TextView
+import android.graphics.Color
 import io.flutter.embedding.android.FlutterFragmentActivity
 import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.embedding.engine.FlutterEngineCache
 import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.common.EventChannel
 
 class MainActivity : FlutterFragmentActivity() {
+    companion object {
+        /**
+         * Live MainActivity count. While > 0 the app's primary engine (and
+         * therefore its CallController + signaling socket) is running, so the
+         * FCM service must NOT pre-warm a second engine — a duplicate isolate
+         * would register the same deviceId on the socket and the server kicks
+         * the main connection, which killed the warm-call signaling.
+         */
+        @Volatile private var liveInstanceCount = 0
+        val isMainActivityAlive: Boolean get() = liveInstanceCount > 0
+    }
+
     private val DEEPLINK_CHANNEL = "com.pear.messaging/deeplink"
     private val APPLINKS_CHANNEL = "com.pear.messaging.pear_messaging/applinks"
     private val BATTERY_CHANNEL = "com.pear.messaging/battery"
@@ -38,9 +59,45 @@ class MainActivity : FlutterFragmentActivity() {
     private var ringbackHandler: Handler? = null
     private var ringbackRunnable: Runnable? = null
     private var callAudioFocusRequest: AudioFocusRequest? = null
+    private var callTransitionOverlay: View? = null
+    private val callOverlayHandler = Handler(Looper.getMainLooper())
+    // The fragment's getFlutterEngine() NPEs while the delegate is unattached —
+    // cache the engine here instead so call-intent pushes can safely check it.
+    private var attachedEngine: FlutterEngine? = null
+    private var usedPrewarmEngine = false
+    private var pendingPushRetries = 0
+
+    /**
+     * If the FCM service pre-warmed an engine while the phone was ringing,
+     * attach it instead of booting a fresh one — this is what collapses the
+     * ~5s cold-start engine wait after Accept. Only returned while the engine
+     * is actually in the cache (the delegate throws if we name a missing id).
+     */
+    override fun getCachedEngineId(): String? {
+        return if (FlutterEngineCache.getInstance()
+                .contains(VantFirebaseMessagingService.CALL_PREWARM_ENGINE_ID)
+        ) VantFirebaseMessagingService.CALL_PREWARM_ENGINE_ID else null
+    }
+
+    /**
+     * Cached engines default to outliving the host activity. The pre-warm
+     * engine is owned by this call — destroy it with the activity exactly
+     * like a cold-booted engine so Dart/media/plugins can't linger after
+     * the call ends.
+     */
+    override fun shouldDestroyEngineWithHost(): Boolean {
+        return getCachedEngineId() != null || super.shouldDestroyEngineWithHost()
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        liveInstanceCount++
+
+        // Cold-start answer: the engine needs ~5s to boot — cover the blank
+        // window with a native "Connecting…" surface until the first frame.
+        if (intent?.action == "com.vant.chat.ANSWER_CALL") {
+            showCallTransitionOverlay()
+        }
 
         // Pre-register Telecom phone account so incoming calls work immediately
         VantCallManager.ensurePhoneAccountRegistered(this)
@@ -90,7 +147,20 @@ class MainActivity : FlutterFragmentActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
-        
+        attachedEngine = flutterEngine
+
+        // If this is the ringing-time pre-warm engine, detach it from the
+        // cache — the activity owns its lifecycle from here (destroyed with
+        // the activity/call teardown, matching a cold-booted engine).
+        if (flutterEngine === FlutterEngineCache.getInstance()
+                .get(VantFirebaseMessagingService.CALL_PREWARM_ENGINE_ID)
+        ) {
+            FlutterEngineCache.getInstance()
+                .remove(VantFirebaseMessagingService.CALL_PREWARM_ENGINE_ID)
+            usedPrewarmEngine = true
+            println("callUX: attached pre-warmed ringing engine")
+        }
+
         // Setup battery optimization channel for Samsung devices
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, BATTERY_CHANNEL).setMethodCallHandler { call, result ->
             when (call.method) {
@@ -283,6 +353,12 @@ class MainActivity : FlutterFragmentActivity() {
                     val visible = call.argument<Boolean>("visible") ?: false
                     val prefs = getSharedPreferences("vant_chat_prefs", Context.MODE_PRIVATE)
                     prefs.edit().putBoolean("flutter_call_screen_visible", visible).apply()
+                    // Call screen up → swap to it; call torn down before the
+                    // screen ever mounted (cancel/decline raced the engine
+                    // boot) → drop the overlay either way.
+                    removeCallTransitionOverlay(
+                        if (visible) "call-screen-visible" else "call-screen-hidden"
+                    )
                     result.success(null)
                 }
                 "getPendingCallAction" -> {
@@ -309,20 +385,44 @@ class MainActivity : FlutterFragmentActivity() {
                     )
                 }
                 "openFullScreenIntentSettings" -> {
-                    try {
-                        val settingsIntent = if (Build.VERSION.SDK_INT >= 34) {
-                            Intent(
-                                Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT,
-                                Uri.parse("package:$packageName")
+                    // API 34+ has a dedicated full-screen-intent settings page,
+                    // but some OEMs don't implement it — resolve each candidate
+                    // first and fall back to app notification settings, then app
+                    // details.
+                    val candidates = buildList {
+                        if (Build.VERSION.SDK_INT >= 34) {
+                            add(
+                                Intent(
+                                    Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT,
+                                    Uri.parse("package:$packageName")
+                                )
                             )
-                        } else {
+                        }
+                        if (Build.VERSION.SDK_INT >= 26) {
+                            add(
+                                Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                                    putExtra(Settings.EXTRA_APP_PACKAGE, packageName)
+                                }
+                            )
+                        }
+                        add(
                             Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
                                 data = Uri.parse("package:$packageName")
                             }
+                        )
+                    }
+                    try {
+                        val resolved = candidates.firstOrNull {
+                            it.resolveActivity(packageManager) != null
                         }
-                        settingsIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                        startActivity(settingsIntent)
-                        result.success(true)
+                        if (resolved != null) {
+                            resolved.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            startActivity(resolved)
+                            result.success(true)
+                        } else {
+                            println("No settings screen resolved for full-screen intent")
+                            result.success(false)
+                        }
                     } catch (e: Exception) {
                         println("Error opening full-screen intent settings: $e")
                         result.success(false)
@@ -408,6 +508,13 @@ class MainActivity : FlutterFragmentActivity() {
                 handleIntent(intent)
                 pendingIntent = null // Clear after handling
             }, 500) // 500ms delay to ensure Flutter engine is ready
+        }
+
+        // Engine attached — push any call action captured before attach
+        // (cold-start answer). On a pre-warmed engine Dart may still be
+        // registering its handler, so retry briefly on notImplemented.
+        if (pendingCallAction != null) {
+            pushPendingCallActionToDart()
         }
     }
 
@@ -1083,7 +1190,134 @@ class MainActivity : FlutterFragmentActivity() {
             
             cancelCallNotification()
             println("Pending call action captured: $pendingCallAction, from_native: $fromNative, answeredFromBackground: $answeredFromBackground")
+
+            if (action == "com.vant.chat.DECLINE_CALL") {
+                // Paranoid cleanup — the overlay only ever shows for ANSWER,
+                // but never leave it up if state got crossed.
+                removeCallTransitionOverlay("decline")
+            }
+
+            // If the engine is already attached (warm activity receiving this
+            // intent via onNewIntent, or a pre-warmed engine just attached),
+            // nudge Dart to consume the pending action immediately instead of
+            // waiting for the next onReady poll. The stored flag is only
+            // cleared when Dart calls getPendingCallAction, so a failed/early
+            // push still leaves the poll as fallback.
+            pushPendingCallActionToDart()
         }
+    }
+
+    /**
+     * Push `onPendingCallAction` to Dart. If the engine was pre-warmed during
+     * ringing, CallController may still be mid-boot when ANSWER arrives, so a
+     * notImplemented/error response is retried a few times — the pending
+     * action stays stored until Dart actually reads it.
+     */
+    private fun pushPendingCallActionToDart() {
+        val engine = attachedEngine ?: return
+        try {
+            MethodChannel(
+                engine.dartExecutor.binaryMessenger,
+                INCOMING_CALL_CHANNEL
+            ).invokeMethod(
+                "onPendingCallAction",
+                null,
+                object : MethodChannel.Result {
+                    override fun success(result: Any?) {
+                        pendingPushRetries = 0
+                        println("callUX: pushed onPendingCallAction to attached engine")
+                    }
+
+                    override fun error(code: String, msg: String?, details: Any?) {
+                        retryPendingPush("error:$code")
+                    }
+
+                    override fun notImplemented() {
+                        retryPendingPush("notImplemented")
+                    }
+                }
+            )
+        } catch (e: Exception) {
+            retryPendingPush("exception:${e.message}")
+        }
+    }
+
+    private fun retryPendingPush(why: String) {
+        if (pendingCallAction == null || pendingPushRetries >= 10) return
+        pendingPushRetries++
+        callOverlayHandler.postDelayed({ pushPendingCallActionToDart() }, 500)
+        println("callUX: pending-action push $why, retry $pendingPushRetries")
+    }
+
+    /**
+     * Show a dark "Connecting…" surface over the window while a cold-started
+     * Flutter engine boots after answering from the native incoming-call UI.
+     * Matches the call screens' black background so the hand-off reads as one
+     * continuous surface instead of a black flash. Removed on the first
+     * rendered Flutter frame (with a timeout safeguard).
+     */
+    private fun showCallTransitionOverlay() {
+        if (callTransitionOverlay != null) return
+        println("callUX: showing connect overlay for cold-start answer")
+        val label = TextView(this).apply {
+            text = "Connecting…"
+            setTextColor(Color.WHITE)
+            textSize = 16f
+            gravity = Gravity.CENTER
+            val pad = (16 * resources.displayMetrics.density).toInt()
+            setPadding(0, pad, 0, 0)
+        }
+        val column = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            addView(ProgressBar(this@MainActivity))
+            addView(label)
+        }
+        val overlay = FrameLayout(this).apply {
+            setBackgroundColor(Color.BLACK)
+            isClickable = true
+            isFocusable = true
+            addView(
+                column,
+                FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    Gravity.CENTER
+                )
+            )
+        }
+        addContentView(
+            overlay,
+            ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+        )
+        callTransitionOverlay = overlay
+        callOverlayHandler.postDelayed(
+            { removeCallTransitionOverlay("timeout") },
+            10_000L
+        )
+    }
+
+    private fun removeCallTransitionOverlay(reason: String) {
+        callTransitionOverlay?.let {
+            println("callUX: removing connect overlay ($reason)")
+            (it.parent as? ViewGroup)?.removeView(it)
+            callTransitionOverlay = null
+        }
+    }
+
+    override fun onDestroy() {
+        callOverlayHandler.removeCallbacksAndMessages(null)
+        callTransitionOverlay = null
+        // Engine teardown for the pre-warm path is handled by
+        // shouldDestroyEngineWithHost() so the delegate detaches/destroys in
+        // the right order.
+        usedPrewarmEngine = false
+        attachedEngine = null
+        liveInstanceCount--
+        super.onDestroy()
     }
 
     private fun cancelCallNotification() {

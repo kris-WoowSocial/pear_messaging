@@ -10,7 +10,6 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
-import android.media.AudioAttributes
 import android.media.AudioManager
 import android.media.Ringtone
 import android.media.RingtoneManager
@@ -41,7 +40,11 @@ class CallForegroundService : Service() {
 
     companion object {
         const val TAG = "VantCallFG"
-        const val CHANNEL_ID = "vant_chat_calls"
+        // v2: v1 carried a ringtone the app could not silence per-call, and a
+        // channel's sound/importance can never be changed once created. The
+        // v2 channel has no sound — the service's own Ringtone is the single
+        // sound source, so there is no double ring.
+        const val CHANNEL_ID = "vant_chat_calls_v2"
         const val ONGOING_CHANNEL_ID = "vant_ongoing_calls"
         const val NOTIFICATION_ID = 9999
         const val ONGOING_NOTIFICATION_ID = 8888
@@ -49,6 +52,48 @@ class CallForegroundService : Service() {
         const val ACTION_STOP_RINGING = "com.vant.chat.STOP_RINGING"
         const val ACTION_START_ONGOING_CALL = "com.vant.chat.START_ONGOING_CALL"
         const val ACTION_STOP_ONGOING_CALL = "com.vant.chat.STOP_ONGOING_CALL"
+
+        /**
+         * Create the call notification channels. Called from
+         * MainApplication.onCreate so the channels exist before the first call
+         * (users can configure them in system settings and diagnostics can read
+         * them), and again from Service.onCreate as a fallback. Idempotent.
+         */
+        fun createNotificationChannels(context: Context) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val notificationManager = context.getSystemService(NotificationManager::class.java)
+
+                val callChannel = NotificationChannel(
+                    CHANNEL_ID, "Incoming Calls", NotificationManager.IMPORTANCE_HIGH
+                ).apply {
+                    description = "Incoming voice and video calls"
+                    lockscreenVisibility = NotificationCompat.VISIBILITY_PUBLIC
+                    // No channel sound — CallForegroundService's Ringtone is
+                    // the single sound source. No channel vibration either —
+                    // the service's Vibrator (same pattern) is the single
+                    // vibration source; both firing would double-buzz.
+                    setSound(null, null)
+                    enableVibration(false)
+                }
+
+                // Drop the stale v1 channel so existing installs don't see a
+                // duplicate "Incoming Calls" entry in system settings. No-op
+                // if it was never created.
+                notificationManager.deleteNotificationChannel("vant_chat_calls")
+
+                val ongoingChannel = NotificationChannel(
+                    ONGOING_CHANNEL_ID, "Ongoing Calls", NotificationManager.IMPORTANCE_LOW
+                ).apply {
+                    description = "Shown while a call is in progress"
+                    setSound(null, null)
+                    enableVibration(false)
+                    setShowBadge(false)
+                }
+
+                notificationManager.createNotificationChannel(callChannel)
+                notificationManager.createNotificationChannel(ongoingChannel)
+            }
+        }
     }
 
     private var wakeLock: PowerManager.WakeLock? = null
@@ -63,7 +108,7 @@ class CallForegroundService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        createNotificationChannel()
+        createNotificationChannels(this)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -122,7 +167,7 @@ class CallForegroundService : Service() {
                     }
                 }
 
-                startRinging()
+                startRinging(callId)
                 return START_NOT_STICKY
             }
         }
@@ -136,7 +181,23 @@ class CallForegroundService : Service() {
         stopSelf()
     }
 
-    private fun startRinging() {
+    // callId currently ringing, if any. A second START_RINGING intent for the
+    // same call (Telecom + fallback race, duplicate FCM) must not spawn a
+    // second Ringtone — the overwritten reference would keep playing.
+    private var ringingCallId: String? = null
+
+    private fun startRinging(callId: String = "") {
+        if (ringingCallId == callId && ringtone?.isPlaying == true) {
+            Log.d(TAG, "startRinging: already ringing for $callId — ignoring duplicate intent")
+            return
+        }
+        ringingCallId = callId
+        // Stop/release any previous instance before creating a new one —
+        // Ringtone.play is async and an abandoned instance keeps sounding.
+        try { ringtone?.stop() } catch (_: Exception) {}
+        ringtone = null
+        try { vibrator?.cancel() } catch (_: Exception) {}
+
         try {
             // Use MODE_RINGTONE for the ringing phase — this is the appropriate mode
             // while alerting the user. MODE_IN_COMMUNICATION must NOT be set here because
@@ -178,6 +239,7 @@ class CallForegroundService : Service() {
     }
 
     private fun stopRinging() {
+        ringingCallId = null
         try { ringtone?.stop() } catch (_: Exception) {}
         try { vibrator?.cancel() } catch (_: Exception) {}
         try { wakeLock?.let { if (it.isHeld) it.release() } } catch (_: Exception) {}
@@ -287,7 +349,7 @@ class CallForegroundService : Service() {
             .setIcon(
                 androidx.core.graphics.drawable.IconCompat.createWithResource(
                     this,
-                    R.drawable.ic_call_notification
+                    R.mipmap.launcher_icon
                 )
             )
             .build()
@@ -299,7 +361,7 @@ class CallForegroundService : Service() {
         return NotificationCompat.Builder(this, ONGOING_CHANNEL_ID)
             .setContentTitle(ongoingCallerName)
             .setContentText(callType)
-            .setSmallIcon(R.drawable.ic_call_notification)
+            .setSmallIcon(R.drawable.ic_call_answer)
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)
             .setCategory(NotificationCompat.CATEGORY_CALL)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
@@ -376,7 +438,7 @@ class CallForegroundService : Service() {
             .setIcon(
                 androidx.core.graphics.drawable.IconCompat.createWithResource(
                     this,
-                    R.drawable.ic_call_notification
+                    R.mipmap.launcher_icon
                 )
             )
             .build()
@@ -384,7 +446,7 @@ class CallForegroundService : Service() {
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle(if (isVideo) "Incoming video call" else "Incoming call")
             .setContentText(callerName)
-            .setSmallIcon(R.drawable.ic_call_notification)
+            .setSmallIcon(R.drawable.ic_call_answer)
             .setPriority(NotificationCompat.PRIORITY_MAX)
             .setCategory(NotificationCompat.CATEGORY_CALL)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
@@ -402,40 +464,7 @@ class CallForegroundService : Service() {
             .setFullScreenIntent(contentPendingIntent, true)
             .setOngoing(true)
             .setAutoCancel(false)
-            .setSilent(true)
             .build()
-    }
-
-    private fun createNotificationChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val notificationManager = getSystemService(NotificationManager::class.java)
-
-            val ringtoneUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
-            val callChannel = NotificationChannel(
-                CHANNEL_ID, "Incoming Calls", NotificationManager.IMPORTANCE_HIGH
-            ).apply {
-                description = "Incoming voice and video calls"
-                lockscreenVisibility = NotificationCompat.VISIBILITY_PUBLIC
-                setSound(ringtoneUri, AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                    .build())
-                enableVibration(true)
-                vibrationPattern = longArrayOf(0, 1000, 1000)
-            }
-
-            val ongoingChannel = NotificationChannel(
-                ONGOING_CHANNEL_ID, "Ongoing Calls", NotificationManager.IMPORTANCE_LOW
-            ).apply {
-                description = "Shown while a call is in progress"
-                setSound(null, null)
-                enableVibration(false)
-                setShowBadge(false)
-            }
-
-            notificationManager.createNotificationChannel(callChannel)
-            notificationManager.createNotificationChannel(ongoingChannel)
-        }
     }
 
     override fun onBind(intent: Intent?): IBinder? = null

@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:io' show Platform;
 import 'package:connectivity_plus/connectivity_plus.dart';
-import 'package:flutter/foundation.dart' show listEquals;
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -27,8 +27,7 @@ class SocketService extends GetxService {
   bool _isConnecting = false; // Prevent duplicate connection attempts
   bool _isInForeground = true;
   int _reconnectAttempts = 0;
-  List<Worker> _capabilityWorkers = [];
-  List<String> _lastAnnouncedCapabilities = const [];
+
   final List<Map<String, dynamic>> _pendingMessagesAwaitingHandler = [];
 
   final RxBool isConnected = false.obs;
@@ -297,7 +296,10 @@ class SocketService extends GetxService {
       }
 
       _registerDevice();
-      _trackCapabilityAnnouncements();
+
+      // Subscribe once to flag changes so any later Remote Config flip triggers
+      // a capabilities_update re-announcement (covers app resume refresh too).
+      _subscribeCapabilityFlagUpdates();
 
       // Send pending delivery acknowledgments for FCM messages received while offline
       FCMService.sendPendingAcknowledgments();
@@ -737,7 +739,6 @@ class SocketService extends GetxService {
       'identitySig': identitySig,
       'registerSig': registerSig,
     });
-    _lastAnnouncedCapabilities = _announcedCapabilities;
     _registerWatch
       ..reset()
       ..start();
@@ -761,28 +762,7 @@ class SocketService extends GetxService {
     ];
   }
 
-  /// Re-emit the register payload when Remote Config flips a capability flag.
-  /// This keeps the server's view of `video_call`/`encrypted_call` accurate
-  /// even when the initial fetch lands after the first register.
-  void _trackCapabilityAnnouncements() {
-    if (!Get.isRegistered<FeatureFlagService>()) return;
-    final flags = Get.find<FeatureFlagService>();
-    for (final worker in _capabilityWorkers) {
-      worker.dispose();
-    }
-    _capabilityWorkers = [
-      ever(flags.encryptedSignaling, (_) => _announceCapabilitiesIfChanged()),
-      ever(flags.videoCalling, (_) => _announceCapabilitiesIfChanged()),
-    ];
-  }
-
-  void _announceCapabilitiesIfChanged() {
-    if (!isConnected.value) return;
-    final caps = _announcedCapabilities;
-    if (listEquals(caps, _lastAnnouncedCapabilities)) return;
-    _lastAnnouncedCapabilities = caps;
-    _registerDevice();
-  }
+  bool _capabilityFlagListenerAdded = false;
 
   /// Wait up to 3 seconds for the first Remote Config fetch. This keeps the
   /// initial register from publishing capabilities while flags are still at
@@ -796,6 +776,35 @@ class SocketService extends GetxService {
     } catch (_) {
       // Remote Config unreachable — proceed with defaults.
     }
+  }
+
+  /// Subscribe to Remote Config flag changes so the server always sees the
+  /// current capability set, even when the socket already registered with
+  /// an earlier flag state.
+  void _subscribeCapabilityFlagUpdates() {
+    if (_capabilityFlagListenerAdded ||
+        !Get.isRegistered<FeatureFlagService>()) {
+      return;
+    }
+    _capabilityFlagListenerAdded = true;
+    Get.find<FeatureFlagService>().onFlagsUpdated(() {
+      if (isRegistered.value) {
+        sendCapabilitiesUpdate();
+      }
+    });
+  }
+
+  /// Re-announce capabilities over the existing socket. Used when Remote Config
+  /// flags change after registration and on app resume.
+  void sendCapabilitiesUpdate() {
+    if (_socket == null || _deviceId == null) return;
+    _socket?.emit('capabilities_update', {
+      'clientVersion': _clientVersion,
+      'capabilities': _announcedCapabilities,
+    });
+    debugPrint(
+      '📡 Capabilities update sent: $_deviceId -> $_announcedCapabilities',
+    );
   }
 
   /// Identity bundle for the new identityBundle register field.
@@ -1903,10 +1912,6 @@ class SocketService extends GetxService {
 
   @override
   void onClose() {
-    for (final worker in _capabilityWorkers) {
-      worker.dispose();
-    }
-    _capabilityWorkers = [];
     _connectivitySubscription?.cancel();
     disconnect();
     super.onClose();

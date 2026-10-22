@@ -201,10 +201,16 @@
             </intent-filter>
         </service>
 
-        <!-- Keep default Flutter FCM service — our custom VantFirebaseMessagingService
-             handles the com.google.firebase.MESSAGING_EVENT intent filter so it receives
-             all messages first. Non-call messages are forwarded to Flutter manually.
-             Do NOT remove this service; it is needed for Flutter plugin initialization. -->
+        <!-- Remove the plugin's FCM service from the merged manifest: BOTH it and
+             VantFirebaseMessagingService receive every MESSAGING_EVENT, so each push
+             reached the Dart background handler twice — duplicated message
+             notifications when the app is killed. Plugin initialization does not
+             need this service (FlutterFirebaseMessagingInitProvider stays).
+             Ours handles calls natively and forwards everything else manually. -->
+        <service
+            android:name="io.flutter.plugins.firebase.messaging.FlutterFirebaseMessagingService"
+            android:exported="false"
+            tools:node="remove" />
 
         <!-- Incoming call full-screen activity shown over the lock screen -->
         <activity

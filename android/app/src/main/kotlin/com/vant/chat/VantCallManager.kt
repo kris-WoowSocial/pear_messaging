@@ -1,5 +1,6 @@
 package com.vant.chat
 
+import android.app.KeyguardManager
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.ComponentName
@@ -12,6 +13,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
 import android.telecom.CallAudioState
 import android.telecom.DisconnectCause
 import android.telecom.PhoneAccount
@@ -35,7 +37,7 @@ object VantCallManager {
 
     const val TAG = "VantCallMgr"
     const val PHONE_ACCOUNT_ID = "vant_voip_account"
-    const val CHANNEL_ID = "vant_chat_calls"
+    const val CHANNEL_ID = "vant_chat_calls_v2"
     const val NOTIFICATION_ID = 9999
 
     var activeConnection: VantConnection? = null
@@ -45,6 +47,15 @@ object VantCallManager {
 
     // Fallback data in case Telecom rejects the call or doesn't trigger UI
     private var pendingCallData: Map<String, String>? = null
+
+    // The 800ms Telecom fallback runnable — cancelled once
+    // onShowIncomingCallUi fires so it can't double-present the call.
+    private var telecomFallbackRunnable: Runnable? = null
+
+    // callId the incoming-call UI was already presented for. Guards against
+    // double presentIncomingCall (Telecom + 800ms fallback race, duplicate
+    // FCM pushes) — a second presentation would post a second ringtone.
+    private var presentedCallId: String? = null
 
     /**
      * Register the PhoneAccount with Android Telecom.
@@ -115,12 +126,13 @@ object VantCallManager {
 
             // Samsung OneUI may not always call onShowIncomingCallUi reliably.
             // Fallback: if UI hasn't been shown within 800ms, show it directly.
-            Handler(Looper.getMainLooper()).postDelayed({
+            telecomFallbackRunnable = Runnable {
                 if (!callUiShown.get()) {
                     Log.w(TAG, "⚠️ Telecom didn't trigger onShowIncomingCallUi within 800ms, using fallback")
                     presentIncomingCall(context, callerName, callerId, callId, roomId, avatarUrl, isVideo)
                 }
-            }, 800)
+            }
+            Handler(Looper.getMainLooper()).postDelayed(telecomFallbackRunnable!!, 800)
 
             return true
         } catch (e: SecurityException) {
@@ -138,6 +150,12 @@ object VantCallManager {
      */
     fun markCallUiShown() {
         callUiShown.set(true)
+        // Telecom won the race — kill the pending 800ms fallback so it can't
+        // present (and ring) a second time.
+        telecomFallbackRunnable?.let {
+            Handler(Looper.getMainLooper()).removeCallbacks(it)
+        }
+        telecomFallbackRunnable = null
         Log.d(TAG, "Call UI shown by Telecom framework")
     }
 
@@ -196,6 +214,20 @@ object VantCallManager {
         cancelNotification(context)
         pendingCallData = null
         callUiShown.set(false)
+        presentedCallId = null
+        telecomFallbackRunnable?.let {
+            Handler(Looper.getMainLooper()).removeCallbacks(it)
+        }
+        telecomFallbackRunnable = null
+
+        // Ringing-time pre-warmed engine is only valid while the call exists —
+        // decline/cancel/end all land here. No-op once MainActivity attached it.
+        VantFirebaseMessagingService.discardPrewarmEngine()
+        context.getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+            .edit()
+            .remove("flutter.ringing_call_id")
+            .remove("flutter.ringing_caller_id")
+            .apply()
 
         try {
             val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
@@ -209,8 +241,12 @@ object VantCallManager {
         }
 
         context.sendBroadcast(Intent("com.vant.chat.CANCEL_CALL").apply {
+            setPackage(context.packageName)
             putExtra("call_id", callId)
         })
+        // Unexported-receiver broadcasts can be dropped on OEM builds —
+        // finish the live activity directly too.
+        IncomingCallActivity.finishActiveCall(callId)
     }
 
     fun clearActiveConnection(connection: VantConnection) {
@@ -255,9 +291,13 @@ object VantCallManager {
         try {
             val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                val devices = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+                // setCommunicationDevice only accepts endpoints from
+                // getAvailableCommunicationDevices(). getDevices() can report
+                // TYPE_TELEPHONY (type 18) on One UI 8 / API 36, which is not a
+                // settable endpoint and throws IllegalArgumentException.
+                val devices = audioManager.availableCommunicationDevices
                 val speakerDevice = devices.find { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
-                val earpieceDevice = devices.find { it.type == AudioDeviceInfo.TYPE_TELEPHONY }
+                val earpieceDevice = devices.find { it.type == AudioDeviceInfo.TYPE_BUILTIN_EARPIECE }
                 when {
                     speakerOn && speakerDevice != null -> audioManager.setCommunicationDevice(speakerDevice)
                     !speakerOn && earpieceDevice != null -> audioManager.setCommunicationDevice(earpieceDevice)
@@ -406,7 +446,7 @@ object VantCallManager {
             .setIcon(
                 androidx.core.graphics.drawable.IconCompat.createWithResource(
                     context,
-                    R.drawable.ic_call_notification
+                    R.mipmap.launcher_icon
                 )
             )
             .build()
@@ -420,7 +460,7 @@ object VantCallManager {
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
             .setContentTitle(if (isVideo) "Incoming video call" else "Incoming call")
             .setContentText(callerName)
-            .setSmallIcon(R.drawable.ic_call_notification)
+            .setSmallIcon(R.drawable.ic_call_answer)
             .setPriority(NotificationCompat.PRIORITY_MAX)
             .setCategory(NotificationCompat.CATEGORY_CALL)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
@@ -429,10 +469,15 @@ object VantCallManager {
             .setFullScreenIntent(fullScreenPendingIntent, true)
             .setOngoing(true)
             .setAutoCancel(false)
-            .setSilent(true)
             .build()
 
         val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        // Re-check at post time: if FSI was revoked since the call arrived, the
+        // full-screen UI is suppressed right now and the heads-up/shade entry is
+        // all the user will see.
+        if (Build.VERSION.SDK_INT >= 34 && !notificationManager.canUseFullScreenIntent()) {
+            Log.w(TAG, "DIAG posting call notification with fsi=DENIED — heads-up only")
+        }
         notificationManager.notify(NOTIFICATION_ID, notification)
     }
 
@@ -482,11 +527,67 @@ object VantCallManager {
         context: Context, callerName: String, callerId: String, callId: String,
         roomId: String, avatarUrl: String, isVideo: Boolean
     ) {
+        if (presentedCallId == callId) {
+            Log.d(TAG, "Call $callId already presented — skipping duplicate presentIncomingCall")
+            return
+        }
+        presentedCallId = callId
         startRinging(context, callerName, callerId, callId, roomId, avatarUrl, isVideo)
         // Always post the alert via notify(): this is what actually triggers the
         // system full-screen intent path. The direct launch below is best-effort.
         showCallNotification(context, callerName, callerId, callId, roomId, avatarUrl, isVideo)
         launchIncomingCallActivity(context, callerName, callerId, callId, roomId, avatarUrl, isVideo)
+    }
+
+    /**
+     * Logcat-only diagnostics emitted when an incoming call arrives. Contains
+     * no caller identity, tokens or phone numbers — just the device state that
+     * decides whether the full-screen incoming-call UI can appear:
+     * canUseFullScreenIntent, call-channel importance/sound, PhoneAccount
+     * registration/enabled state, keyguard/screen state and Android version.
+     */
+    fun logIncomingCallDiagnostics(context: Context) {
+        try {
+            val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            val fsi = if (Build.VERSION.SDK_INT >= 34) nm.canUseFullScreenIntent() else true
+            val channel = if (Build.VERSION.SDK_INT >= 26) {
+                nm.getNotificationChannel(CHANNEL_ID)?.let {
+                    "imp=${it.importance} sound=${it.sound != null} vib=${it.shouldVibrate()}"
+                } ?: "missing"
+            } else {
+                "n/a"
+            }
+            val accountState = try {
+                val tm = context.getSystemService(Context.TELECOM_SERVICE) as TelecomManager
+                val handle = getPhoneAccountHandle(context)
+                // selfManagedPhoneAccounts needs no extra permission for our own
+                // package; getPhoneAccount() requires READ_PHONE_NUMBERS.
+                val selfManaged = if (Build.VERSION.SDK_INT >= 26) {
+                    tm.selfManagedPhoneAccounts
+                } else {
+                    emptyList()
+                }
+                when {
+                    selfManaged.contains(handle) -> "registered(self-managed)"
+                    else -> when (val account = tm.getPhoneAccount(handle)) {
+                        null -> "unregistered"
+                        else -> if (account.isEnabled) "enabled" else "disabled"
+                    }
+                }
+            } catch (e: Exception) {
+                "unknown(${e.javaClass.simpleName})"
+            }
+            val km = context.getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
+            val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+            Log.i(TAG, "DIAG incoming-call sdk=${Build.VERSION.SDK_INT} rel=${Build.VERSION.RELEASE} " +
+                "fsi=$fsi channel[$CHANNEL_ID]=$channel phoneAccount=$accountState " +
+                "locked=${km.isKeyguardLocked} interactive=${pm.isInteractive}")
+            if (!fsi) {
+                Log.w(TAG, "DIAG fsi=DENIED — full-screen call UI will be suppressed")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "DIAG failed: ${e.message}")
+        }
     }
 
     fun cancelNotification(context: Context) {

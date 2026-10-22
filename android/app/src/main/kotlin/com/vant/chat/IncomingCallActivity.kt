@@ -16,8 +16,19 @@ import android.widget.ImageView
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import com.bumptech.glide.Glide
+import java.lang.ref.WeakReference
 
 class IncomingCallActivity : AppCompatActivity() {
+
+    companion object {
+        private var activeInstance: WeakReference<IncomingCallActivity>? = null
+
+        fun finishActiveCall(callId: String) {
+            activeInstance?.get()?.let { activity ->
+                if (callId.isEmpty() || activity.callId == callId) activity.finish()
+            }
+        }
+    }
 
     private var callId: String = ""
     private var callerId: String = ""
@@ -29,6 +40,7 @@ class IncomingCallActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        activeInstance = WeakReference(this)
         setupLockScreen()
         setContentView(R.layout.activity_incoming_call)
         readExtras()
@@ -195,6 +207,7 @@ class IncomingCallActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        if (activeInstance?.get() === this) activeInstance = null
         cancelReceiver?.let { unregisterReceiver(it) }
         super.onDestroy()
         try {
