@@ -14,6 +14,7 @@ import 'package:flutter_callkit_incoming/flutter_callkit_incoming.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
+import 'call_breadcrumbs.dart';
 
 /// CallKit Service - Handles native system incoming call UI
 /// This service runs in background isolate via FCM data messages
@@ -386,8 +387,11 @@ class CallKitService {
 
     switch (event.event) {
       case Event.actionCallIncoming:
-        // CallKit UI is showing — pre-warm by tracking the active call
+        // CallKit UI is showing — proves the VoIP push was received and
+        // reportNewIncomingCall completed (iOS requires it synchronously).
         debugPrint('📞 CallKitService: Incoming call showing');
+        logCallBreadcrumb(CallBreadcrumb.pushkitReceived);
+        logCallBreadcrumb(CallBreadcrumb.callkitReportDone);
         final incomingId = event.body['id'] as String?;
         if (incomingId != null) {
           _activeCallKitCalls.add(incomingId.toLowerCase());
@@ -402,6 +406,7 @@ class CallKitService {
       case Event.actionCallAccept:
         // User accepted the call via native UI
         debugPrint('📞 CallKitService: Call accepted via native UI');
+        logCallBreadcrumb(CallBreadcrumb.accept);
         final acceptedCallId = _extractCallId(event.body);
 
         // iOS cold-start safety: when the app is launched from a killed state by
@@ -437,6 +442,7 @@ class CallKitService {
       case Event.actionCallDecline:
         // User declined the call via native UI
         debugPrint('📞 CallKitService: Call declined via native UI');
+        logCallBreadcrumb(CallBreadcrumb.decline);
         _eventController.add(
           CallKitEvent(
             type: CallKitEventType.decline,
@@ -449,6 +455,7 @@ class CallKitService {
       case Event.actionCallEnded:
         // Call ended
         debugPrint('📞 CallKitService: Call ended');
+        logCallBreadcrumb(CallBreadcrumb.ended);
         final uuid = event.body['id'] as String?;
         if (uuid != null) {
           _activeCallKitCalls.remove(uuid.toLowerCase());

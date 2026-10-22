@@ -11,6 +11,7 @@ import 'package:get/get.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
+import '../../core/services/call_breadcrumbs.dart';
 import '../../core/services/call_media_helper.dart';
 import '../../core/services/call_diag.dart';
 import '../../core/services/call_signaling_crypto.dart';
@@ -447,6 +448,9 @@ class CallController extends GetxController {
 
   /// Check for any pending call action stored by MainActivity when the app was killed
   Future<void> _checkPendingCallAction() async {
+    // Android-only: on iOS CallKit deliver accepts/declines through
+    // CallKitService, not a pending-activity action.
+    if (!Platform.isAndroid) return;
     try {
       final result = await _incomingCallChannel.invokeMethod(
         'getPendingCallAction',
@@ -469,6 +473,8 @@ class CallController extends GetxController {
 
   /// Listen for native broadcasts when the app is in foreground
   void _setupNativeCallEventListener() {
+    // Android Telecom broadcast stream only — iOS has no equivalent channel.
+    if (!Platform.isAndroid) return;
     try {
       _callEventSubscription =
           _callEventsChannel.receiveBroadcastStream().listen(
@@ -574,9 +580,11 @@ class CallController extends GetxController {
             TextButton(
               onPressed: () {
                 Get.back();
-                _incomingCallChannel.invokeMethod(
-                  'openFullScreenIntentSettings',
-                );
+                if (Platform.isAndroid) {
+                  _incomingCallChannel
+                      .invokeMethod('openFullScreenIntentSettings')
+                      .catchError((_) {});
+                }
               },
               child: const Text('Open Settings'),
             ),
@@ -712,6 +720,8 @@ class CallController extends GetxController {
   }
 
   Future<void> _setCallScreenVisible(bool visible) async {
+    // Android-only channel: iOS CallKit owns incoming-call UI visibility.
+    if (!Platform.isAndroid) return;
     try {
       await _incomingCallChannel.invokeMethod('setCallScreenVisible', {
         'visible': visible,
@@ -851,6 +861,8 @@ class CallController extends GetxController {
   }
 
   Future<void> _stopNativeIncomingCall() async {
+    // Android-only channel: on iOS the CallKit lifecycle ends the ring UI.
+    if (!Platform.isAndroid) return;
     try {
       await _incomingCallChannel.invokeMethod('stopIncomingCall');
     } catch (e) {
@@ -2812,6 +2824,7 @@ class CallController extends GetxController {
     }
 
     final reason = data['reason'] as String? ?? 'ended';
+    logCallBreadcrumb(CallBreadcrumb.ended, reason: reason);
 
     // Log call history from server-provided reason
     _logCallHistory(
@@ -3198,6 +3211,7 @@ class CallController extends GetxController {
 
   /// Handle call resync from server - server resends SDP offer after cold-start accept
   void _handleCallResync(Map<String, dynamic> data) {
+    logCallBreadcrumb(CallBreadcrumb.resyncAnswer);
     final callId = data['callId'] as String?;
     final callerId = data['callerId'] as String?;
     final sdpOffer = data['sdpOffer'] as String?;
@@ -3438,7 +3452,9 @@ class CallController extends GetxController {
     // completely when the call ends, like WhatsApp does.
     if (_launchedForCall) {
       _launchedForCall = false;
-      _callChannel.invokeMethod('finishAndRemoveTask').catchError((_) {});
+      if (Platform.isAndroid) {
+        _callChannel.invokeMethod('finishAndRemoveTask').catchError((_) {});
+      }
       return;
     }
 
@@ -3741,6 +3757,9 @@ class CallController extends GetxController {
 
   /// Returns true if the app is in the background (not in the resumed state)
   Future<bool> _isAppInBackground() async {
+    // Android-only channel; on iOS fail closed (treat as background) so the
+    // Dart layer never takes ownership of ringtone/call UI from CallKit.
+    if (!Platform.isAndroid) return true;
     try {
       final result = await _callChannel.invokeMethod<bool>('isAppInBackground');
       return result ?? false;
@@ -3755,6 +3774,8 @@ class CallController extends GetxController {
 
   /// Returns true if the device screen is currently locked
   Future<bool> _isScreenLocked() async {
+    // Android-only channel; fail closed on iOS — see _isAppInBackground.
+    if (!Platform.isAndroid) return true;
     try {
       final result = await _callChannel.invokeMethod<bool>('isScreenLocked');
       return result ?? false;

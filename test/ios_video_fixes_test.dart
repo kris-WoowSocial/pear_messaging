@@ -80,20 +80,13 @@ void main() {
     test('capabilities are re-announced when Remote Config flags change', () {
       final source =
           File('lib/core/services/socket_service.dart').readAsStringSync();
-      expect(source, contains('_trackCapabilityAnnouncements()'));
-      expect(
-        source,
-        contains('ever(flags.encryptedSignaling, (_) => _announceCapabilitiesIfChanged())'),
-      );
-      expect(
-        source,
-        contains('ever(flags.videoCalling, (_) => _announceCapabilitiesIfChanged())'),
-      );
-      expect(
-        source,
-        contains('_lastAnnouncedCapabilities = _announcedCapabilities'),
-      );
-      expect(source, contains('_registerDevice()'));
+      // Merged behavior: flag changes emit a lightweight capabilities_update
+      // on the live socket instead of re-registering the device.
+      expect(source, contains('onFlagsUpdated'));
+      expect(source, contains('_subscribeCapabilityFlagUpdates()'));
+      expect(source, contains('sendCapabilitiesUpdate()'));
+      expect(source, contains("'capabilities_update'"));
+      expect(source, contains('isRegistered.value'));
     });
 
     test('Android-only MethodChannel calls are guarded by Platform.isAndroid', () {
@@ -115,6 +108,24 @@ void main() {
         'turnScreenOff',
         'turnScreenOn',
         'checkProximitySensor',
+        // Android-only incoming-call channel methods — must never reach the
+        // platform layer on iOS (the channel is not registered there).
+        'getPendingCallAction',
+        'setCallScreenVisible',
+        'stopIncomingCall',
+        'canUseFullScreenIntent',
+        'openFullScreenIntentSettings',
+        'finishAndRemoveTask',
+        // Android-only methods on the shared callState channel — iOS registers
+        // the channel but only implements setInCall (which is intentionally
+        // unguarded: it is the shared in-call state sync on both platforms).
+        'isAppInBackground',
+        'isScreenLocked',
+        'startOngoingCall',
+        'reportOutgoingTelecomCall',
+        'ensureAudioMode',
+        'markTelecomCallActive',
+        'teardownAndroidCall',
       ];
 
       for (final method in guardedCalls) {
@@ -138,6 +149,22 @@ void main() {
           reason: '$method must be guarded by Platform.isAndroid',
         );
       }
+
+      // The native call-event broadcast stream (com.vant.chat/call_events) is
+      // Android Telecom only — the EventChannel is not registered on iOS, so
+      // subscribing must be platform-guarded.
+      final eventListenerIdx =
+          controllerSource.indexOf('receiveBroadcastStream');
+      expect(eventListenerIdx, isNonNegative);
+      final eventContext = controllerSource.substring(
+        eventListenerIdx - 600 < 0 ? 0 : eventListenerIdx - 600,
+        eventListenerIdx,
+      );
+      expect(
+        eventContext.contains('!Platform.isAndroid'),
+        isTrue,
+        reason: 'call_events EventChannel subscription must be Android-only',
+      );
     });
   });
 }
