@@ -1398,6 +1398,7 @@ void main() {
 
   test('full-schedule fixed vector — reproduced in Node X25519+HKDF', () async {
     // Fixed seeds so every DH output is deterministic. Node's
+    
     // crypto.diffieHellman (x25519) + hkdfSync reproduced the whole chain:
     //   OFFERKEY=sxUpzdQz1IjJyDeaElrpIy3u5KGQKvzrlwz2c71bVOQ=
     //   SESSION =xdBUYmhSFtLUhifoggtHVaOTfN7cTDmPAQIthh0ZwbA=
