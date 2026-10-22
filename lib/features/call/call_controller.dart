@@ -1941,6 +1941,9 @@ class CallController extends GetxController {
 
       // Populate call state before async capability/crypto work so tapping the
       // video action can open the full-screen preview route immediately.
+      // callState is left at `ended` after the previous call — advance it to
+      // dialing now or the screen flashes "Call ended" before Connecting.
+      callState.value = CallState.dialing;
       remoteDeviceId.value = calleeDeviceId;
       remoteAvatarUrl.value = '';
       isCaller.value = true;
