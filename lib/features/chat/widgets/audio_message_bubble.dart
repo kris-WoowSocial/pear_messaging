@@ -35,6 +35,9 @@ class AudioMessageBubble extends StatefulWidget {
 }
 
 class _AudioMessageBubbleState extends State<AudioMessageBubble> {
+  static int _instanceCounter = 0;
+  late final int _instanceId = ++_instanceCounter;
+
   final AudioPlayer _audioPlayer = AudioPlayer();
 
   StreamSubscription? _durationSub;
@@ -55,6 +58,8 @@ class _AudioMessageBubbleState extends State<AudioMessageBubble> {
   Uint8List? _audioBytes;
   String? _lastToken;
   String? _tempFilePath;
+  bool _isLoading = false;
+  int _loadCounter = 0;
 
   int get _durationMs => widget.message.audioDuration ?? 0;
 
@@ -92,48 +97,57 @@ class _AudioMessageBubbleState extends State<AudioMessageBubble> {
   }
 
   Future<void> _initAudio() async {
-    if (!mounted) return;
+    // The audio payload for a message is immutable. Once it has been loaded
+    // successfully, never reload it on mere status changes, and never run two
+    // loads concurrently: rewriting the temp file while ExoPlayer is reading
+    // it causes a READ_POSITION_OUT_OF_RANGE error.
+    if (!mounted || _isLoading || _isReady.value) return;
+    _isLoading = true;
 
     // Reset transient state but keep already-loaded bytes.
     _hasError.value = false;
     _statusText.value = '';
 
-    // 1. Sender: use locally cached recording if available.
-    if (widget.message.isMe) {
-      final cached = await _getCachedBytes();
-      if (cached != null && cached.isNotEmpty) {
-        await _loadBytes(cached);
+    try {
+      // 1. Sender: use locally cached recording if available.
+      if (widget.message.isMe) {
+        final cached = await _getCachedBytes();
+        if (cached != null && cached.isNotEmpty) {
+          await _loadBytes(cached);
+          return;
+        }
+      }
+
+      final token = _extractToken();
+
+      // Pending upload - show uploading state and wait for finalize.
+      if (token == null || token == 'pending') {
+        _isReady.value = false;
+        _statusText.value = 'Sending voice message...';
         return;
       }
+
+      // If we already have the bytes for this token, just load them.
+      if (_audioBytes != null && _lastToken == token) {
+        await _loadBytes(_audioBytes!);
+        return;
+      }
+
+      // 2. Try cache.
+      final cached = await _getCachedBytes();
+      if (cached != null && cached.isNotEmpty) {
+        _audioBytes = cached;
+        _lastToken = token;
+        await _loadBytes(cached);
+        _sendDownloadAck(token);
+        return;
+      }
+
+      // 3. Download from server.
+      await _downloadAndLoad(token);
+    } finally {
+      _isLoading = false;
     }
-
-    final token = _extractToken();
-
-    // Pending upload - show uploading state and wait for finalize.
-    if (token == null || token == 'pending') {
-      _isReady.value = false;
-      _statusText.value = 'Sending voice message...';
-      return;
-    }
-
-    // If we already have the bytes for this token, just load them.
-    if (_audioBytes != null && _lastToken == token) {
-      await _loadBytes(_audioBytes!);
-      return;
-    }
-
-    // 2. Try cache.
-    final cached = await _getCachedBytes();
-    if (cached != null && cached.isNotEmpty) {
-      _audioBytes = cached;
-      _lastToken = token;
-      await _loadBytes(cached);
-      _sendDownloadAck(token);
-      return;
-    }
-
-    // 3. Download from server.
-    await _downloadAndLoad(token);
   }
 
   Future<Uint8List?> _getCachedBytes() async {
@@ -210,15 +224,22 @@ class _AudioMessageBubbleState extends State<AudioMessageBubble> {
     // file with the matching extension. just_audio (via ExoPlayer on Android
     // and AVPlayer on iOS) is much more reliable with a real file path than
     // with in-memory bytes for MP4/M4A containers.
+    //
+    // Every load writes to a NEW file: never rewrite a file the player may
+    // still have open, or ExoPlayer fails with READ_POSITION_OUT_OF_RANGE.
     final mimeType = _detectMimeType(bytes);
     final extension = mimeType == 'audio/mp4' ? '.m4a' : '.aac';
 
+    final previousPath = _tempFilePath;
     final tempDir = await getTemporaryDirectory();
-    _tempFilePath = '${tempDir.path}/${widget.message.id}_audio$extension';
+    _tempFilePath =
+        '${tempDir.path}/${widget.message.id}_audio_${_instanceId}_${++_loadCounter}$extension';
     final file = File(_tempFilePath!);
     await file.writeAsBytes(bytes, flush: true);
+    if (!mounted) return;
     // Give the filesystem a moment to flush the file metadata.
     await Future.delayed(const Duration(milliseconds: 100));
+    if (!mounted) return;
 
     debugPrint(
       '🔊 AudioMessageBubble: file=${file.path}, exists=${await file.exists()}, '
@@ -245,11 +266,13 @@ class _AudioMessageBubbleState extends State<AudioMessageBubble> {
       _playerStateSub = _audioPlayer.playerStateStream.listen((state) {
         _isPlaying.value = state.playing;
       });
-      _processingStateSub = _audioPlayer.processingStateStream.listen((state) {
+      _processingStateSub = _audioPlayer.processingStateStream.listen((state) async {
         if (state == ProcessingState.completed) {
+          await _audioPlayer.pause();
+          if (!mounted) return;
           _isPlaying.value = false;
           _position.value = Duration.zero;
-          _audioPlayer.seek(Duration.zero);
+          await _audioPlayer.seek(Duration.zero);
         }
       });
 
@@ -257,6 +280,15 @@ class _AudioMessageBubbleState extends State<AudioMessageBubble> {
       _duration.value = detectedDuration ?? Duration(milliseconds: _durationMs);
       _isReady.value = true;
       _hasError.value = false;
+
+      // The previous source has been replaced; its temp file is safe to
+      // delete now that the player is no longer reading it.
+      if (previousPath != null && previousPath != _tempFilePath) {
+        try {
+          final oldFile = File(previousPath);
+          if (oldFile.existsSync()) oldFile.deleteSync();
+        } catch (_) {}
+      }
     } catch (e) {
       debugPrint('❌ AudioMessageBubble: failed to load audio: $e');
       _isReady.value = false;

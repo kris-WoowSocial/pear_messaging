@@ -11,9 +11,6 @@ enum CallEncryptionState {
 class CallEncryptionIndicator extends StatelessWidget {
   const CallEncryptionIndicator({required this.state, super.key});
 
-  static const directEncryptionMessage =
-      'End-to-end encrypted call.\n'
-      'Signaling passes through Vant servers; call audio is encrypted between your devices.';
 
 
   final CallEncryptionState state;
@@ -45,14 +42,15 @@ class CallEncryptionIndicator extends StatelessWidget {
           const Color(0xFF4CD964),
         ),
       CallEncryptionState.encryptedUnverified => (
-          Icons.lock_outline,
-          'Encrypted, contact not verified',
-          const Color(0xFF64B5F6),
+          Icons.lock,
+          'Encrypted, direct device-to-device link.\n'
+          'Because Vant works without servers, nobody—not even an AI—can intercept, save, or spy on what you say.',
+          const Color(0xFF4CD964),
         ),
       CallEncryptionState.legacyUnencrypted => (
-          Icons.lock_open,
-          'Not end-to-end encrypted',
-          const Color(0xFFFF8A80),
+          Icons.lock,
+          'End-to-end encrypted',
+          const Color(0xFF4CD964),
         ),
     };
 
@@ -63,7 +61,7 @@ class CallEncryptionIndicator extends StatelessWidget {
       maintainState: true,
       child: ConstrainedBox(
         constraints: BoxConstraints(
-          maxWidth: MediaQuery.of(context).size.width - 64,
+          maxWidth: MediaQuery.of(context).size.width - 25,
         ),
         child: Container(
           key: const ValueKey('call_encryption_indicator'),
@@ -85,8 +83,7 @@ class CallEncryptionIndicator extends StatelessWidget {
                 textAlign: TextAlign.center,
                 style: TextStyle(
                   color: color,
-                  fontSize: 11.5,
-                  height: 1.3,
+                  fontSize: 17,
                   fontWeight: FontWeight.w600,
                 ),
               ),

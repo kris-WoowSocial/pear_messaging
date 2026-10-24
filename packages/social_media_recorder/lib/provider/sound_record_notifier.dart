@@ -28,6 +28,7 @@ class SoundRecordNotifier extends ChangeNotifier {
 
   int _counter = 0;
   int _localCounterForMaxRecordTime = 0;
+  bool _isFinishing = false;
 
   Timer? _timer;
   Timer? _timerCounter;
@@ -110,16 +111,26 @@ class SoundRecordNotifier extends ChangeNotifier {
   }
 
   /// Stops the recording and sends the file if it is long enough.
-  void finishRecording() {
-    if (buttonPressed) {
-      if (second > 1 || minute > 0) {
-        final path = mPath;
-        final time = '${minute.toString()}:${second.toString()}';
-        sendRequestFunction(File.fromUri(Uri(path: path)), time);
-        stopRecording?.call(time);
+  Future<void> finishRecording() async {
+    if (!buttonPressed || _isFinishing) return;
+    _isFinishing = true;
+    final shouldSend = second > 1 || minute > 0;
+    final time = '${minute.toString()}:${second.toString()}';
+    _timer?.cancel();
+    _timerCounter?.cancel();
+    try {
+      final path = await recordMp3.stop();
+      if (shouldSend && path != null && path.isNotEmpty) {
+        mPath = path;
+        sendRequestFunction(File(path), time);
       }
+    } catch (e) {
+      debugPrint('Failed to finish recording: $e');
+    } finally {
+      stopRecording?.call(time);
+      await resetEdgePadding();
+      _isFinishing = false;
     }
-    resetEdgePadding();
   }
 
   /// Resets all recording state and stops the native recorder.
