@@ -3755,11 +3755,25 @@ class CallController extends GetxController {
     Get.toNamed('/call/incoming', arguments: data);
   }
 
+  /// iOS incoming-call ownership rule: a socket-delivered `incoming_call`
+  /// shows the Flutter screen + ringtone only while the app is actually
+  /// visible. In every other lifecycle state the PushKit -> CallKit path owns
+  /// the call UI — suppressing the Flutter copy prevents double screens and
+  /// double ringtones. Null (binding not ready) is treated as background.
+  static bool isBackgroundedForIncomingCall(AppLifecycleState? state) {
+    return state != AppLifecycleState.resumed &&
+        state != AppLifecycleState.inactive;
+  }
+
   /// Returns true if the app is in the background (not in the resumed state)
   Future<bool> _isAppInBackground() async {
-    // Android-only channel; on iOS fail closed (treat as background) so the
-    // Dart layer never takes ownership of ringtone/call UI from CallKit.
-    if (!Platform.isAndroid) return true;
+    // iOS: no native channel — derive from the real app lifecycle instead of
+    // failing closed (fail-closed meant a foregrounded iPhone never rang).
+    if (!Platform.isAndroid) {
+      return isBackgroundedForIncomingCall(
+        WidgetsBinding.instance.lifecycleState,
+      );
+    }
     try {
       final result = await _callChannel.invokeMethod<bool>('isAppInBackground');
       return result ?? false;
@@ -3774,8 +3788,10 @@ class CallController extends GetxController {
 
   /// Returns true if the device screen is currently locked
   Future<bool> _isScreenLocked() async {
-    // Android-only channel; fail closed on iOS — see _isAppInBackground.
-    if (!Platform.isAndroid) return true;
+    // iOS has no lock-state channel, but locking the screen also drops the app
+    // out of `resumed`, so _isAppInBackground already covers that case —
+    // same effective result 1.6.7 got from the missing-channel failure.
+    if (!Platform.isAndroid) return false;
     try {
       final result = await _callChannel.invokeMethod<bool>('isScreenLocked');
       return result ?? false;
