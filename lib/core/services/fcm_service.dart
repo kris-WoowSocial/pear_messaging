@@ -353,22 +353,25 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
     return;
   }
 
-  // Show notification immediately
+  // Show notification immediately — but only for data-only pushes. When the
+  // FCM payload has a notification block, Android/iOS display it automatically
+  // and a local notification here would appear as a duplicate.
   try {
-    var title = message.notification?.title ?? 'New Message';
-    final body = message.notification?.body ?? 'You have a new encrypted message';
-    final payload = jsonEncode({
-      'senderId': senderId,
-      'chatId': chatId,
-      'isGroup': isGroup.toString(),
-    });
+    if (message.notification == null) {
+      var title = 'New Message';
+      const body = 'New message';
+      final payload = jsonEncode({
+        'senderId': senderId,
+        'chatId': chatId,
+        'isGroup': isGroup.toString(),
+      });
 
-    // If title is a raw device ID (no username found), format it as friendly name
-    if (title == senderId && senderId.length > 5) {
-      title = '@user_${senderId.substring(senderId.length - 5)}';
-    }
+      // If title is a raw device ID (no username found), format it as friendly name
+      if (title == senderId && senderId.length > 5) {
+        title = '@user_${senderId.substring(senderId.length - 5)}';
+      }
 
-    await flutterLocalNotificationsPlugin.show(
+      await flutterLocalNotificationsPlugin.show(
       DateTime.now().millisecondsSinceEpoch.remainder(100000),
       title,
       body,
@@ -389,10 +392,13 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
           presentSound: true,
         ),
       ),
-      payload: payload,
-    );
+        payload: payload,
+      );
 
-    debugPrint('📱 Background notification shown for sender: $senderId');
+      debugPrint('📱 Background notification shown for sender: $senderId');
+    } else {
+      debugPrint('📱 System already displayed notification, skipping local show');
+    }
   } catch (e) {
     debugPrint('❌ Error showing background notification: $e');
   }

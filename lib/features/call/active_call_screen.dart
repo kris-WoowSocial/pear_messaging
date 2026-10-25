@@ -36,7 +36,15 @@ class _ActiveCallScreenState extends State<ActiveCallScreen> {
     if (!mounted) return;
     final routeName = ModalRoute.of(context)?.settings.name;
     if (routeName == null || !routeName.startsWith('/call/')) return;
-    Navigator.of(context).popUntil((route) => route.settings.name != routeName);
+    final navigator = Navigator.of(context);
+    // If the call screen is the root route (CallKit/PushKit accept replaced the
+    // stack, or the app cold-started for the call), popping would leave an
+    // empty navigator — iOS shows a black screen. Land on the chat list instead.
+    if (!navigator.canPop()) {
+      Get.offAllNamed('/chat-list');
+      return;
+    }
+    navigator.popUntil((route) => route.settings.name != routeName);
   }
 
   @override

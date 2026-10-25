@@ -937,7 +937,7 @@ class SocketService extends GetxService {
     // The server sends a generic "You have a new encrypted message" notification body to
     // FCM/APNs so no message content is ever visible to push servers or on
     // the lock screen.
-    String notificationBody = 'You have a new encrypted message';
+    String notificationBody = content;
     if (content.startsWith('MEDIA:') || content.startsWith('IMAGE:')) {
       notificationBody = '📷 Photo';
     } else if (content.startsWith('FILE:')) {
@@ -967,7 +967,7 @@ class SocketService extends GetxService {
 
     _socket?.emit('send_message', messageData);
     debugPrint(
-      '📤 Message sent: $messageId to $recipientDeviceId (notification: $notificationBody, hasReply: ${replyTo != null})',
+      '📤 Message sent: $messageId to $recipientDeviceId (hasReply: ${replyTo != null})',
     );
     return true;
   }
