@@ -90,6 +90,19 @@ class MainActivity : FlutterFragmentActivity() {
     private var pipEligible = false
     private var pipRatioW = 9
     private var pipRatioH = 16
+    // PiP exit classification: onPictureInPictureModeChanged(false) alone
+    // can't tell "expanded to full screen" (onResume follows within ms) from
+    // "dismissed with X" (activity stays paused/stopped). Dart-side lifecycle
+    // events arrive too late to distinguish them — decide here where the
+    // activity lifecycle is synchronous.
+    @Volatile private var pipExitAwaitingResume = false
+    private val pipOutcomeHandler = Handler(Looper.getMainLooper())
+    private val pipOutcomeCheck = Runnable {
+        if (pipExitAwaitingResume) {
+            pipExitAwaitingResume = false
+            emitPipOutcome("dismissed")
+        }
+    }
 
     /**
      * If the FCM service pre-warmed an engine while the phone was ringing,
@@ -548,6 +561,14 @@ class MainActivity : FlutterFragmentActivity() {
                                         )
                                     )
                                 }
+                                "com.vant.chat.PIP_OUTCOME" -> {
+                                    events?.success(
+                                        hashMapOf(
+                                            "type" to "pip_outcome",
+                                            "outcome" to (intent.getStringExtra("outcome") ?: "dismissed")
+                                        )
+                                    )
+                                }
                             }
                         }
                     }
@@ -556,6 +577,7 @@ class MainActivity : FlutterFragmentActivity() {
                         addAction("com.vant.chat.CALL_HELD")
                         addAction("com.vant.chat.CALL_UNHELD")
                         addAction("com.vant.chat.PIP_CHANGED")
+                        addAction("com.vant.chat.PIP_OUTCOME")
                     }
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                         registerReceiver(
@@ -692,6 +714,35 @@ class MainActivity : FlutterFragmentActivity() {
             sendBroadcast(intent)
         } catch (e: Exception) {
             Log.w(PIP_TAG, "pip_changed broadcast failed: ${e.message}")
+        }
+        if (!isInPictureInPictureMode) {
+            // Expanded vs dismissed is decided in onResume / pipOutcomeCheck.
+            pipExitAwaitingResume = true
+            pipOutcomeHandler.removeCallbacks(pipOutcomeCheck)
+            pipOutcomeHandler.postDelayed(pipOutcomeCheck, 450)
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // A pip exit followed by onResume is an expand, not an X-dismiss.
+        if (pipExitAwaitingResume) {
+            pipExitAwaitingResume = false
+            pipOutcomeHandler.removeCallbacks(pipOutcomeCheck)
+            emitPipOutcome("expanded")
+        }
+    }
+
+    private fun emitPipOutcome(outcome: String) {
+        Log.i(PIP_TAG, "pip outcome: $outcome")
+        try {
+            sendBroadcast(
+                Intent("com.vant.chat.PIP_OUTCOME")
+                    .setPackage(packageName)
+                    .putExtra("outcome", outcome)
+            )
+        } catch (e: Exception) {
+            Log.w(PIP_TAG, "pip_outcome broadcast failed: ${e.message}")
         }
     }
 

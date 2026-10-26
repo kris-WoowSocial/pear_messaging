@@ -505,6 +505,8 @@ class CallController extends GetxController {
               _handleCallUnheld();
             } else if (type == 'pip_changed') {
               _onPipChanged(data['is_pip'] == 'true' || data['is_pip'] == true);
+            } else if (type == 'pip_outcome') {
+              _onPipOutcome(data['outcome'] as String? ?? 'dismissed');
             } else {
               _handleNativeShowFlutterCall(data);
             }
@@ -838,12 +840,10 @@ class CallController extends GetxController {
     unawaited(_pipService.setPipEligible(true, width: width, height: height));
   }
 
-  /// Native reports a PiP transition. Distinguish:
-  ///  - enter  (false->true): switch the call screen to the remote-only layout,
-  ///    start watching for an OS camera cut.
-  ///  - expanded (true->false while resumed): restore controls + any cut camera.
-  ///  - dismissed (true->false while paused/stopped): user tapped the PiP X —
-  ///    the call CONTINUES on audio; pause the camera and tell the peer.
+  /// Native reports a PiP transition. Expanded-vs-dismissed is NOT decided
+  /// here — pip_changed lands before the lifecycle 'resumed' event, so a
+  /// Dart-side lifecycle check misclassifies expand as dismiss. MainActivity
+  /// classifies the exit and sends a separate 'pip_outcome' event.
   void _onPipChanged(bool inPip) {
     if (!Platform.isAndroid) return;
     _pipService.onPipChanged(inPip);
@@ -853,31 +853,27 @@ class CallController extends GetxController {
     if (inPip) {
       debugPrint('📺 VantPip: entered PiP');
       _startPipCameraCutWatcher();
-      return;
+    } else {
+      debugPrint('📺 VantPip: exited PiP');
+      _stopPipCameraCutWatcher();
     }
+  }
 
-    // Exited PiP. _lastLifecycleState is updated by the lifecycle observer;
-    // the event usually lands before 'resumed', so also consult the binding.
-    final bindingState =
-        WidgetsBinding.instance.lifecycleState ?? _lastLifecycleState;
-    final effective = _lastLifecycleState == AppLifecycleState.resumed ||
-            bindingState == AppLifecycleState.resumed
-        ? AppLifecycleState.resumed
-        : bindingState;
-    _stopPipCameraCutWatcher();
-
-    if (effective == AppLifecycleState.resumed) {
+  /// Native-classified PiP exit outcome (see MainActivity.emitPipOutcome):
+  ///  - 'expanded': user tapped the PiP window — activity resumed. Restore
+  ///    controls (layout already follows isInPip) and any cut camera.
+  ///  - 'dismissed': user tapped the PiP X — the call CONTINUES on audio;
+  ///    pause the camera and signal camera-off to the peer.
+  void _onPipOutcome(String outcome) {
+    if (!Platform.isAndroid) return;
+    if (outcome == 'expanded') {
       debugPrint('📺 VantPip: expanded to full screen');
       if (_cameraCutInPip && isInCall && isVideoCall.value) {
         _cameraCutInPip = false;
         unawaited(_restoreCameraAfterPip());
       }
     } else {
-      // Window dismissed with X while backgrounded: keep the call alive on
-      // audio — pause the camera and signal camera-off to the peer.
-      debugPrint(
-        '📺 VantPip: dismissed with X (lifecycle=$effective) — continuing on audio',
-      );
+      debugPrint('📺 VantPip: dismissed with X — continuing on audio');
       if (isInCall && isVideoCall.value && isCameraOn.value) {
         _cameraPausedForBackground = true;
         unawaited(setCameraEnabled(false));
