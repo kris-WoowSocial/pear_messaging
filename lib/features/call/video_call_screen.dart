@@ -42,6 +42,9 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
     _initializeRenderers();
     _scheduleHideControls();
     _callStateWorker = ever(_controller.callState, _onCallStateChanged);
+    // Tell the controller the connected-video-call UI is up so Android can
+    // arm PiP auto-enter/onUserLeaveHint.
+    _controller.notifyVideoCallUiVisible(true);
   }
 
   void _onCallStateChanged(CallState state) {
@@ -71,6 +74,13 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
     await _remoteRenderer.initialize();
     await _localRenderer.initialize();
     if (!mounted) return;
+    // Remote frames carry real dimensions — feed them to the PiP aspect ratio.
+    _remoteRenderer.onResize = () {
+      _controller.updatePipAspect(
+        _remoteRenderer.videoWidth,
+        _remoteRenderer.videoHeight,
+      );
+    };
     _attachStreams(
       _controller.localVideoStream.value,
       _controller.remoteVideoStream.value,
@@ -110,8 +120,10 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
     _callStateWorker?.dispose();
     _localRenderer.srcObject = null;
     _remoteRenderer.srcObject = null;
+    _remoteRenderer.onResize = null;
     _localRenderer.dispose();
     _remoteRenderer.dispose();
+    _controller.notifyVideoCallUiVisible(false);
     super.dispose();
   }
 
@@ -125,37 +137,52 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
       return const ActiveCallScreen();
     }
 
-    return PopScope(
-      canPop: false,
-      onPopInvokedWithResult: (didPop, result) {
-        if (didPop) return;
-        _controller.minimizeCallScreen(context);
-      },
-      child: Scaffold(
-        backgroundColor: Colors.black,
-        body: GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onTap: _showControls,
-          child: LayoutBuilder(
-            builder: (context, constraints) {
-              final size = constraints.biggest;
-              final padding = MediaQuery.of(context).padding;
-              _previewOffset ??= _initialPreviewOffset(size, padding);
-              return Stack(
-                fit: StackFit.expand,
-                children: [
-                  _buildVideoSurface(),
-                  _buildCenterStatus(),
-                  _buildLocalPreview(size),
-                  _buildTopOverlay(),
-                  _buildControls(),
-                ],
-              );
-            },
+    return Obx(() {
+      // The whole activity window becomes the PiP surface on Android — render
+      // remote video only: no controls, no local preview, no overlays. The
+      // system provides expand/close affordances on top.
+      if (_controller.isInPip.value) {
+        final hasRemoteVideo =
+            _controller.remoteVideoStream.value != null &&
+                !_controller.peerCameraOff.value;
+        return VideoCallPipLayout(
+          remoteRenderer: _remoteRenderer,
+          hasRemoteVideo: hasRemoteVideo,
+          statusText: hasRemoteVideo ? null : _callStatusText(),
+        );
+      }
+      return PopScope(
+        canPop: false,
+        onPopInvokedWithResult: (didPop, result) {
+          if (didPop) return;
+          _controller.minimizeCallScreen(context);
+        },
+        child: Scaffold(
+          backgroundColor: Colors.black,
+          body: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: _showControls,
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                final size = constraints.biggest;
+                final padding = MediaQuery.of(context).padding;
+                _previewOffset ??= _initialPreviewOffset(size, padding);
+                return Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    _buildVideoSurface(),
+                    _buildCenterStatus(),
+                    _buildLocalPreview(size),
+                    _buildTopOverlay(),
+                    _buildControls(),
+                  ],
+                );
+              },
+            ),
           ),
         ),
-      ),
-    );
+      );
+    });
   }
 
   Offset _initialPreviewOffset(Size size, EdgeInsets padding) => Offset(
@@ -502,4 +529,86 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
   }
 
   String _callStatusText() => _controller.callTimerLabel;
+}
+
+/// Android Picture-in-Picture layout for an active video call: remote video
+/// fills the whole PiP window, or a compact camera-off placeholder when the
+/// peer has no video. Every child scales with the window — no fixed sizes —
+/// so even ~90dp-tall PiP windows can't overflow.
+class VideoCallPipLayout extends StatelessWidget {
+  const VideoCallPipLayout({
+    super.key,
+    required this.remoteRenderer,
+    required this.hasRemoteVideo,
+    this.statusText,
+  });
+
+  /// Nullable so headless tests can exercise the placeholder path; a null
+  /// renderer is never dereferenced because it implies !hasRemoteVideo.
+  final RTCVideoRenderer? remoteRenderer;
+  final bool hasRemoteVideo;
+  final String? statusText;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: LayoutBuilder(
+        builder: (context, constraints) {
+          if (hasRemoteVideo && remoteRenderer != null) {
+            return SizedBox.expand(
+              child: RTCVideoView(
+                remoteRenderer!,
+                objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
+              ),
+            );
+          }
+          // Camera-off / connecting placeholder sized relative to the window.
+          final side = constraints.biggest.shortestSide;
+          final avatar = (side * 0.38).clamp(28.0, 104.0);
+          final showText = side > 120 && statusText != null;
+          return Container(
+            decoration: const BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: [Color(0xFF18222D), Color(0xFF050607)],
+              ),
+            ),
+            child: Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    width: avatar,
+                    height: avatar,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: Colors.white.withValues(alpha: 0.08),
+                    ),
+                    child: Icon(
+                      Icons.videocam_off,
+                      size: avatar * 0.54,
+                      color: Colors.white54,
+                    ),
+                  ),
+                  if (showText) ...[
+                    SizedBox(height: avatar * 0.15),
+                    Text(
+                      statusText!,
+                      style: const TextStyle(
+                        color: Colors.white70,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
 }

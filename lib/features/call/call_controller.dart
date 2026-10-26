@@ -28,6 +28,7 @@ import '../../core/services/ringtone_service.dart';
 import '../../core/services/username_service.dart';
 import '../../core/services/call_history_service.dart';
 import '../../core/services/proximity_service.dart';
+import '../../core/services/pip_service.dart';
 import '../../core/services/notification_service.dart';
 import '../../core/services/call_foreground_service.dart';
 import '../../core/services/callkit_service.dart';
@@ -276,6 +277,16 @@ class CallController extends GetxController {
   bool _cameraPausedForBackground = false;
   WidgetsBindingObserver? _lifecycleObserver;
 
+  // ---- Picture-in-Picture (Android video calls, ff_pip_android) ----
+  final PipService _pipService = PipService();
+  PipService get pipService => _pipService; // exposed for the call screen
+  final RxBool isInPip = false.obs;
+  AppLifecycleState _lastLifecycleState = AppLifecycleState.resumed;
+  Timer? _pipPauseDebounce;
+  Timer? _pipCameraCutWatcher;
+  bool _cameraCutInPip = false;
+  bool _videoCallUiVisible = false;
+
   // Full-screen-intent state: true while USE_FULL_SCREEN_INTENT is denied
   // (incoming calls fall back to a heads-up notification). When a call rings
   // while denied, _fsiPromptPending defers the settings dialog until the call
@@ -309,6 +320,8 @@ class CallController extends GetxController {
       } else {
         unawaited(WakelockPlus.disable());
       }
+      // A mid-call upgrade to video (or downgrade) changes PiP eligibility.
+      unawaited(_syncPipEligibility());
     });
 
     // If the socket reconnects while we have a pending auto-accept (e.g. cold-start
@@ -490,6 +503,8 @@ class CallController extends GetxController {
               _handleCallHeld();
             } else if (type == 'call_unheld') {
               _handleCallUnheld();
+            } else if (type == 'pip_changed') {
+              _onPipChanged(data['is_pip'] == 'true' || data['is_pip'] == true);
             } else {
               _handleNativeShowFlutterCall(data);
             }
@@ -649,18 +664,266 @@ class CallController extends GetxController {
         (state == AppLifecycleState.inactive && nativeCallHeld);
   }
 
+  /// PiP entry gate — every condition must hold. Pure and unit-tested.
+  /// `incomingRinging` keeps the ringing UI (a different activity path via
+  /// IncomingCallActivity) from ever triggering PiP.
+  @visibleForTesting
+  static bool shouldEnterPip({
+    required bool isVideoCall,
+    required bool callConnected,
+    required bool flagOn,
+    required int apiLevel,
+    required bool cameraPermission,
+    required bool inCallUiVisible,
+    required bool incomingRinging,
+  }) {
+    return flagOn &&
+        isVideoCall &&
+        callConnected &&
+        apiLevel >= 26 &&
+        cameraPermission &&
+        inCallUiVisible &&
+        !incomingRinging;
+  }
+
+  /// PiP-aware camera pause rule. PiP entry produces a paused/inactive event
+  /// but the camera must KEEP running (the remote side still expects video).
+  /// `isInPip`/`pipEntering` come from the native flag set before
+  /// enterPictureInPictureMode().
+  @visibleForTesting
+  static bool shouldPauseCameraOnBackground(
+    AppLifecycleState state, {
+    required bool nativeCallHeld,
+    required bool isInPip,
+    required bool pipEntering,
+  }) {
+    if (isInPip || pipEntering) return false;
+    return state == AppLifecycleState.paused ||
+        (state == AppLifecycleState.inactive && nativeCallHeld);
+  }
+
+  /// The ~250ms debounced pause decision used on Android `paused`: PiP state
+  /// lands natively a few ms after the lifecycle event, so we wait briefly
+  /// then query native before deciding. Injectable for unit tests.
+  @visibleForTesting
+  static Future<bool> resolveBackgroundCameraPause({
+    required AppLifecycleState state,
+    required bool nativeCallHeld,
+    required bool pipEntering,
+    required Future<bool> Function() isInPipMode,
+    Duration delay = const Duration(milliseconds: 250),
+  }) async {
+    await Future<void>.delayed(delay);
+    final inPip = await isInPipMode();
+    return shouldPauseCameraOnBackground(
+      state,
+      nativeCallHeld: nativeCallHeld,
+      isInPip: inPip,
+      pipEntering: pipEntering,
+    );
+  }
+
+  void _pauseCameraForBackground() {
+    if (isVideoCall.value && isCameraOn.value && isInCall) {
+      _cameraPausedForBackground = true;
+      unawaited(setCameraEnabled(false));
+    }
+  }
+
   void _didChangeAppLifecycleState(AppLifecycleState state) {
+    final prevState = _lastLifecycleState;
+    _lastLifecycleState = state;
+    // Android + PiP-eligible: on `paused` wait ~250ms and ask native whether
+    // we're entering/inside PiP before cutting the camera. Flag-off calls
+    // (pipEligible == false) keep the original synchronous pause.
+    if (Platform.isAndroid &&
+        state == AppLifecycleState.paused &&
+        _pipService.pipEligible) {
+      _pipPauseDebounce?.cancel();
+      final entering = _pipService.pipEntering;
+      _pipPauseDebounce = Timer(const Duration(milliseconds: 250), () async {
+        final shouldPause = await resolveBackgroundCameraPause(
+          state: AppLifecycleState.paused,
+          nativeCallHeld: _nativeCallHeld,
+          pipEntering: entering || _pipService.pipEntering,
+          isInPipMode: () async {
+            final inPip = await _pipService.isInPipMode();
+            if (!inPip) return false;
+            // Screen lock while PiP'd hides the window entirely — treat it as
+            // a real background transition and let the camera pause.
+            if (await _isScreenLocked()) return false;
+            return true;
+          },
+        );
+        debugPrint(
+          '📺 VantPip: paused-debounce resolved shouldPause=$shouldPause',
+        );
+        if (shouldPause) _pauseCameraForBackground();
+      });
+      return;
+    }
     if (shouldPauseCameraForLifecycle(state, nativeCallHeld: _nativeCallHeld)) {
-      if (isVideoCall.value && isCameraOn.value && isInCall) {
-        _cameraPausedForBackground = true;
-        unawaited(setCameraEnabled(false));
-      }
+      _pauseCameraForBackground();
     } else if (state == AppLifecycleState.resumed) {
+      _pipPauseDebounce?.cancel();
       if (_cameraPausedForBackground && isVideoCall.value && isInCall) {
         _cameraPausedForBackground = false;
         unawaited(setCameraEnabled(true));
       }
+      // Expanding from PiP lands here with isInPip already false — restore a
+      // camera that the OS cut while in PiP.
+      if (_cameraCutInPip && isInCall && isVideoCall.value) {
+        _cameraCutInPip = false;
+        debugPrint('📺 VantPip: camera restore after PiP expand');
+        unawaited(_restoreCameraAfterPip());
+      }
+      // Dismiss-with-X while in PiP: the pip_changed event arrived while the
+      // app was paused (prevState), then the system may still deliver resumed
+      // on some OEMs — nothing extra needed here; dismissal is handled in
+      // _onPipChanged where the lifecycle context is known.
+      if (prevState == AppLifecycleState.paused && isInPip.value) {
+        debugPrint('📺 VantPip: resumed while still in PiP (unusual)');
+      }
     }
+  }
+
+  /// Re-enable the local camera after it was cut by the OS while in PiP.
+  /// setCameraEnabled itself emits call_media_update(video:true) to the peer.
+  Future<void> _restoreCameraAfterPip() async {
+    await setCameraEnabled(true);
+    debugPrint('📺 VantPip: camera restored (call_media_update sent by setCameraEnabled)');
+  }
+
+  /// Recompute whether the PiP entry conditions hold right now and push the
+  /// result to native (arms API31+ auto-enter, enables the 26-30
+  /// onUserLeaveHint path). Called on connect, when the video-call screen
+  /// opens/closes, and when call_video state changes.
+  Future<void> _syncPipEligibility() async {
+    if (!Platform.isAndroid) return;
+    final flagOn = Get.isRegistered<FeatureFlagService>() &&
+        Get.find<FeatureFlagService>().pipAndroidEnabled;
+    final cameraPerm = await Permission.camera.isGranted;
+    final incomingRinging =
+        Get.currentRoute == '/call/incoming' ||
+        callState.value == CallState.ringing ||
+        callState.value == CallState.dialing;
+    final allowed = shouldEnterPip(
+      isVideoCall: isVideoCall.value,
+      callConnected: callState.value == CallState.connected,
+      flagOn: flagOn,
+      apiLevel: 26, // conservative floor — native also gates on SDK_INT
+      cameraPermission: cameraPerm,
+      inCallUiVisible: _videoCallUiVisible,
+      incomingRinging: incomingRinging,
+    );
+    debugPrint(
+      '📺 VantPip: eligibility=$allowed (flag=$flagOn video=${isVideoCall.value} '
+      'connected=${callState.value == CallState.connected} camPerm=$cameraPerm '
+      'uiVisible=$_videoCallUiVisible ringing=$incomingRinging)',
+    );
+    await _pipService.setPipEligible(allowed);
+  }
+
+  /// VideoCallScreen reports its visibility so Home during a connected video
+  /// call can auto-enter PiP while other screens never do.
+  void notifyVideoCallUiVisible(bool visible) {
+    _videoCallUiVisible = visible;
+    unawaited(_syncPipEligibility());
+  }
+
+  /// Remote video dimensions arrived — update the PiP window aspect.
+  void updatePipAspect(int width, int height) {
+    if (!Platform.isAndroid || !_pipService.pipEligible) return;
+    if (width <= 0 || height <= 0) return;
+    unawaited(_pipService.setPipEligible(true, width: width, height: height));
+  }
+
+  /// Native reports a PiP transition. Distinguish:
+  ///  - enter  (false->true): switch the call screen to the remote-only layout,
+  ///    start watching for an OS camera cut.
+  ///  - expanded (true->false while resumed): restore controls + any cut camera.
+  ///  - dismissed (true->false while paused/stopped): user tapped the PiP X —
+  ///    the call CONTINUES on audio; pause the camera and tell the peer.
+  void _onPipChanged(bool inPip) {
+    if (!Platform.isAndroid) return;
+    _pipService.onPipChanged(inPip);
+    if (isInPip.value == inPip) return;
+    isInPip.value = inPip;
+
+    if (inPip) {
+      debugPrint('📺 VantPip: entered PiP');
+      _startPipCameraCutWatcher();
+      return;
+    }
+
+    // Exited PiP. _lastLifecycleState is updated by the lifecycle observer;
+    // the event usually lands before 'resumed', so also consult the binding.
+    final bindingState =
+        WidgetsBinding.instance.lifecycleState ?? _lastLifecycleState;
+    final effective = _lastLifecycleState == AppLifecycleState.resumed ||
+            bindingState == AppLifecycleState.resumed
+        ? AppLifecycleState.resumed
+        : bindingState;
+    _stopPipCameraCutWatcher();
+
+    if (effective == AppLifecycleState.resumed) {
+      debugPrint('📺 VantPip: expanded to full screen');
+      if (_cameraCutInPip && isInCall && isVideoCall.value) {
+        _cameraCutInPip = false;
+        unawaited(_restoreCameraAfterPip());
+      }
+    } else {
+      // Window dismissed with X while backgrounded: keep the call alive on
+      // audio — pause the camera and signal camera-off to the peer.
+      debugPrint(
+        '📺 VantPip: dismissed with X (lifecycle=$effective) — continuing on audio',
+      );
+      if (isInCall && isVideoCall.value && isCameraOn.value) {
+        _cameraPausedForBackground = true;
+        unawaited(setCameraEnabled(false));
+      }
+    }
+  }
+
+  /// If Android kills camera capture while the app is PiP'd, the local video
+  /// track mutes/ends silently — the peer would see a frozen frame unless we
+  /// signal video-off. Watch the track while in PiP (callbacks + a slow poll
+  /// because not every cut raises onMute).
+  void _startPipCameraCutWatcher() {
+    _pipCameraCutWatcher?.cancel();
+    final track = localVideoStream.value?.getVideoTracks().isNotEmpty == true
+        ? localVideoStream.value!.getVideoTracks().first
+        : null;
+    if (track == null) return;
+    track.onMute = () => _handlePipCameraCut('onMute');
+    track.onEnded = () => _handlePipCameraCut('onEnded');
+    _pipCameraCutWatcher = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (!isInPip.value || !isInCall) {
+        _stopPipCameraCutWatcher();
+        return;
+      }
+      if (track.muted == true) _handlePipCameraCut('muted-poll');
+    });
+  }
+
+  void _stopPipCameraCutWatcher() {
+    _pipCameraCutWatcher?.cancel();
+    _pipCameraCutWatcher = null;
+    final stream = localVideoStream.value;
+    if (stream != null && stream.getVideoTracks().isNotEmpty) {
+      final track = stream.getVideoTracks().first;
+      track.onMute = null;
+      track.onEnded = null;
+    }
+  }
+
+  void _handlePipCameraCut(String via) {
+    if (!isInPip.value || _cameraCutInPip) return;
+    _cameraCutInPip = true;
+    debugPrint(
+      '📺 VantPip: CAMERA CUT in PiP via=$via — sending call_media_update(video:false)',
+    );
+    _sendCallMediaUpdate(video: false, reason: 'camera cut in pip ($via)');
   }
 
   void _handleNativeShowFlutterCall(Map<String, dynamic> data) {
@@ -3350,6 +3613,9 @@ class CallController extends GetxController {
         if (isCaller.value && !isCallMinimized.value) {
           Get.offNamed(activeCallRoute);
         }
+        // Arm PiP auto-enter now that a connected call exists (no-ops when the
+        // flag is off or this is a voice call).
+        unawaited(_syncPipEligibility());
         break;
       case 'disconnected':
         if (isConnected) {
@@ -3614,6 +3880,14 @@ class CallController extends GetxController {
     _stopDurationUpdateTimer();
     _stopProximitySensor();
     _setCallScreenVisible(false);
+    // Tear down PiP state: clear auto-enter and leave the PiP window via
+    // moveTaskToBack (never finish — that would kill the engine + socket).
+    _pipPauseDebounce?.cancel();
+    _stopPipCameraCutWatcher();
+    _cameraCutInPip = false;
+    _videoCallUiVisible = false;
+    isInPip.value = false;
+    unawaited(_pipService.onCallEnded());
     // Dismiss the sticky ongoing call notification
     try {
       NotificationService().cancelOngoingCallNotification();
