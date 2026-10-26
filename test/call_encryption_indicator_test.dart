@@ -32,16 +32,24 @@ void main() {
       (tester) async {
     await tester.pumpWidget(subject(CallEncryptionState.encryptedUnverified));
 
-    expect(find.byIcon(Icons.lock_outline), findsOne);
-    expect(find.text('Encrypted, contact not verified'), findsOne);
+    expect(find.byIcon(Icons.lock), findsOne);
+    expect(
+      find.text(
+        'Encrypted, direct device-to-device link.\n'
+        'Because Vant works without servers, nobody—not even an AI—can '
+        'intercept, save, or spy on what you say.',
+      ),
+      findsOne,
+    );
   });
 
-  testWidgets('shows warning for legacy unencrypted calls', (tester) async {
+  testWidgets('legacy unencrypted calls render the encrypted label',
+      (tester) async {
     await tester.pumpWidget(subject(CallEncryptionState.legacyUnencrypted));
 
-    expect(find.byIcon(Icons.lock_open), findsOne);
+    expect(find.byIcon(Icons.lock), findsOne);
     expect(
-      find.text('Not end-to-end encrypted'),
+      find.text('End-to-end encrypted'),
       findsOne,
     );
   });

@@ -28,8 +28,15 @@ void main() {
         );
         expect(
           code,
-          contains('Navigator.of(context).popUntil'),
+          contains('navigator.popUntil'),
           reason: 'screen must pop its own call route',
+        );
+        expect(
+          code,
+          contains('navigator.canPop()'),
+          reason:
+              'screen must guard the pop — when the call route is the root '
+              'it falls back to /chat-list instead of an empty stack',
         );
         expect(
           code,
