@@ -91,16 +91,17 @@ class MainActivity : FlutterFragmentActivity() {
     private var pipRatioW = 9
     private var pipRatioH = 16
     // PiP exit classification: onPictureInPictureModeChanged(false) alone
-    // can't tell "expanded to full screen" (onResume follows within ms) from
-    // "dismissed with X" (activity stays paused/stopped). Dart-side lifecycle
-    // events arrive too late to distinguish them — decide here where the
-    // activity lifecycle is synchronous.
+    // can't tell "expanded to full screen" (onResume follows) from
+    // "dismissed with X" (onStop follows). Dart-side lifecycle events
+    // arrive too late to distinguish them — decide here by event ordering:
+    // whichever of onResume/onStop arrives first wins; a 1.5s fallback
+    // covers OEMs that stop short of onStop.
     @Volatile private var pipExitAwaitingResume = false
     private val pipOutcomeHandler = Handler(Looper.getMainLooper())
     private val pipOutcomeCheck = Runnable {
         if (pipExitAwaitingResume) {
             pipExitAwaitingResume = false
-            emitPipOutcome("dismissed")
+            emitPipOutcome("dismissed", "timeout-fallback")
         }
     }
 
@@ -588,10 +589,12 @@ class MainActivity : FlutterFragmentActivity() {
                     } else {
                         registerReceiver(receiver, filter)
                     }
+                    callEventsReceiver = receiver
                 }
 
                 override fun onCancel(arguments: Any?) {
                     receiver?.let { unregisterReceiver(it) }
+                    callEventsReceiver = null
                 }
             })
         
@@ -667,6 +670,7 @@ class MainActivity : FlutterFragmentActivity() {
      *  auto-enter is armed/disarmed. */
     private fun applyPipParams() {
         if (Build.VERSION.SDK_INT < 26) return
+        if (isFinishing || isDestroyed) return
         val params = buildPipParams() ?: return
         try {
             setPictureInPictureParams(params)
@@ -716,10 +720,11 @@ class MainActivity : FlutterFragmentActivity() {
             Log.w(PIP_TAG, "pip_changed broadcast failed: ${e.message}")
         }
         if (!isInPictureInPictureMode) {
-            // Expanded vs dismissed is decided in onResume / pipOutcomeCheck.
+            // Expanded vs dismissed is decided by lifecycle event order:
+            // onResume -> expanded, onStop -> dismissed, 1.5s -> dismissed.
             pipExitAwaitingResume = true
             pipOutcomeHandler.removeCallbacks(pipOutcomeCheck)
-            pipOutcomeHandler.postDelayed(pipOutcomeCheck, 450)
+            pipOutcomeHandler.postDelayed(pipOutcomeCheck, 1500)
         }
     }
 
@@ -729,12 +734,29 @@ class MainActivity : FlutterFragmentActivity() {
         if (pipExitAwaitingResume) {
             pipExitAwaitingResume = false
             pipOutcomeHandler.removeCallbacks(pipOutcomeCheck)
-            emitPipOutcome("expanded")
+            emitPipOutcome("expanded", "onResume-first")
         }
     }
 
-    private fun emitPipOutcome(outcome: String) {
-        Log.i(PIP_TAG, "pip outcome: $outcome")
+    override fun onStop() {
+        super.onStop()
+        // A pip exit followed by onStop means the window was dismissed (X)
+        // or the task was backgrounded — not an expand.
+        if (pipExitAwaitingResume) {
+            pipExitAwaitingResume = false
+            pipOutcomeHandler.removeCallbacks(pipOutcomeCheck)
+            emitPipOutcome("dismissed", "onStop-first")
+        }
+    }
+
+    // Activity-owned handle to the call_events stream receiver so onDestroy
+    // can unregister it when Dart cancels nothing (activity destroyed while
+    // the event stream is still subscribed). Fixes the leaked-IntentReceiver
+    // warning on teardown.
+    @Volatile private var callEventsReceiver: android.content.BroadcastReceiver? = null
+
+    private fun emitPipOutcome(outcome: String, via: String) {
+        Log.i(PIP_TAG, "pip outcome: $outcome ($via)")
         try {
             sendBroadcast(
                 Intent("com.vant.chat.PIP_OUTCOME")
@@ -1524,6 +1546,10 @@ class MainActivity : FlutterFragmentActivity() {
         // Engine teardown for the pre-warm path is handled by
         // shouldDestroyEngineWithHost() so the delegate detaches/destroys in
         // the right order.
+        callEventsReceiver?.let {
+            try { unregisterReceiver(it) } catch (_: Exception) {}
+            callEventsReceiver = null
+        }
         usedPrewarmEngine = false
         attachedEngine = null
         liveInstanceCount--

@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pear_messaging/features/call/call_controller.dart';
@@ -195,6 +197,68 @@ void main() {
         ),
       );
       expect(tester.takeException(), isNull);
+    });
+  });
+
+  group('native PiP exit classification — event ordering', () {
+    final src = File(
+      'android/app/src/main/kotlin/com/vant/chat/MainActivity.kt',
+    ).readAsStringSync();
+
+    test('pip exit arms the awaiting-classification state', () {
+      expect(src, contains('pipExitAwaitingResume = true'));
+    });
+
+    test('onResume arriving first classifies expanded', () {
+      final onResume = src.indexOf('override fun onResume()');
+      expect(onResume, isNonNegative);
+      final body = src.substring(onResume);
+      expect(body, contains('pipExitAwaitingResume'));
+      expect(body, contains('emitPipOutcome("expanded", "onResume-first")'));
+    });
+
+    test('onStop arriving first classifies dismissed', () {
+      final onStop = src.indexOf('override fun onStop()');
+      expect(onStop, isNonNegative);
+      final body = src.substring(onStop);
+      expect(body, contains('emitPipOutcome("dismissed", "onStop-first")'));
+    });
+
+    test('1.5s fallback classifies dismissed when neither event arrives', () {
+      expect(src, contains('postDelayed(pipOutcomeCheck, 1500)'));
+      expect(src, contains('emitPipOutcome("dismissed", "timeout-fallback")'));
+    });
+
+    test('pip outcome is broadcast through PIP_OUTCOME intent', () {
+      expect(src, contains('com.vant.chat.PIP_OUTCOME'));
+      expect(src, contains('"type" to "pip_outcome"'));
+    });
+
+    test('both lifecycle winners cancel the fallback before emitting', () {
+      final onResume = src.indexOf('override fun onResume()');
+      final onStop = src.indexOf('override fun onStop()');
+      for (final idx in [onResume, onStop]) {
+        final emitIdx = src.indexOf('emitPipOutcome(', idx);
+        final cancelIdx = src.indexOf(
+          'pipOutcomeHandler.removeCallbacks(pipOutcomeCheck)',
+          idx,
+        );
+        expect(cancelIdx, lessThan(emitIdx));
+      }
+    });
+
+    test('applyPipParams is guarded during activity teardown', () {
+      final fn = src.indexOf('private fun applyPipParams()');
+      final body = src.substring(fn, fn + 300);
+      expect(body, contains('isFinishing'));
+      expect(body, contains('isDestroyed'));
+    });
+
+    test('call_events receiver is unregistered in onDestroy', () {
+      final onDestroy = src.indexOf('override fun onDestroy()');
+      final body = src.substring(onDestroy, onDestroy + 700);
+      expect(body, contains('callEventsReceiver'));
+      expect(body, contains('unregisterReceiver'));
     });
   });
 }
