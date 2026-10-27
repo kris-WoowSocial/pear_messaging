@@ -18,6 +18,7 @@ import '../../core/widgets/empty_state.dart';
 import '../../routes/app_routes.dart';
 import 'chat_list_controller.dart';
 import 'chat_list_item.dart';
+import '../invite/invite_fallback_sheet.dart';
 import 'connection_request_item.dart';
 
 class ChatListScreen extends GetView<ChatListController> {
@@ -293,6 +294,16 @@ class ChatListScreen extends GetView<ChatListController> {
                   title: AppStrings.noChats,
                   subtitle: AppStrings.startChatting,
                   icon: Icons.chat_bubble_outline,
+                  // iOS only: recovery for invite installs where the paste
+                  // prompt was denied or the match missed. Android uses the
+                  // Play Install Referrer and needs no manual entry point.
+                  action: Platform.isIOS
+                      ? TextButton.icon(
+                          onPressed: InviteFallbackSheet.show,
+                          icon: const Icon(Icons.card_giftcard),
+                          label: const Text('Have an invite?'),
+                        )
+                      : null,
                 );
               }
 
