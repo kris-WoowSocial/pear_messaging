@@ -1,9 +1,14 @@
 package com.vant.chat
 
 import android.app.NotificationManager
+import android.app.PictureInPictureParams
 import android.content.Intent
+import android.content.res.Configuration
+import android.graphics.Rect
 import android.net.Uri
 import android.os.Build
+import android.util.Log
+import android.util.Rational
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -41,6 +46,19 @@ class MainActivity : FlutterFragmentActivity() {
          */
         @Volatile private var liveInstanceCount = 0
         val isMainActivityAlive: Boolean get() = liveInstanceCount > 0
+
+        // ---- Picture-in-Picture state (video calls, ff_pip_android) ----
+        // Logcat tag for every PiP decision — filter `adb logcat -s VantPip`.
+        const val PIP_TAG = "VantPip"
+        /** True while the activity is actually in PiP (from
+         *  onPictureInPictureModeChanged). Volatile so Dart's synchronous
+         *  query and any lifecycle thread see the same value. */
+        @Volatile var isInPipMode = false
+            private set
+        /** Set BEFORE enterPictureInPictureMode() so Dart can distinguish a
+         *  PiP-entry `paused` lifecycle event from real backgrounding. */
+        @Volatile var pipEntering = false
+            private set
     }
 
     private val DEEPLINK_CHANNEL = "com.pear.messaging/deeplink"
@@ -66,6 +84,26 @@ class MainActivity : FlutterFragmentActivity() {
     private var attachedEngine: FlutterEngine? = null
     private var usedPrewarmEngine = false
     private var pendingPushRetries = 0
+
+    // PiP: Dart flips pipEligible only while a connected video call is up.
+    // pipRatio tracks the remote video aspect (9:16 fallback).
+    private var pipEligible = false
+    private var pipRatioW = 9
+    private var pipRatioH = 16
+    // PiP exit classification: onPictureInPictureModeChanged(false) alone
+    // can't tell "expanded to full screen" (onResume follows) from
+    // "dismissed with X" (onStop follows). Dart-side lifecycle events
+    // arrive too late to distinguish them — decide here by event ordering:
+    // whichever of onResume/onStop arrives first wins; a 1.5s fallback
+    // covers OEMs that stop short of onStop.
+    @Volatile private var pipExitAwaitingResume = false
+    private val pipOutcomeHandler = Handler(Looper.getMainLooper())
+    private val pipOutcomeCheck = Runnable {
+        if (pipExitAwaitingResume) {
+            pipExitAwaitingResume = false
+            emitPipOutcome("dismissed", "timeout-fallback")
+        }
+    }
 
     /**
      * If the FCM service pre-warmed an engine while the phone was ringing,
@@ -300,6 +338,45 @@ class MainActivity : FlutterFragmentActivity() {
                         .apply()
                     result.success(null)
                 }
+                // ---- Picture-in-Picture (video calls) ----
+                "setPipParams" -> {
+                    pipEligible = call.argument<Boolean>("enabled") ?: false
+                    val w = call.argument<Int>("width") ?: 9
+                    val h = call.argument<Int>("height") ?: 16
+                    if (w > 0 && h > 0) {
+                        pipRatioW = w
+                        pipRatioH = h
+                    }
+                    applyPipParams()
+                    Log.i(PIP_TAG, "setPipParams eligible=$pipEligible ratio=$pipRatioW:$pipRatioH")
+                    result.success(null)
+                }
+                "isInPipMode" -> {
+                    result.success(isPipActive())
+                }
+                "isPipEntering" -> {
+                    result.success(pipEntering)
+                }
+                "exitPipIfActive" -> {
+                    exitPipKeepingProcess()
+                    result.success(null)
+                }
+                "pipCallEnded" -> {
+                    // Call finished (local end, remote hangup, decline). Clear
+                    // auto-enter so a stale Home gesture can't re-enter PiP,
+                    // then close the PiP window WITHOUT finishing the activity —
+                    // moveTaskToBack keeps the Flutter engine, Dart isolate and
+                    // signaling socket alive like a normal Home press.
+                    pipEligible = false
+                    if (Build.VERSION.SDK_INT >= 31) applyPipParams()
+                    if (isPipActive()) {
+                        Log.i(PIP_TAG, "call ended while in PiP -> moveTaskToBack")
+                        exitPipKeepingProcess()
+                    } else {
+                        Log.i(PIP_TAG, "call ended, not in PiP")
+                    }
+                    result.success(null)
+                }
                 else -> {
                     result.notImplemented()
                 }
@@ -477,6 +554,22 @@ class MainActivity : FlutterFragmentActivity() {
                                 "com.vant.chat.CALL_UNHELD" -> {
                                     events?.success(hashMapOf("type" to "call_unheld"))
                                 }
+                                "com.vant.chat.PIP_CHANGED" -> {
+                                    events?.success(
+                                        hashMapOf(
+                                            "type" to "pip_changed",
+                                            "is_pip" to (intent.getStringExtra("is_pip") ?: "false")
+                                        )
+                                    )
+                                }
+                                "com.vant.chat.PIP_OUTCOME" -> {
+                                    events?.success(
+                                        hashMapOf(
+                                            "type" to "pip_outcome",
+                                            "outcome" to (intent.getStringExtra("outcome") ?: "dismissed")
+                                        )
+                                    )
+                                }
                             }
                         }
                     }
@@ -484,6 +577,8 @@ class MainActivity : FlutterFragmentActivity() {
                         addAction("com.vant.chat.SHOW_FLUTTER_CALL")
                         addAction("com.vant.chat.CALL_HELD")
                         addAction("com.vant.chat.CALL_UNHELD")
+                        addAction("com.vant.chat.PIP_CHANGED")
+                        addAction("com.vant.chat.PIP_OUTCOME")
                     }
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                         registerReceiver(
@@ -494,10 +589,12 @@ class MainActivity : FlutterFragmentActivity() {
                     } else {
                         registerReceiver(receiver, filter)
                     }
+                    callEventsReceiver = receiver
                 }
 
                 override fun onCancel(arguments: Any?) {
                     receiver?.let { unregisterReceiver(it) }
+                    callEventsReceiver = null
                 }
             })
         
@@ -543,6 +640,141 @@ class MainActivity : FlutterFragmentActivity() {
                 clearShowWhenLocked()
                 println("onWindowFocusChanged: unlocked, showWhenLocked cleared")
             }
+        }
+    }
+
+    // ==================== Picture-in-Picture ====================
+
+    private fun isPipActive(): Boolean {
+        return Build.VERSION.SDK_INT >= 26 && isInPictureInPictureMode
+    }
+
+    /** Build PiP params from the last Dart-supplied remote aspect ratio,
+     *  clamped to Android's allowed range (~0.39 - 2.59). */
+    private fun buildPipParams(): PictureInPictureParams? {
+        if (Build.VERSION.SDK_INT < 26) return null
+        val raw = pipRatioW.toFloat() / pipRatioH.toFloat()
+        val clamped = raw.coerceIn(0.39f, 2.59f)
+        val h = 1000
+        val w = (clamped * h).toInt().coerceAtLeast(1)
+        val builder = PictureInPictureParams.Builder()
+            .setAspectRatio(Rational(w, h))
+            .setSourceRectHint(Rect(0, 0, 1, 1)) // whole-window transition
+        if (Build.VERSION.SDK_INT >= 31) {
+            builder.setAutoEnterEnabled(pipEligible)
+        }
+        return builder.build()
+    }
+
+    /** Push current params to the system. On API 31+ this is also where
+     *  auto-enter is armed/disarmed. */
+    private fun applyPipParams() {
+        if (Build.VERSION.SDK_INT < 26) return
+        if (isFinishing || isDestroyed) return
+        val params = buildPipParams() ?: return
+        try {
+            setPictureInPictureParams(params)
+            if (Build.VERSION.SDK_INT >= 31) {
+                Log.i(PIP_TAG, "autoEnter=${pipEligible}")
+            }
+        } catch (e: Exception) {
+            Log.w(PIP_TAG, "setPictureInPictureParams failed: ${e.message}")
+        }
+    }
+
+    /** API 26-30 entry path (31+ uses setAutoEnterEnabled). Dart has already
+     *  gated eligibility through setPipParams — if pipEligible is true all
+     *  conditions (video call, connected, flag, call UI visible) hold. */
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        if (Build.VERSION.SDK_INT in 26..30 && pipEligible && !isPipActive()) {
+            Log.i(PIP_TAG, "onUserLeaveHint -> pipEntering=true, enterPiP")
+            pipEntering = true
+            try {
+                enterPictureInPictureMode(buildPipParams()!!)
+            } catch (e: Exception) {
+                pipEntering = false
+                Log.w(PIP_TAG, "enterPictureInPictureMode failed: ${e.message}")
+            }
+        }
+    }
+
+    override fun onPictureInPictureModeChanged(
+        isInPictureInPictureMode: Boolean,
+        newConfig: Configuration
+    ) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        isInPipMode = isInPictureInPictureMode
+        pipEntering = false
+        Log.i(
+            PIP_TAG,
+            if (isInPictureInPictureMode) "pip enter" else "pip exit"
+        )
+        // Forward to Dart via the existing call_events EventChannel receiver.
+        try {
+            val intent = Intent("com.vant.chat.PIP_CHANGED")
+                .setPackage(packageName)
+                .putExtra("is_pip", isInPictureInPictureMode.toString())
+            sendBroadcast(intent)
+        } catch (e: Exception) {
+            Log.w(PIP_TAG, "pip_changed broadcast failed: ${e.message}")
+        }
+        if (!isInPictureInPictureMode) {
+            // Expanded vs dismissed is decided by lifecycle event order:
+            // onResume -> expanded, onStop -> dismissed, 1.5s -> dismissed.
+            pipExitAwaitingResume = true
+            pipOutcomeHandler.removeCallbacks(pipOutcomeCheck)
+            pipOutcomeHandler.postDelayed(pipOutcomeCheck, 1500)
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // A pip exit followed by onResume is an expand, not an X-dismiss.
+        if (pipExitAwaitingResume) {
+            pipExitAwaitingResume = false
+            pipOutcomeHandler.removeCallbacks(pipOutcomeCheck)
+            emitPipOutcome("expanded", "onResume-first")
+        }
+    }
+
+    override fun onStop() {
+        super.onStop()
+        // A pip exit followed by onStop means the window was dismissed (X)
+        // or the task was backgrounded — not an expand.
+        if (pipExitAwaitingResume) {
+            pipExitAwaitingResume = false
+            pipOutcomeHandler.removeCallbacks(pipOutcomeCheck)
+            emitPipOutcome("dismissed", "onStop-first")
+        }
+    }
+
+    // Activity-owned handle to the call_events stream receiver so onDestroy
+    // can unregister it when Dart cancels nothing (activity destroyed while
+    // the event stream is still subscribed). Fixes the leaked-IntentReceiver
+    // warning on teardown.
+    @Volatile private var callEventsReceiver: android.content.BroadcastReceiver? = null
+
+    private fun emitPipOutcome(outcome: String, via: String) {
+        Log.i(PIP_TAG, "pip outcome: $outcome ($via)")
+        try {
+            sendBroadcast(
+                Intent("com.vant.chat.PIP_OUTCOME")
+                    .setPackage(packageName)
+                    .putExtra("outcome", outcome)
+            )
+        } catch (e: Exception) {
+            Log.w(PIP_TAG, "pip_outcome broadcast failed: ${e.message}")
+        }
+    }
+
+    /** Close the PiP window without destroying the Flutter engine/Dart
+     *  isolate: moveTaskToBack keeps the process, socket and FGS alive —
+     *  the same mechanism as pressing Home. NEVER finish() here. */
+    private fun exitPipKeepingProcess() {
+        if (isPipActive()) {
+            Log.i(PIP_TAG, "exitPip -> moveTaskToBack")
+            moveTaskToBack(true)
         }
     }
     
@@ -1314,6 +1546,10 @@ class MainActivity : FlutterFragmentActivity() {
         // Engine teardown for the pre-warm path is handled by
         // shouldDestroyEngineWithHost() so the delegate detaches/destroys in
         // the right order.
+        callEventsReceiver?.let {
+            try { unregisterReceiver(it) } catch (_: Exception) {}
+            callEventsReceiver = null
+        }
         usedPrewarmEngine = false
         attachedEngine = null
         liveInstanceCount--

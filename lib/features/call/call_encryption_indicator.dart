@@ -54,6 +54,15 @@ class CallEncryptionIndicator extends StatelessWidget {
         ),
     };
 
+    final media = MediaQuery.of(context);
+    // The full copy must always be readable: clamp the user's text scale so
+    // large-font devices can't blow the banner up, never truncate, keep the
+    // width inside safe-area padding, and let short/landscape screens scroll
+    // instead of clipping into the control bar or self-view tile.
+    final scaler = media.textScaler.clamp(
+      minScaleFactor: 0.85,
+      maxScaleFactor: 1.3,
+    );
     return Visibility(
       visible: _isFinal,
       maintainSize: true,
@@ -61,7 +70,8 @@ class CallEncryptionIndicator extends StatelessWidget {
       maintainState: true,
       child: ConstrainedBox(
         constraints: BoxConstraints(
-          maxWidth: MediaQuery.of(context).size.width - 25,
+          maxWidth: media.size.width - media.padding.horizontal - 32,
+          maxHeight: media.size.height * 0.5,
         ),
         child: Container(
           key: const ValueKey('call_encryption_indicator'),
@@ -71,23 +81,24 @@ class CallEncryptionIndicator extends StatelessWidget {
             borderRadius: BorderRadius.circular(16),
             border: Border.all(color: color.withValues(alpha: 0.65)),
           ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(icon, size: 15, color: color),
-              const SizedBox(height: 4),
-              Text(
-                text,
-                maxLines: 4,
-                overflow: TextOverflow.ellipsis,
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  color: color,
-                  fontSize: 17,
-                  fontWeight: FontWeight.w600,
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(icon, size: 15, color: color),
+                const SizedBox(height: 4),
+                Text(
+                  text,
+                  textScaler: scaler,
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: color,
+                    fontSize: 17,
+                    fontWeight: FontWeight.w600,
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),

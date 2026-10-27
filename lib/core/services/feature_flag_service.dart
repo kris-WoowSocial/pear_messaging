@@ -13,16 +13,33 @@ import 'package:shared_preferences/shared_preferences.dart';
 ///  - ff_verification_ui     Phase 1 contact verification screen
 ///  - ff_encrypted_signaling Phase 2 SDP/ICE encryption
 ///  - ff_video_calling       video call offers/answers
+///  - ff_pip_android         video-call Picture-in-Picture on Android 26+
+///  - ff_pip_ios             video-call Picture-in-Picture on iOS
 ///
 /// A fetch failure NEVER enables anything — defaults stay off.
 class FeatureFlagService extends GetxService {
   static const String kVerificationUi = 'ff_verification_ui';
   static const String kEncryptedSignaling = 'ff_encrypted_signaling';
   static const String kVideoCalling = 'ff_video_calling';
+  static const String kPipAndroid = 'ff_pip_android';
+  static const String kPipIos = 'ff_pip_ios';
 
   final RxBool verificationUi = false.obs;
   final RxBool encryptedSignaling = false.obs;
   final RxBool videoCalling = false.obs;
+  final RxBool pipAndroid = false.obs;
+  final RxBool pipIos = false.obs;
+
+  /// Tester escape hatch: debug builds can exercise PiP without waiting for a
+  /// Remote Config rollout. Release builds ignore this entirely — the flag
+  /// stays controlled by Remote Config only. Build a flag-off debug APK for
+  /// regression checks with `--dart-define=PIP_DEBUG_OVERRIDE=false`.
+  static const bool debugPipOverride =
+      bool.fromEnvironment('PIP_DEBUG_OVERRIDE', defaultValue: true);
+
+  bool get pipAndroidEnabled =>
+      pipAndroid.value || (kDebugMode && debugPipOverride);
+  bool get pipIosEnabled => pipIos.value || (kDebugMode && debugPipOverride);
 
   FirebaseRemoteConfig? _rc;
   final Completer<void> _initialFetchCompleter = Completer<void>();
@@ -55,6 +72,8 @@ class FeatureFlagService extends GetxService {
         kVerificationUi: false,
         kEncryptedSignaling: false,
         kVideoCalling: false,
+        kPipAndroid: false,
+        kPipIos: false,
       });
       // Hydrate the last applied values from disk BEFORE the network fetch so
       // cold-start call flows see real flags immediately — Remote Config only
@@ -98,9 +117,13 @@ class FeatureFlagService extends GetxService {
               encryptedSignaling.value;
       videoCalling.value =
           prefs.getBool('ff_cache_$kVideoCalling') ?? videoCalling.value;
+      pipAndroid.value =
+          prefs.getBool('ff_cache_$kPipAndroid') ?? pipAndroid.value;
+      pipIos.value = prefs.getBool('ff_cache_$kPipIos') ?? pipIos.value;
       debugPrint(
         '🎛️ Flags hydrated: verification=${verificationUi.value}, '
-        'encrypted=${encryptedSignaling.value}, video=${videoCalling.value}',
+        'encrypted=${encryptedSignaling.value}, video=${videoCalling.value}, '
+        'pipAndroid=${pipAndroid.value}, pipIos=${pipIos.value}',
       );
     } catch (e) {
       debugPrint('⚠️ Flag hydration failed, using defaults: $e');
@@ -111,14 +134,19 @@ class FeatureFlagService extends GetxService {
     verificationUi.value = _rc!.getBool(kVerificationUi);
     encryptedSignaling.value = _rc!.getBool(kEncryptedSignaling);
     videoCalling.value = _rc!.getBool(kVideoCalling);
+    pipAndroid.value = _rc!.getBool(kPipAndroid);
+    pipIos.value = _rc!.getBool(kPipIos);
     SharedPreferences.getInstance().then((prefs) {
       prefs.setBool('ff_cache_$kVerificationUi', verificationUi.value);
       prefs.setBool('ff_cache_$kEncryptedSignaling', encryptedSignaling.value);
       prefs.setBool('ff_cache_$kVideoCalling', videoCalling.value);
+      prefs.setBool('ff_cache_$kPipAndroid', pipAndroid.value);
+      prefs.setBool('ff_cache_$kPipIos', pipIos.value);
     });
     debugPrint(
       '🎛️ Feature flags: verification=${verificationUi.value}, '
-      'encrypted=${encryptedSignaling.value}, video=${videoCalling.value} '
+      'encrypted=${encryptedSignaling.value}, video=${videoCalling.value}, '
+      'pipAndroid=${pipAndroid.value}, pipIos=${pipIos.value} '
       '(fetch=${_rc!.lastFetchStatus}, at=${_rc!.lastFetchTime})',
     );
     for (final callback in _onApplyCallbacks) {

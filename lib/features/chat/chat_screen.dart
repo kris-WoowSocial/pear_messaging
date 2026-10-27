@@ -529,7 +529,7 @@ class ChatScreen extends GetView<ChatController> {
                     color: const Color(0xFFC861F9),
                     onTap: () async {
                       Get.back();
-                      await _pickAndSendImage(imagePicker, ImageSource.gallery);
+                      await _pickAndSendImages(imagePicker);
                     },
                   ),
                 ],
@@ -1030,6 +1030,75 @@ class ChatScreen extends GetView<ChatController> {
         backgroundColor: Colors.red.shade100,
         colorText: Colors.red.shade800,
         duration: const Duration(seconds: 4),
+      );
+    }
+  }
+
+  /// WhatsApp-style multi-image send: pick up to 5 images, bubble each in
+  /// order with its own upload progress, upload ONE BY ONE through the same
+  /// pipeline a single image uses. A failed image marks only its own bubble
+  /// failed (tap-to-retry) — the rest keep going.
+  static const int _maxImagesPerSend = 5;
+
+  Future<void> _pickAndSendImages(ImagePicker picker) async {
+    try {
+      final permissionStatus = await _requestGalleryPermission();
+      if (permissionStatus != PermissionStatus.granted) {
+        Get.snackbar(
+          'Permission Required',
+          'Please allow access to photos to send images.',
+          snackPosition: SnackPosition.BOTTOM,
+          backgroundColor: Colors.red.shade100,
+          colorText: Colors.red.shade800,
+        );
+        return;
+      }
+
+      var picked = await picker.pickMultiImage(limit: _maxImagesPerSend);
+      if (picked.isEmpty) return;
+      if (picked.length > _maxImagesPerSend) {
+        picked = picked.take(_maxImagesPerSend).toList();
+        Get.snackbar(
+          'Too many images',
+          'You can send up to $_maxImagesPerSend images at a time',
+          snackPosition: SnackPosition.BOTTOM,
+        );
+      }
+
+      // Compress sequentially (same compressor the single-image flow uses),
+      // then hand the ordered byte list to the controller which creates a
+      // bubble per image and uploads one by one.
+      final compressed = <Uint8List>[];
+      for (final file in picked) {
+        final bytes = await _compressImageBytes(file.path);
+        if (bytes.isEmpty) {
+          debugPrint('⚠️ Skipping image that failed to compress: ${file.path}');
+          continue;
+        }
+        compressed.add(bytes);
+      }
+      if (compressed.isEmpty) {
+        Get.snackbar(
+          'Error',
+          'Failed to process images',
+          snackPosition: SnackPosition.BOTTOM,
+          backgroundColor: Colors.red.shade100,
+          colorText: Colors.red.shade800,
+        );
+        return;
+      }
+      await controller.sendImagesSequentially(
+        compressed,
+        maxPerBatch: _maxImagesPerSend,
+      );
+    } catch (e) {
+      debugPrint('❌ Error in multi-image send: $e');
+      Get.snackbar(
+        'Error',
+        'Failed to send images. Please try again.',
+        snackPosition: SnackPosition.BOTTOM,
+        backgroundColor: Colors.red.shade100,
+        colorText: Colors.red.shade800,
       );
     }
   }

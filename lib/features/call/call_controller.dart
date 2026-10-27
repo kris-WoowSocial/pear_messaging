@@ -28,6 +28,7 @@ import '../../core/services/ringtone_service.dart';
 import '../../core/services/username_service.dart';
 import '../../core/services/call_history_service.dart';
 import '../../core/services/proximity_service.dart';
+import '../../core/services/pip_service.dart';
 import '../../core/services/notification_service.dart';
 import '../../core/services/call_foreground_service.dart';
 import '../../core/services/callkit_service.dart';
@@ -210,6 +211,19 @@ class CallController extends GetxController {
   final RxBool hasPoorConnection = false.obs;
   final Rxn<MediaStream> localVideoStream = Rxn<MediaStream>();
   final Rxn<MediaStream> remoteVideoStream = Rxn<MediaStream>();
+
+  /// Video renderers live for the CALL lifetime, not the screen lifetime.
+  /// Recreating a renderer on every minimize/restore throws away the video
+  /// decoder, which then paints black until the next keyframe (~3-4 s).
+  /// Kept here, bound in the stream callbacks and disposed on call end,
+  /// the decoder — and its last frame — survives route changes.
+  RTCVideoRenderer? _remoteRenderer;
+  RTCVideoRenderer? _localRenderer;
+  Future<void>? _renderersInitFuture;
+
+  /// Null until [ensureVideoRenderers] completes — screens gate on this.
+  RTCVideoRenderer? get remoteRenderer => _remoteRenderer;
+  RTCVideoRenderer? get localRenderer => _localRenderer;
   final Rx<CallEncryptionState> callEncryptionState =
       CallEncryptionState.connecting.obs;
 
@@ -276,6 +290,16 @@ class CallController extends GetxController {
   bool _cameraPausedForBackground = false;
   WidgetsBindingObserver? _lifecycleObserver;
 
+  // ---- Picture-in-Picture (Android video calls, ff_pip_android) ----
+  final PipService _pipService = PipService();
+  PipService get pipService => _pipService; // exposed for the call screen
+  final RxBool isInPip = false.obs;
+  AppLifecycleState _lastLifecycleState = AppLifecycleState.resumed;
+  Timer? _pipPauseDebounce;
+  Timer? _pipCameraCutWatcher;
+  bool _cameraCutInPip = false;
+  bool _videoCallUiVisible = false;
+
   // Full-screen-intent state: true while USE_FULL_SCREEN_INTENT is denied
   // (incoming calls fall back to a heads-up notification). When a call rings
   // while denied, _fsiPromptPending defers the settings dialog until the call
@@ -309,6 +333,8 @@ class CallController extends GetxController {
       } else {
         unawaited(WakelockPlus.disable());
       }
+      // A mid-call upgrade to video (or downgrade) changes PiP eligibility.
+      unawaited(_syncPipEligibility());
     });
 
     // If the socket reconnects while we have a pending auto-accept (e.g. cold-start
@@ -490,6 +516,10 @@ class CallController extends GetxController {
               _handleCallHeld();
             } else if (type == 'call_unheld') {
               _handleCallUnheld();
+            } else if (type == 'pip_changed') {
+              _onPipChanged(data['is_pip'] == 'true' || data['is_pip'] == true);
+            } else if (type == 'pip_outcome') {
+              _onPipOutcome(data['outcome'] as String? ?? 'dismissed');
             } else {
               _handleNativeShowFlutterCall(data);
             }
@@ -649,18 +679,261 @@ class CallController extends GetxController {
         (state == AppLifecycleState.inactive && nativeCallHeld);
   }
 
+  /// PiP entry gate — every condition must hold. Pure and unit-tested.
+  /// `incomingRinging` keeps the ringing UI (a different activity path via
+  /// IncomingCallActivity) from ever triggering PiP.
+  @visibleForTesting
+  static bool shouldEnterPip({
+    required bool isVideoCall,
+    required bool callConnected,
+    required bool flagOn,
+    required int apiLevel,
+    required bool cameraPermission,
+    required bool inCallUiVisible,
+    required bool incomingRinging,
+  }) {
+    return flagOn &&
+        isVideoCall &&
+        callConnected &&
+        apiLevel >= 26 &&
+        cameraPermission &&
+        inCallUiVisible &&
+        !incomingRinging;
+  }
+
+  /// PiP-aware camera pause rule. PiP entry produces a paused/inactive event
+  /// but the camera must KEEP running (the remote side still expects video).
+  /// `isInPip`/`pipEntering` come from the native flag set before
+  /// enterPictureInPictureMode().
+  @visibleForTesting
+  static bool shouldPauseCameraOnBackground(
+    AppLifecycleState state, {
+    required bool nativeCallHeld,
+    required bool isInPip,
+    required bool pipEntering,
+  }) {
+    if (isInPip || pipEntering) return false;
+    return state == AppLifecycleState.paused ||
+        (state == AppLifecycleState.inactive && nativeCallHeld);
+  }
+
+  /// The ~250ms debounced pause decision used on Android `paused`: PiP state
+  /// lands natively a few ms after the lifecycle event, so we wait briefly
+  /// then query native before deciding. Injectable for unit tests.
+  @visibleForTesting
+  static Future<bool> resolveBackgroundCameraPause({
+    required AppLifecycleState state,
+    required bool nativeCallHeld,
+    required bool pipEntering,
+    required Future<bool> Function() isInPipMode,
+    Duration delay = const Duration(milliseconds: 250),
+  }) async {
+    await Future<void>.delayed(delay);
+    final inPip = await isInPipMode();
+    return shouldPauseCameraOnBackground(
+      state,
+      nativeCallHeld: nativeCallHeld,
+      isInPip: inPip,
+      pipEntering: pipEntering,
+    );
+  }
+
+  void _pauseCameraForBackground() {
+    if (isVideoCall.value && isCameraOn.value && isInCall) {
+      _cameraPausedForBackground = true;
+      unawaited(setCameraEnabled(false));
+    }
+  }
+
   void _didChangeAppLifecycleState(AppLifecycleState state) {
+    final prevState = _lastLifecycleState;
+    _lastLifecycleState = state;
+    // Android + PiP-eligible: on `paused` wait ~250ms and ask native whether
+    // we're entering/inside PiP before cutting the camera. Flag-off calls
+    // (pipEligible == false) keep the original synchronous pause.
+    if (Platform.isAndroid &&
+        state == AppLifecycleState.paused &&
+        _pipService.pipEligible) {
+      _pipPauseDebounce?.cancel();
+      final entering = _pipService.pipEntering;
+      _pipPauseDebounce = Timer(const Duration(milliseconds: 250), () async {
+        final shouldPause = await resolveBackgroundCameraPause(
+          state: AppLifecycleState.paused,
+          nativeCallHeld: _nativeCallHeld,
+          pipEntering: entering || _pipService.pipEntering,
+          isInPipMode: () async {
+            final inPip = await _pipService.isInPipMode();
+            if (!inPip) return false;
+            // Screen lock while PiP'd hides the window entirely — treat it as
+            // a real background transition and let the camera pause.
+            if (await _isScreenLocked()) return false;
+            return true;
+          },
+        );
+        debugPrint(
+          '📺 VantPip: paused-debounce resolved shouldPause=$shouldPause',
+        );
+        if (shouldPause) _pauseCameraForBackground();
+      });
+      return;
+    }
     if (shouldPauseCameraForLifecycle(state, nativeCallHeld: _nativeCallHeld)) {
-      if (isVideoCall.value && isCameraOn.value && isInCall) {
-        _cameraPausedForBackground = true;
-        unawaited(setCameraEnabled(false));
-      }
+      _pauseCameraForBackground();
     } else if (state == AppLifecycleState.resumed) {
+      _pipPauseDebounce?.cancel();
+      _ensureLocalVideoStateBound();
       if (_cameraPausedForBackground && isVideoCall.value && isInCall) {
         _cameraPausedForBackground = false;
         unawaited(setCameraEnabled(true));
       }
+      // Expanding from PiP lands here with isInPip already false — restore a
+      // camera that the OS cut while in PiP.
+      if (_cameraCutInPip && isInCall && isVideoCall.value) {
+        _cameraCutInPip = false;
+        debugPrint('📺 VantPip: camera restore after PiP expand');
+        unawaited(_restoreCameraAfterPip());
+      }
+      // Dismiss-with-X while in PiP: the pip_changed event arrived while the
+      // app was paused (prevState), then the system may still deliver resumed
+      // on some OEMs — nothing extra needed here; dismissal is handled in
+      // _onPipChanged where the lifecycle context is known.
+      if (prevState == AppLifecycleState.paused && isInPip.value) {
+        debugPrint('📺 VantPip: resumed while still in PiP (unusual)');
+      }
     }
+  }
+
+  /// Re-enable the local camera after it was cut by the OS while in PiP.
+  /// setCameraEnabled itself emits call_media_update(video:true) to the peer.
+  Future<void> _restoreCameraAfterPip() async {
+    await setCameraEnabled(true);
+    debugPrint('📺 VantPip: camera restored (call_media_update sent by setCameraEnabled)');
+  }
+
+  /// Recompute whether the PiP entry conditions hold right now and push the
+  /// result to native (arms API31+ auto-enter, enables the 26-30
+  /// onUserLeaveHint path). Called on connect, when the video-call screen
+  /// opens/closes, and when call_video state changes.
+  Future<void> _syncPipEligibility() async {
+    if (!Platform.isAndroid) return;
+    final flagOn = Get.isRegistered<FeatureFlagService>() &&
+        Get.find<FeatureFlagService>().pipAndroidEnabled;
+    final cameraPerm = await Permission.camera.isGranted;
+    final incomingRinging =
+        Get.currentRoute == '/call/incoming' ||
+        callState.value == CallState.ringing ||
+        callState.value == CallState.dialing;
+    final allowed = shouldEnterPip(
+      isVideoCall: isVideoCall.value,
+      callConnected: callState.value == CallState.connected,
+      flagOn: flagOn,
+      apiLevel: 26, // conservative floor — native also gates on SDK_INT
+      cameraPermission: cameraPerm,
+      inCallUiVisible: _videoCallUiVisible,
+      incomingRinging: incomingRinging,
+    );
+    debugPrint(
+      '📺 VantPip: eligibility=$allowed (flag=$flagOn video=${isVideoCall.value} '
+      'connected=${callState.value == CallState.connected} camPerm=$cameraPerm '
+      'uiVisible=$_videoCallUiVisible ringing=$incomingRinging)',
+    );
+    await _pipService.setPipEligible(allowed);
+  }
+
+  /// VideoCallScreen reports its visibility so Home during a connected video
+  /// call can auto-enter PiP while other screens never do.
+  void notifyVideoCallUiVisible(bool visible) {
+    _videoCallUiVisible = visible;
+    unawaited(_syncPipEligibility());
+  }
+
+  /// Remote video dimensions arrived — update the PiP window aspect.
+  void updatePipAspect(int width, int height) {
+    if (!Platform.isAndroid || !_pipService.pipEligible) return;
+    if (width <= 0 || height <= 0) return;
+    unawaited(_pipService.setPipEligible(true, width: width, height: height));
+  }
+
+  /// Native reports a PiP transition. Expanded-vs-dismissed is NOT decided
+  /// here — pip_changed lands before the lifecycle 'resumed' event, so a
+  /// Dart-side lifecycle check misclassifies expand as dismiss. MainActivity
+  /// classifies the exit and sends a separate 'pip_outcome' event.
+  void _onPipChanged(bool inPip) {
+    if (!Platform.isAndroid) return;
+    _pipService.onPipChanged(inPip);
+    if (isInPip.value == inPip) return;
+    isInPip.value = inPip;
+
+    if (inPip) {
+      debugPrint('📺 VantPip: entered PiP');
+      _startPipCameraCutWatcher();
+    } else {
+      debugPrint('📺 VantPip: exited PiP');
+      _stopPipCameraCutWatcher();
+    }
+  }
+
+  /// Native-classified PiP exit outcome (see MainActivity.emitPipOutcome):
+  ///  - 'expanded': user tapped the PiP window — activity resumed. Restore
+  ///    controls (layout already follows isInPip) and any cut camera.
+  ///  - 'dismissed': user tapped the PiP X — the call CONTINUES on audio;
+  ///    pause the camera and signal camera-off to the peer.
+  void _onPipOutcome(String outcome) {
+    if (!Platform.isAndroid) return;
+    if (outcome == 'expanded') {
+      debugPrint('📺 VantPip: expanded to full screen');
+      if (_cameraCutInPip && isInCall && isVideoCall.value) {
+        _cameraCutInPip = false;
+        unawaited(_restoreCameraAfterPip());
+      }
+    } else {
+      debugPrint('📺 VantPip: dismissed with X — continuing on audio');
+      if (isInCall && isVideoCall.value && isCameraOn.value) {
+        _cameraPausedForBackground = true;
+        unawaited(setCameraEnabled(false));
+      }
+    }
+  }
+
+  /// If Android kills camera capture while the app is PiP'd, the local video
+  /// track mutes/ends silently — the peer would see a frozen frame unless we
+  /// signal video-off. Watch the track while in PiP (callbacks + a slow poll
+  /// because not every cut raises onMute).
+  void _startPipCameraCutWatcher() {
+    _pipCameraCutWatcher?.cancel();
+    final track = localVideoStream.value?.getVideoTracks().isNotEmpty == true
+        ? localVideoStream.value!.getVideoTracks().first
+        : null;
+    if (track == null) return;
+    track.onMute = () => _handlePipCameraCut('onMute');
+    track.onEnded = () => _handlePipCameraCut('onEnded');
+    _pipCameraCutWatcher = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (!isInPip.value || !isInCall) {
+        _stopPipCameraCutWatcher();
+        return;
+      }
+      if (track.muted == true) _handlePipCameraCut('muted-poll');
+    });
+  }
+
+  void _stopPipCameraCutWatcher() {
+    _pipCameraCutWatcher?.cancel();
+    _pipCameraCutWatcher = null;
+    final stream = localVideoStream.value;
+    if (stream != null && stream.getVideoTracks().isNotEmpty) {
+      final track = stream.getVideoTracks().first;
+      track.onMute = null;
+      track.onEnded = null;
+    }
+  }
+
+  void _handlePipCameraCut(String via) {
+    if (!isInPip.value || _cameraCutInPip) return;
+    _cameraCutInPip = true;
+    debugPrint(
+      '📺 VantPip: CAMERA CUT in PiP via=$via — sending call_media_update(video:false)',
+    );
+    _sendCallMediaUpdate(video: false, reason: 'camera cut in pip ($via)');
   }
 
   void _handleNativeShowFlutterCall(Map<String, dynamic> data) {
@@ -935,10 +1208,12 @@ class CallController extends GetxController {
         isCameraOn.value = _webrtcService.isCameraEnabled;
         isFrontCamera.value = _webrtcService.isFrontCamera;
       }
+      unawaited(ensureVideoRenderers());
     };
 
     _webrtcService.onRemoteStream = (stream) {
       remoteVideoStream.value = stream;
+      unawaited(ensureVideoRenderers());
     };
 
     _webrtcService.onCallStateChange = (state, {reason}) {
@@ -2478,6 +2753,7 @@ class CallController extends GetxController {
         isFrontCamera.value = _webrtcService.isFrontCamera;
         isSpeakerOn.value = _webrtcService.isSpeakerOn;
         isVideoCall.value = incomingVideo && _webrtcService.isVideoCall;
+        _ensureLocalVideoStateBound();
       }
 
       if (!success) {
@@ -2650,6 +2926,77 @@ class CallController extends GetxController {
             ? '/call/outgoing'
             : '/call/active';
     Get.toNamed(route);
+  }
+
+  /// Create the call-lifetime video renderers once and bind the current
+  /// streams. Idempotent and concurrency-safe — callers may fire-and-forget
+  /// or await it (the video screen awaits before first build).
+  Future<void> ensureVideoRenderers() async {
+    await (_renderersInitFuture ??= _initVideoRenderers());
+    // Even when init was already cached, a later stream must still be bound.
+    rebindVideoStreams();
+  }
+
+  Future<void> _initVideoRenderers() async {
+    _remoteRenderer ??= RTCVideoRenderer();
+    _localRenderer ??= RTCVideoRenderer();
+    await _remoteRenderer!.initialize();
+    await _localRenderer!.initialize();
+    // Remote frames carry real dimensions — feed them to the PiP aspect ratio.
+    _remoteRenderer!.onResize = () {
+      updatePipAspect(
+        _remoteRenderer!.videoWidth,
+        _remoteRenderer!.videoHeight,
+      );
+    };
+    rebindVideoStreams();
+  }
+
+  /// Re-attach the current streams to the renderers. srcObject assignment is
+  /// idempotent — safe on resume, renderer handoff between screens, and PiP
+  /// transitions.
+  void rebindVideoStreams() {
+    if (_remoteRenderer != null) {
+      _remoteRenderer!.srcObject = remoteVideoStream.value;
+    }
+    if (_localRenderer != null) {
+      _localRenderer!.srcObject = localVideoStream.value;
+    }
+  }
+
+  Future<void> _disposeVideoRenderers() async {
+    _renderersInitFuture = null;
+    final remote = _remoteRenderer;
+    final local = _localRenderer;
+    _remoteRenderer = null;
+    _localRenderer = null;
+    if (remote != null) {
+      remote.onResize = null;
+      remote.srcObject = null;
+      await remote.dispose();
+    }
+    if (local != null) {
+      local.srcObject = null;
+      await local.dispose();
+    }
+  }
+
+  /// Heal a missed onLocalStream binding. The self-view tile renders only
+  /// when localVideoStream is non-null; if the stream callback fired before
+  /// the controller attached it (cold-start/locked-screen accept races) the
+  /// tile would stay hidden for the whole call even though the camera is
+  /// sending. Idempotent — safe to call on connect, resume and unlock.
+  void _ensureLocalVideoStateBound() {
+    final stream = localVideoStream.value ?? _webrtcService.localStream;
+    if (stream == null) return;
+    if (localVideoStream.value == null) {
+      debugPrint('📹 Re-binding missed local video stream (self-view fix)');
+      localVideoStream.value = stream;
+    }
+    if (stream.getVideoTracks().isNotEmpty && !isCameraOn.value) {
+      isCameraOn.value = _webrtcService.isCameraEnabled;
+      isFrontCamera.value = _webrtcService.isFrontCamera;
+    }
   }
 
   /// Toggle mute
@@ -3308,6 +3655,7 @@ class CallController extends GetxController {
         isReconnecting.value = false;
         hasPoorConnection.value = false;
         _wasConnected = true;
+        _ensureLocalVideoStateBound();
         unawaited(_setNativeInCall(true));
         // The encryption indicator stays on "Connecting…" until this point —
         // now resolve it to the real crypto state.
@@ -3350,6 +3698,9 @@ class CallController extends GetxController {
         if (isCaller.value && !isCallMinimized.value) {
           Get.offNamed(activeCallRoute);
         }
+        // Arm PiP auto-enter now that a connected call exists (no-ops when the
+        // flag is off or this is a voice call).
+        unawaited(_syncPipEligibility());
         break;
       case 'disconnected':
         if (isConnected) {
@@ -3614,6 +3965,14 @@ class CallController extends GetxController {
     _stopDurationUpdateTimer();
     _stopProximitySensor();
     _setCallScreenVisible(false);
+    // Tear down PiP state: clear auto-enter and leave the PiP window via
+    // moveTaskToBack (never finish — that would kill the engine + socket).
+    _pipPauseDebounce?.cancel();
+    _stopPipCameraCutWatcher();
+    _cameraCutInPip = false;
+    _videoCallUiVisible = false;
+    isInPip.value = false;
+    unawaited(_pipService.onCallEnded());
     // Dismiss the sticky ongoing call notification
     try {
       NotificationService().cancelOngoingCallNotification();
@@ -3657,6 +4016,9 @@ class CallController extends GetxController {
     // missed transition must never leave a dead call route up (iOS CallKit
     // end, remote terminate, cancelled call — all funnel through here).
     _scheduleCallRouteDismissal(callId);
+
+    // Call-lifetime renderers die with the call — never with the screen.
+    unawaited(_disposeVideoRenderers());
   }
 
   /// Cleanup resources
@@ -4180,6 +4542,7 @@ class CallController extends GetxController {
         isFrontCamera.value = _webrtcService.isFrontCamera;
         isSpeakerOn.value = _webrtcService.isSpeakerOn;
         isVideoCall.value = incomingVideo && _webrtcService.isVideoCall;
+        _ensureLocalVideoStateBound();
         debugPrint('📞 Resync accept successful, navigating to active call');
         callState.value = CallState.ringing;
         // Clear pending auto-accept since we successfully accepted

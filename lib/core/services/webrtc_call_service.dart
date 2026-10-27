@@ -969,6 +969,12 @@ class WebRTCCallService {
   bool get isSpeakerOn => _isSpeakerOn;
   bool get isVideoCall => _isVideoCall;
   bool get isCameraEnabled => _isCameraEnabled;
+
+  /// The current local media stream, if a call captured one. Used by
+  /// CallController to heal a missed onLocalStream callback (e.g. an accept
+  /// that raced controller wiring on a cold-start/locked-screen path) —
+  /// the renderer must be bound whenever a local video track exists.
+  MediaStream? get localStream => _localStream;
   bool get isFrontCamera => _isFrontCamera;
   bool get isIceRestartInProgress => _iceRestartInProgress;
   bool get isInCall => _peerConnection != null;
