@@ -203,9 +203,40 @@ class VantFirebaseMessagingService : FirebaseMessagingService() {
 
     // ==================== CALL HANDLING METHODS ====================
 
+    /**
+     * Incoming-call display name resolution (same order as the Dart
+     * CallerNameResolver): non-placeholder payload name -> saved contact name
+     * from FlutterSharedPreferences -> raw payload -> "Unknown". The wire's
+     * callerName is often the sender's generated @user_xxxxx handle, which
+     * must never win over a name the user actually saved.
+     */
+    private fun isPlaceholderCallerName(name: String?, callerId: String): Boolean {
+        if (name.isNullOrBlank()) return true
+        val t = name.trim()
+        if (t == callerId || t.startsWith("@user_")) return true
+        return t == "Unknown" || t == "Unknown User" ||
+               t == "Incoming Call" || t == "Vant Call"
+    }
+
+    private fun savedContactName(callerId: String): String? {
+        if (callerId.isEmpty()) return null
+        return getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+            .getString("flutter.chat_name_$callerId", null)
+            ?.takeIf { it.isNotBlank() }
+    }
+
+    private fun resolveCallerName(callerId: String, payloadName: String?): String {
+        if (!isPlaceholderCallerName(payloadName, callerId)) return payloadName!!.trim()
+        val saved = savedContactName(callerId)
+        if (!saved.isNullOrBlank()) return saved
+        return payloadName?.trim()?.takeIf { it.isNotEmpty() } ?: "Unknown"
+    }
+
     private fun handleIncomingCall(data: Map<String, String>) {
-        val callerName = data["callerName"] ?: data["caller_name"] ?: "Unknown"
         val callerId = data["callerId"] ?: data["caller_id"] ?: ""
+        val callerName = resolveCallerName(
+            callerId, data["callerName"] ?: data["caller_name"]
+        )
         val callId = data["callId"] ?: data["call_id"] ?: ""
         val roomId = data["roomId"] ?: data["room_id"] ?: ""
         val avatarUrl = data["avatarUrl"] ?: data["avatar_url"] ?: ""
@@ -324,7 +355,9 @@ class VantFirebaseMessagingService : FirebaseMessagingService() {
     private fun handleMissedCall(data: Map<String, String>) {
         val callId = data["callId"] ?: data["call_id"] ?: ""
         val callerId = data["callerId"] ?: data["caller_id"] ?: ""
-        val callerName = data["callerName"] ?: data["caller_name"] ?: "Unknown"
+        val callerName = resolveCallerName(
+            callerId, data["callerName"] ?: data["caller_name"]
+        )
 
         if (callId.isEmpty() || callerId.isEmpty()) {
             Log.w(TAG, "⚠️ Invalid missed_call data")
@@ -434,7 +467,13 @@ class VantFirebaseMessagingService : FirebaseMessagingService() {
         sendBroadcast(Intent("com.vant.chat.SHOW_FLUTTER_CALL").apply {
             putExtra("call_id", data["callId"] ?: data["call_id"] ?: "")
             putExtra("caller_id", data["callerId"] ?: data["caller_id"] ?: "")
-            putExtra("caller_name", data["callerName"] ?: data["caller_name"] ?: "Unknown")
+            putExtra(
+                "caller_name",
+                resolveCallerName(
+                    data["callerId"] ?: data["caller_id"] ?: "",
+                    data["callerName"] ?: data["caller_name"]
+                )
+            )
             putExtra("room_id", data["roomId"] ?: data["room_id"] ?: "")
             putExtra("avatar_url", data["avatarUrl"] ?: data["avatar_url"] ?: "")
             putExtra("is_video", data["isVideo"] ?: data["is_video"] ?: "false")

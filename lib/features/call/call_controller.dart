@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:http/http.dart' as http;
 import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -12,9 +13,11 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import '../../core/services/call_breadcrumbs.dart';
+import '../../core/services/caller_name_resolver.dart';
 import '../../core/services/call_media_helper.dart';
 import '../../core/services/call_diag.dart';
 import '../../core/services/call_signaling_crypto.dart';
+import '../../core/constants/network_constants.dart';
 import '../../core/services/feature_flag_service.dart';
 import '../../core/services/identity_announcement_service.dart';
 import '../../core/services/identity_service.dart';
@@ -675,7 +678,11 @@ class CallController extends GetxController {
     final callData = {
       'callId': callId,
       'callerId': data['caller_id'] ?? '',
-      'callerName': data['caller_name'] ?? 'Incoming Call',
+      'callerName': CallerNameResolver.resolveSync(
+            data['caller_id'] as String? ?? '',
+            payloadName: data['caller_name'] as String?,
+          ) ??
+          'Incoming Call',
       'sdpOffer': null,
       'roomId': data['room_id'] ?? '',
       'avatarUrl': data['avatar_url'] ?? '',
@@ -758,7 +765,11 @@ class CallController extends GetxController {
     currentCallId.value = callId;
     remoteDeviceId.value = data['caller_id'] ?? '';
     isCaller.value = false;
-    remoteDisplayName.value = data['caller_name'] ?? 'Incoming Call';
+    remoteDisplayName.value = CallerNameResolver.resolveSync(
+          remoteDeviceId.value,
+          payloadName: data['caller_name'] as String?,
+        ) ??
+        'Incoming Call';
     remoteAvatarUrl.value = data['avatar_url'] as String? ?? '';
 
     final callData = {
@@ -1482,6 +1493,9 @@ class CallController extends GetxController {
           case CallKitEventType.end:
             _handleCallKitEnd(event.callId);
             break;
+          case CallKitEventType.timeout:
+            _handleCallKitTimeout(event.callId);
+            break;
           case CallKitEventType.callback:
             // The plugin emits the same callback event for both the active-call
             // "Hang Up" button and the missed-call "Call back" button. Decide
@@ -1543,7 +1557,11 @@ class CallController extends GetxController {
               final callData = {
                 'callId': callId,
                 'callerId': callerId ?? '',
-                'callerName': callerName ?? 'Incoming Call',
+                'callerName': CallerNameResolver.resolveSync(
+                      callerId ?? '',
+                      payloadName: callerName,
+                    ) ??
+                    'Incoming Call',
                 'sdpOffer': null,
                 'roomId': roomId ?? '',
                 'avatarUrl': avatarUrl ?? '',
@@ -1925,9 +1943,42 @@ class CallController extends GetxController {
 
   /// Set pending auto-accept call ID for cold-start resync
 
+  /// CallIds of calls ended in the last few seconds. Late duplicate CallKit
+  /// events for an already-ended call must be ignored entirely — acting on
+  /// them would reset (and kill) a new call started in the meantime.
+  final Map<String, DateTime> _recentlyEndedCallIds = {};
+
+  void _markRecentlyEnded(String callId) {
+    if (callId.isEmpty) return;
+    _recentlyEndedCallIds.removeWhere(
+      (_, t) => DateTime.now().difference(t) > const Duration(seconds: 10),
+    );
+    _recentlyEndedCallIds[callId] = DateTime.now();
+  }
+
+  bool _isRecentlyEnded(String? callId) =>
+      callId != null && _recentlyEndedCallIds.containsKey(callId);
+
   /// Handle decline from CallKit UI (app in foreground/background)
   void _handleCallKitDecline(String? callId) {
-    if (callId == null || callId.isEmpty) return;
+    // Attribution: our calls always resolve to a server callId (the plugin
+    // echoes extra.callId, and the UUID->callId map lives for the process
+    // lifetime), so a null id or an id matching neither the ringing call
+    // nor the active call belongs to a foreign/stale call. Acting on it
+    // could reject or reset a new call started after a previous one ended.
+    if (callId == null || callId.isEmpty) {
+      debugPrint('📞 Ignoring CallKit decline with unresolvable id');
+      return;
+    }
+    if (_isRecentlyEnded(callId)) {
+      debugPrint('📞 Ignoring CallKit decline for already-ended $callId');
+      return;
+    }
+    final ringingId = _latestIncomingCallData?['callId'] as String?;
+    if (callId != ringingId && callId != currentCallId.value) {
+      debugPrint('📞 Ignoring CallKit decline for foreign call $callId');
+      return;
+    }
     debugPrint('📞 CallKit decline received for $callId');
 
     // Cancel incoming call notification
@@ -1944,20 +1995,29 @@ class CallController extends GetxController {
       );
       _latestIncomingCallData = null;
       rejectCall(cachedData);
-      // Dismiss the custom incoming call screen if it's open
+      // Dismiss the custom incoming call screen if it's open — guarded pop so
+      // a cold-start root call route lands on /chat-list, not a black screen.
       if (Get.currentRoute == '/call/incoming') {
-        Get.back();
+        final navigator = Get.key.currentState;
+        if (navigator != null && navigator.canPop()) {
+          Get.back();
+        } else {
+          Get.offAllNamed('/chat-list');
+        }
       }
       return;
     }
 
-    // Fallback: reject via socket if connected
+    // Fallback: reject via socket, or over HTTP when the socket is down so
+    // the caller's phone still stops ringing.
     if (_socketService.isConnected.value) {
       _socketService.rejectCall(
         callId: callId,
         callerId: remoteDeviceId.value,
         reason: 'declined',
       );
+    } else {
+      unawaited(_terminateCallOverHttp(callId, 'reject'));
     }
 
     _resetCallState();
@@ -1965,17 +2025,59 @@ class CallController extends GetxController {
 
   /// Handle end from CallKit UI
   void _handleCallKitEnd(String? callId) {
-    if (callId == null ||
-        callId.isEmpty ||
-        currentCallId.value != callId ||
-        callState.value == CallState.idle) {
-      debugPrint('📞 Ignoring stale CallKit end event for $callId');
+    // Attribution: identical to _handleCallKitDecline — our calls always
+    // resolve to a server callId, so an event must match the active call or
+    // the ringing call to be ours. A null id or a foreign id is ignored:
+    // acting on it could end a NEW call that started after a previous one
+    // ended (call A ends -> call B starts -> late CallKit end for A arrives
+    // with A's id or no id — B must survive).
+    if (callId == null || callId.isEmpty) {
+      debugPrint('📞 Ignoring CallKit end with unresolvable id');
+      return;
+    }
+    if (_isRecentlyEnded(callId)) {
+      debugPrint('📞 Ignoring CallKit end for already-ended $callId');
+      return;
+    }
+    final latestCallId = _latestIncomingCallData?['callId'] as String?;
+    if (callId != currentCallId.value && callId != latestCallId) {
+      debugPrint('📞 Ignoring CallKit end for foreign call $callId');
       return;
     }
     debugPrint('📞 CallKit end received for $callId');
 
     // End the call
     endCall();
+  }
+
+  /// Ring timeout from CallKit (the plugin's duration elapsed with no
+  /// answer). The CallKit UI dismisses itself; clean up the Flutter-side
+  /// incoming call so a dead /call/incoming route cannot linger.
+  void _handleCallKitTimeout(String? callId) {
+    debugPrint('📞 CallKit ring timeout for $callId');
+    // Same attribution rule as decline/end: our calls always resolve, so
+    // only a timeout matching the ringing or active call is ours.
+    if (callId == null || callId.isEmpty || _isRecentlyEnded(callId)) {
+      debugPrint('📞 Ignoring CallKit timeout for $callId');
+      return;
+    }
+    final ringingId = _latestIncomingCallData?['callId'] as String?;
+    final isOurRingingCall =
+        callId == ringingId || callId == currentCallId.value;
+    if (!isOurRingingCall) {
+      debugPrint('📞 Ignoring stale CallKit timeout for $callId');
+      return;
+    }
+    NotificationService().cancelNotification(callId.hashCode);
+    if (ringingId == callId) _latestIncomingCallData = null;
+    if (isInCall) {
+      // The timed-out call was ringing while another call is active — clear
+      // its cached data/notification only, never reset the live call.
+      debugPrint('📞 CallKit timeout during active call — cleared ring state only');
+      return;
+    }
+    _ringtoneService.stopRingtone();
+    _resetCallState();
   }
 
   /// Dismiss keyguard on Android to allow call to connect without unlock
@@ -2424,14 +2526,49 @@ class CallController extends GetxController {
     // Stop ringtone
     _ringtoneService.stopRingtone();
 
-    _socketService.rejectCall(
-      callId: callId,
-      callerId: callerId,
-      reason: 'rejected',
-    );
+    if (_socketService.isConnected.value) {
+      _socketService.rejectCall(
+        callId: callId,
+        callerId: callerId,
+        reason: 'rejected',
+      );
+    } else {
+      // Socket down — the emit would be silently dropped and the caller's
+      // screen would keep ringing. Same /respond endpoint the native CallKit
+      // decline path uses.
+      unawaited(_terminateCallOverHttp(callId, 'reject'));
+    }
 
     _webrtcService.endCall();
     _resetCallState();
+  }
+
+  /// Reliable termination channel for when the signaling socket is
+  /// unreachable: POSTs the action to the same /api/calls/{id}/respond
+  /// endpoint the native CallKit handlers use. Fire-and-forget.
+  Future<void> _terminateCallOverHttp(String callId, String action) async {
+    try {
+      final deviceId = _storageService.deviceId;
+      if (callId.isEmpty || deviceId == null || deviceId.isEmpty) return;
+      final uri = Uri.parse(
+        '${NetworkConstants.apiBaseUrl}/api/calls/$callId/respond',
+      );
+      final res = await http
+          .post(
+            uri,
+            headers: {
+              'Content-Type': 'application/json',
+              'x-device-id': deviceId,
+            },
+            body: jsonEncode({'action': action}),
+          )
+          .timeout(const Duration(seconds: 8));
+      debugPrint(
+        '📞 HTTP call respond ($action) -> ${res.statusCode} for $callId',
+      );
+    } catch (e) {
+      debugPrint('⚠️ HTTP call respond ($action) failed for $callId: $e');
+    }
   }
 
   /// Reset call state when we know the call has already ended remotely (e.g. FCM
@@ -2466,7 +2603,17 @@ class CallController extends GetxController {
     // Log call history before resetting state
     _logCallHistory(reason: 'ended');
 
-    _socketService.terminateCall(callId: currentCallId.value, reason: 'ended');
+    if (_socketService.isConnected.value) {
+      _socketService.terminateCall(
+          callId: currentCallId.value, reason: 'ended');
+    } else {
+      // Socket suspended (iOS locks/suspends the connection while CallKit
+      // owns the call) — emit() would be silently dropped and the remote
+      // side's call screen would stay up forever. The CallKit native path
+      // already posts to /api/calls/{id}/respond for exactly this reason;
+      // mirror it here so termination always reaches the server.
+      unawaited(_terminateCallOverHttp(currentCallId.value, 'ended'));
+    }
 
     // Dismiss CallKit notification if active
     final callKitService = CallKitService();
@@ -2849,6 +2996,34 @@ class CallController extends GetxController {
     // sets callState to ended/idle. Do not navigate here so a banner or dialog
     // on top cannot be bypassed or duplicated.
     _resetCallState();
+  }
+
+  /// Watchdog for remote-end: after _resetCallState the call screens close
+  /// themselves via their callState workers, but if a call route is still
+  /// showing shortly after (worker missed the transition, route popped
+  /// without settings.name, or the event arrived while minimized) force it
+  /// closed — a remote hangup must never leave a dead call screen up.
+  /// Uses the same guarded pop as the screens: pop the call route when
+  /// something is beneath it, otherwise land on /chat-list.
+  void _scheduleCallRouteDismissal(String? callId) {
+    Future.delayed(const Duration(milliseconds: 600), () {
+      // Another call may have started or started ringing inside the delay —
+      // never dismiss its UI.
+      if (callState.value != CallState.ended &&
+          callState.value != CallState.idle) {
+        return;
+      }
+      if (_latestIncomingCallData != null) return;
+      final route = Get.currentRoute;
+      if (!route.startsWith('/call/')) return;
+      final navigator = Get.key.currentState;
+      if (navigator != null && navigator.canPop()) {
+        navigator.popUntil((r) => !(r.settings.name ?? '').startsWith('/call/'));
+      } else {
+        Get.offAllNamed('/chat-list');
+      }
+      debugPrint('📞 Remote end: forced call route dismissal from $route');
+    });
   }
 
   /// Handle local ICE candidate from WebRTC
@@ -3409,6 +3584,7 @@ class CallController extends GetxController {
   void _resetCallState() {
     _resetCryptoState();
     final callId = currentCallId.value;
+    _markRecentlyEnded(callId);
     unawaited(_teardownAndroidCall(callId));
     unawaited(_setNativeInCall(false));
     callState.value = CallState.ended;
@@ -3476,6 +3652,11 @@ class CallController extends GetxController {
       _fsiPromptPending = false;
       unawaited(_checkFullScreenIntentPermission());
     }
+
+    // Watchdog: screens close themselves via their callState workers, but a
+    // missed transition must never leave a dead call route up (iOS CallKit
+    // end, remote terminate, cancelled call — all funnel through here).
+    _scheduleCallRouteDismissal(callId);
   }
 
   /// Cleanup resources
@@ -3726,7 +3907,28 @@ class CallController extends GetxController {
     }
 
     remoteDeviceId.value = incomingCallerId;
-    remoteDisplayName.value = data['callerName'] as String? ?? 'Incoming Call';
+    // Resolve the display name through the single resolver: payload name ->
+    // saved contact -> server profile -> friendly fallback. The socket
+    // payload's callerName is often the sender's generated @user_xxxxx
+    // handle, so it must never win over a saved contact name.
+    final payloadName = data['callerName'] as String?;
+    final resolvedName = CallerNameResolver.resolveSync(
+          incomingCallerId,
+          payloadName: payloadName,
+        ) ??
+        'Incoming Call';
+    remoteDisplayName.value = resolvedName;
+    data['callerName'] = resolvedName;
+    unawaited(
+      CallerNameResolver.resolve(
+        incomingCallerId,
+        payloadName: payloadName,
+      ).then((name) {
+        if (remoteDeviceId.value == incomingCallerId && name.isNotEmpty) {
+          remoteDisplayName.value = name;
+        }
+      }),
+    );
     remoteAvatarUrl.value =
         data['avatarUrl'] as String? ?? data['avatar_url'] as String? ?? '';
 

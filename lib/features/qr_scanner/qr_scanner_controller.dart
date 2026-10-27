@@ -46,15 +46,25 @@ class QRScannerController extends GetxController {
 
     try {
       // 1. Try legacy base64 format first (backwards compatibility)
-      String? deviceId = await QRService.validateQRData(qrData);
+      final base64Result = await QRService.validateQRDataEx(qrData);
+      String? deviceId = base64Result?.deviceId;
+      String? userName = base64Result?.userName;
 
       // 2. Fall back to URL format: https://vant.chat/chat?device_id=XXXX
-      deviceId ??= _extractDeviceIdFromUrl(qrData);
+      //    (and the Branch quick-link QR: ...app.link/?device_id=X&user_name=Y)
+      if (deviceId == null) {
+        final urlParts = _extractDeviceIdFromUrl(qrData);
+        deviceId = urlParts?.$1;
+        userName ??= urlParts?.$2;
+      }
 
       if (deviceId != null) {
         // Valid QR code - initialize chat and navigate
         final chatListController = Get.find<ChatListController>();
-        await chatListController.initializeChatFromQR(deviceId);
+        await chatListController.initializeChatFromQR(
+          deviceId,
+          userName: userName,
+        );
         // Navigation is handled in initializeChatFromQR
       } else {
         // Invalid QR code
@@ -66,15 +76,17 @@ class QRScannerController extends GetxController {
     }
   }
 
-  /// Extract device_id from a vant.chat invitation URL.
-  /// Handles https://vant.chat/chat?device_id=XXXX and any URL containing device_id.
-  String? _extractDeviceIdFromUrl(String qrData) {
+  /// Extract device_id (and user_name when present) from an invitation URL.
+  /// Handles https://vant.chat/chat?device_id=XXXX, the Branch quick-link
+  /// (vantchatting.app.link/?device_id=X&user_name=Y), and any URL carrying
+  /// a device_id query param.
+  (String, String?)? _extractDeviceIdFromUrl(String qrData) {
     try {
       final uri = Uri.tryParse(qrData);
       if (uri == null) return null;
       final deviceId = uri.queryParameters['device_id'];
       if (deviceId != null && deviceId.isNotEmpty) {
-        return deviceId;
+        return (deviceId, uri.queryParameters['user_name']);
       }
     } catch (_) {}
     return null;

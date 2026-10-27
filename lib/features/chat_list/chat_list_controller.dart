@@ -11,6 +11,7 @@ import '../../core/services/local_storage_service.dart';
 import '../../core/services/membership_service.dart';
 import '../../core/services/socket_service.dart';
 import '../../core/services/badge_service.dart';
+import '../../core/services/caller_name_resolver.dart';
 import '../../core/services/invitation_storage_service.dart';
 import '../../core/services/local_auth_service.dart';
 import '../../core/services/username_service.dart';
@@ -1243,7 +1244,8 @@ class ChatListController extends GetxController {
   }
 
   /// Initialize chat from scanned QR code - now sends connection request
-  Future<void> initializeChatFromQR(String deviceId) async {
+  Future<void> initializeChatFromQR(String deviceId,
+      {String? userName}) async {
     try {
       // Check if chat already exists in memory list
       ChatListModel? existingChatModel = chats.firstWhereOrNull(
@@ -1296,8 +1298,13 @@ class ChatListController extends GetxController {
       // New contact - navigate to chat screen with pending connection state
       // Connection request will be sent when user types their first message
       try {
-        // Get display name for the new contact
-        final friendlyName = _storageService.getDisplayName(deviceId);
+        // Resolve the real display name: QR-carried name -> saved contact ->
+        // server profile -> friendly fallback. The bare getDisplayName()
+        // used to return the generated @user_xxxxx handle for new contacts.
+        final friendlyName = await CallerNameResolver.resolve(
+          deviceId,
+          payloadName: userName,
+        );
 
         debugPrint(
           '📱 DEBUG: Navigating to chat screen for new contact: $deviceId',

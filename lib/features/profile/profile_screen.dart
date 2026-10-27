@@ -7,6 +7,7 @@ import '../../core/constants/app_sizes.dart';
 import '../../core/constants/network_constants.dart';
 import '../../core/services/review_service.dart';
 import '../../core/services/membership_service.dart';
+import '../../core/utils/string_utils.dart';
 import '../../routes/app_routes.dart';
 import 'profile_controller.dart';
 import '../contact/contact_us_screen.dart';
@@ -20,6 +21,14 @@ class ProfileScreen extends GetView<ProfileController> {
     // installed (deep-link data includes device_id) and falls back to the
     // app store when it is not. The in-app scanner reads the device_id
     // query param directly, so Vant users still go straight to chat.
+    // user_name rides the link the same way it does on share links — Branch
+    // delivers link params on open AND deferred after an install, so the
+    // inviter's real name reaches the first-launch invite path.
+    final userName = Uri.encodeComponent(
+      controller.userName.value.isNotEmpty
+          ? controller.userName.value
+          : StringUtils.generateFriendlyName(deviceId),
+    );
     final playStore = Uri.encodeComponent(
       '${NetworkConstants.playStoreUrl}?id=com.vant.chat',
     );
@@ -27,6 +36,7 @@ class ProfileScreen extends GetView<ProfileController> {
       '${NetworkConstants.appStoreReviewUrl}6758916131',
     );
     return 'https://vantchatting.app.link/?device_id=$deviceId'
+        '&user_name=$userName'
         '&\$android_url=$playStore'
         '&\$ios_url=$appStore'
         '&\$fallback_url=$playStore';

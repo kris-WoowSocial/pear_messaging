@@ -69,6 +69,10 @@ class CallKitService {
 
   // Track which calls are currently managed by CallKit to avoid ending non-existent calls
   static final Set<String> _activeCallKitCalls = {};
+  // UUIDs with an in-flight FlutterCallkitIncoming.endCall request. Guards
+  // against the decline-event path and a manual reject/end racing into a
+  // second CXEndCallAction for the same call.
+  static final Set<String> _endingCallKitUuids = {};
 
   // CallKit requires a valid UUID for the call id; our server callIds are not UUIDs.
   // Map callId <-> CallKit UUID so we can pass a valid UUID to the plugin while
@@ -329,14 +333,19 @@ class CallKitService {
 
     final callKitUuid = _getCallKitUuid(callId);
     final activeCallKitUuid = callKitUuid.toLowerCase();
-    // Only call endCall if CallKit is actually managing this call
-    if (_activeCallKitCalls.contains(activeCallKitUuid)) {
+    // Only call endCall if CallKit is actually managing this call and no
+    // end is already in flight (decline-event and manual-decline paths can
+    // race — a second CXEndCallAction reaches the plugin's force-unwraps).
+    if (_activeCallKitCalls.contains(activeCallKitUuid) &&
+        _endingCallKitUuids.add(activeCallKitUuid)) {
       try {
         await FlutterCallkitIncoming.endCall(callKitUuid);
         _activeCallKitCalls.remove(activeCallKitUuid);
       } catch (e) {
         debugPrint('⚠️ CallKitService: endCall failed in decline: $e');
         _activeCallKitCalls.remove(activeCallKitUuid);
+      } finally {
+        _endingCallKitUuids.remove(activeCallKitUuid);
       }
     } else {
       debugPrint(
@@ -354,9 +363,11 @@ class CallKitService {
     debugPrint('📞 CallKitService: Ending call $callId');
 
     final callKitUuid = _getCallKitUuid(callId);
-    // Only call endCall if CallKit is actually managing this call
+    // Only call endCall if CallKit is actually managing this call and no
+    // end is already in flight for it.
     final activeCallKitUuid = callKitUuid.toLowerCase();
-    if (_activeCallKitCalls.contains(activeCallKitUuid)) {
+    if (_activeCallKitCalls.contains(activeCallKitUuid) &&
+        _endingCallKitUuids.add(activeCallKitUuid)) {
       try {
         await FlutterCallkitIncoming.endCall(callKitUuid);
         _activeCallKitCalls.remove(activeCallKitUuid);
@@ -367,6 +378,8 @@ class CallKitService {
         );
         // Remove from tracking anyway to prevent repeated attempts
         _activeCallKitCalls.remove(activeCallKitUuid);
+      } finally {
+        _endingCallKitUuids.remove(activeCallKitUuid);
       }
     } else {
       debugPrint(
@@ -443,6 +456,15 @@ class CallKitService {
         // User declined the call via native UI
         debugPrint('📞 CallKitService: Call declined via native UI');
         logCallBreadcrumb(CallBreadcrumb.decline);
+        // The call is already ended natively — drop it from active tracking
+        // NOW so the downstream rejectCall() -> CallKitService.endCall() is
+        // skipped. Without this we request a second CXEndCallAction through
+        // the plugin, which reads self.data! and UUID(uuidString:)! on the
+        // isFromPushKit path — both fatal force-unwraps in edge states.
+        final declinedUuid = event.body['id'] as String?;
+        if (declinedUuid != null) {
+          _activeCallKitCalls.remove(declinedUuid.toLowerCase());
+        }
         _eventController.add(
           CallKitEvent(
             type: CallKitEventType.decline,

@@ -68,11 +68,12 @@ class _PearMessagingAppState extends State<PearMessagingApp>
     try {
       if (Get.isRegistered<CallController>()) {
         final callController = Get.find<CallController>();
-        if (callController.isConnected && Get.currentRoute != '/call/active') {
+        final route = callController.activeCallRoute;
+        if (callController.isConnected && Get.currentRoute != route) {
           debugPrint(
-            '📞 App resumed with active call, navigating to /call/active',
+            '📞 App resumed with active call, navigating to $route',
           );
-          Get.offAllNamed('/call/active');
+          Get.offAllNamed(route);
           return;
         }
       }
@@ -180,8 +181,9 @@ class _PearMessagingAppState extends State<PearMessagingApp>
             '📞 Startup: Active call detected, navigating to call screen',
           );
           Future.delayed(const Duration(milliseconds: 500), () {
-            if (Get.currentRoute != '/call/active') {
-              Get.offAllNamed('/call/active');
+            final route = callController.activeCallRoute;
+            if (Get.currentRoute != route) {
+              Get.offAllNamed(route);
             }
           });
         }
