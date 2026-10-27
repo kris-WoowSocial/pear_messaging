@@ -70,7 +70,7 @@ void main() {
         screen.indexOf('Widget _buildCenterStatus()'),
       );
       expect(surface, contains('remoteRenderer != null'));
-      expect(surface, contains('RTCVideoView'));
+      expect(surface, contains('RemoteCallVideoView'));
       expect(
         surface,
         contains('LinearGradient'),

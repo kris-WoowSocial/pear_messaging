@@ -59,6 +59,10 @@ import CommonCrypto
     
     GeneratedPluginRegistrant.register(with: self)
 
+    // Front-camera frames must not be mirrored on the wire (remote saw text
+    // backwards); the local self-view mirrors display-side instead.
+    CaptureSessionMirrorGuard.install()
+
     // Register method channel so Flutter can tell native when a Vant call is active
     setupCallStateChannel()
 

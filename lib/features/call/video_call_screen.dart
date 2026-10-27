@@ -9,6 +9,7 @@ import '../../core/services/feature_flag_service.dart';
 import 'active_call_screen.dart';
 import 'call_controller.dart';
 import 'call_encryption_indicator.dart';
+import 'call_video_view.dart';
 
 class VideoCallScreen extends StatefulWidget {
   const VideoCallScreen({super.key});
@@ -188,20 +189,16 @@ class _VideoCallScreenState extends State<VideoCallScreen>
           !_controller.peerCameraOff.value &&
           remoteRenderer != null;
       if (hasRemoteVideo) {
-        return RTCVideoView(
-          remoteRenderer,
-          objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
-        );
+        return RemoteCallVideoView(remoteRenderer);
       }
 
       final localRenderer = _controller.localRenderer;
       if (_controller.isCameraOn.value &&
           _controller.localVideoStream.value != null &&
           localRenderer != null) {
-        return RTCVideoView(
+        return LocalCallVideoView(
           localRenderer,
-          objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
-          mirror: _controller.isFrontCamera.value,
+          isFrontCamera: _controller.isFrontCamera.value,
         );
       }
 
@@ -292,9 +289,10 @@ class _VideoCallScreenState extends State<VideoCallScreen>
               child: Container(
                 color: Colors.black,
                 child: Obx(
-                  () => RTCVideoView(
+                  () => LocalCallVideoView(
                     localRenderer,
-                    mirror: _controller.isFrontCamera.value,
+                    isFrontCamera: _controller.isFrontCamera.value,
+                    objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitContain,
                   ),
                 ),
               ),
@@ -562,10 +560,7 @@ class VideoCallPipLayout extends StatelessWidget {
         builder: (context, constraints) {
           if (hasRemoteVideo && remoteRenderer != null) {
             return SizedBox.expand(
-              child: RTCVideoView(
-                remoteRenderer!,
-                objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
-              ),
+              child: RemoteCallVideoView(remoteRenderer!),
             );
           }
           // Camera-off / connecting placeholder sized relative to the window.

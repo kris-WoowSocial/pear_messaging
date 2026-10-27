@@ -67,7 +67,9 @@ void main() {
 
       expect(screen, contains('_buildVideoSurface'));
       expect(
-          screen, contains('RTCVideoViewObjectFit.RTCVideoViewObjectFitCover'));
+        source('lib/features/call/call_video_view.dart'),
+        contains('RTCVideoViewObjectFit.RTCVideoViewObjectFitCover'),
+      );
       expect(screen, contains('_controller.localVideoStream.value != null'));
       expect(screen, contains('_buildLocalPreview'));
       expect(screen, contains('onPanUpdate'));
