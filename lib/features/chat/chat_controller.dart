@@ -125,6 +125,13 @@ class ChatController extends GetxController with WidgetsBindingObserver {
       }
     });
 
+    // hasText must mirror the ACTUAL field content after every mutation —
+    // typing, clear(), paste, delete, picker returns, failed sends.
+    // TextEditingController listeners fire for all of these; onChanged
+    // alone misses programmatic clear() (send path) so buttons got stuck.
+    messageController.addListener(_syncHasText);
+    _syncHasText();
+
     if (!isGroup) {
       // Initialize block state from global service
       _updateLocalBlockState();
@@ -1305,8 +1312,15 @@ class ChatController extends GetxController with WidgetsBindingObserver {
     _scrollToBottom();
   }
 
+  /// Derives the input-bar button state from the live controller text.
+  /// Bound as a TextEditingController listener in onInit so it fires for
+  /// every mutation — including clear() after send, which onChanged misses.
+  void _syncHasText() {
+    hasText.value = messageController.text.trim().isNotEmpty;
+  }
+
   void onTyping(String text) {
-    hasText.value = text.trim().isNotEmpty;
+    _syncHasText();
 
     // Send typing indicator for groups
     if (isGroup && text.isNotEmpty) {
