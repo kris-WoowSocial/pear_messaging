@@ -22,11 +22,7 @@ class _VideoCallScreenState extends State<VideoCallScreen>
   static const _previewSize = Size(112, 160);
   static const _previewMargin = 16.0;
 
-  final RTCVideoRenderer _remoteRenderer = RTCVideoRenderer();
-  final RTCVideoRenderer _localRenderer = RTCVideoRenderer();
   late final bool _videoUiEnabled;
-  Worker? _localStreamWorker;
-  Worker? _remoteStreamWorker;
   Worker? _callStateWorker;
   Timer? _hideControlsTimer;
   Offset? _previewOffset;
@@ -41,7 +37,14 @@ class _VideoCallScreenState extends State<VideoCallScreen>
         Get.find<FeatureFlagService>().videoCalling.value;
     if (!_videoUiEnabled) return;
     WidgetsBinding.instance.addObserver(this);
-    _initializeRenderers();
+    // Renderers live in the controller for the whole call — minimizing this
+    // screen must not recreate the decoder (black frames until the next
+    // keyframe). ensureVideoRenderers is idempotent.
+    _controller.ensureVideoRenderers().then((_) {
+      // Renderers are controller-owned (not reactive) — force one rebuild so
+      // the freshly-initialized RTCVideoViews attach.
+      if (mounted) setState(() {});
+    });
     _scheduleHideControls();
     _callStateWorker = ever(_controller.callState, _onCallStateChanged);
     // Tell the controller the connected-video-call UI is up so Android can
@@ -72,36 +75,6 @@ class _VideoCallScreenState extends State<VideoCallScreen>
     navigator.popUntil((route) => route.settings.name != routeName);
   }
 
-  Future<void> _initializeRenderers() async {
-    await _remoteRenderer.initialize();
-    await _localRenderer.initialize();
-    if (!mounted) return;
-    // Remote frames carry real dimensions — feed them to the PiP aspect ratio.
-    _remoteRenderer.onResize = () {
-      _controller.updatePipAspect(
-        _remoteRenderer.videoWidth,
-        _remoteRenderer.videoHeight,
-      );
-    };
-    _attachStreams(
-      _controller.localVideoStream.value,
-      _controller.remoteVideoStream.value,
-    );
-    _localStreamWorker = ever(
-      _controller.localVideoStream,
-      (stream) => _localRenderer.srcObject = stream,
-    );
-    _remoteStreamWorker = ever(
-      _controller.remoteVideoStream,
-      (stream) => _remoteRenderer.srcObject = stream,
-    );
-  }
-
-  void _attachStreams(MediaStream? local, MediaStream? remote) {
-    _localRenderer.srcObject = local;
-    _remoteRenderer.srcObject = remote;
-  }
-
   /// Re-bind srcObject on resume/unlock. A locked-screen or cold-start accept
   /// can leave the renderer detached from a live track (or holding a stale
   /// surface); srcObject assignment is idempotent and forces a re-attach.
@@ -110,10 +83,7 @@ class _VideoCallScreenState extends State<VideoCallScreen>
     if (state != AppLifecycleState.resumed || !mounted || !_videoUiEnabled) {
       return;
     }
-    _attachStreams(
-      _controller.localVideoStream.value,
-      _controller.remoteVideoStream.value,
-    );
+    _controller.rebindVideoStreams();
   }
 
   void _scheduleHideControls() {
@@ -132,14 +102,10 @@ class _VideoCallScreenState extends State<VideoCallScreen>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _hideControlsTimer?.cancel();
-    _localStreamWorker?.dispose();
-    _remoteStreamWorker?.dispose();
     _callStateWorker?.dispose();
-    _localRenderer.srcObject = null;
-    _remoteRenderer.srcObject = null;
-    _remoteRenderer.onResize = null;
-    _localRenderer.dispose();
-    _remoteRenderer.dispose();
+    // Renderers are controller-owned and outlive this screen — deliberately
+    // NOT disposed or detached here; the decoder keeps its last frame for the
+    // next route restore.
     _controller.notifyVideoCallUiVisible(false);
     super.dispose();
   }
@@ -163,7 +129,7 @@ class _VideoCallScreenState extends State<VideoCallScreen>
             _controller.remoteVideoStream.value != null &&
                 !_controller.peerCameraOff.value;
         return VideoCallPipLayout(
-          remoteRenderer: _remoteRenderer,
+          remoteRenderer: _controller.remoteRenderer,
           hasRemoteVideo: hasRemoteVideo,
           statusText: hasRemoteVideo ? null : _callStatusText(),
         );
@@ -209,19 +175,23 @@ class _VideoCallScreenState extends State<VideoCallScreen>
 
   Widget _buildVideoSurface() {
     return Obx(() {
+      final remoteRenderer = _controller.remoteRenderer;
       final hasRemoteVideo = _controller.remoteVideoStream.value != null &&
-          !_controller.peerCameraOff.value;
+          !_controller.peerCameraOff.value &&
+          remoteRenderer != null;
       if (hasRemoteVideo) {
         return RTCVideoView(
-          _remoteRenderer,
+          remoteRenderer,
           objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
         );
       }
 
+      final localRenderer = _controller.localRenderer;
       if (_controller.isCameraOn.value &&
-          _controller.localVideoStream.value != null) {
+          _controller.localVideoStream.value != null &&
+          localRenderer != null) {
         return RTCVideoView(
-          _localRenderer,
+          localRenderer,
           objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
           mirror: _controller.isFrontCamera.value,
         );
@@ -281,11 +251,13 @@ class _VideoCallScreenState extends State<VideoCallScreen>
 
   Widget _buildLocalPreview(Size size) {
     return Obx(() {
+      final localRenderer = _controller.localRenderer;
       final hasRemoteVideo = _controller.remoteVideoStream.value != null &&
           !_controller.peerCameraOff.value;
       if (!hasRemoteVideo ||
           !_controller.isCameraOn.value ||
-          _controller.localVideoStream.value == null) {
+          _controller.localVideoStream.value == null ||
+          localRenderer == null) {
         return const SizedBox.shrink();
       }
       final padding = MediaQuery.of(context).padding;
@@ -313,7 +285,7 @@ class _VideoCallScreenState extends State<VideoCallScreen>
                 color: Colors.black,
                 child: Obx(
                   () => RTCVideoView(
-                    _localRenderer,
+                    localRenderer,
                     mirror: _controller.isFrontCamera.value,
                   ),
                 ),

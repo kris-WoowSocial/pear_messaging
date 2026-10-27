@@ -211,6 +211,19 @@ class CallController extends GetxController {
   final RxBool hasPoorConnection = false.obs;
   final Rxn<MediaStream> localVideoStream = Rxn<MediaStream>();
   final Rxn<MediaStream> remoteVideoStream = Rxn<MediaStream>();
+
+  /// Video renderers live for the CALL lifetime, not the screen lifetime.
+  /// Recreating a renderer on every minimize/restore throws away the video
+  /// decoder, which then paints black until the next keyframe (~3-4 s).
+  /// Kept here, bound in the stream callbacks and disposed on call end,
+  /// the decoder — and its last frame — survives route changes.
+  RTCVideoRenderer? _remoteRenderer;
+  RTCVideoRenderer? _localRenderer;
+  Future<void>? _renderersInitFuture;
+
+  /// Null until [ensureVideoRenderers] completes — screens gate on this.
+  RTCVideoRenderer? get remoteRenderer => _remoteRenderer;
+  RTCVideoRenderer? get localRenderer => _localRenderer;
   final Rx<CallEncryptionState> callEncryptionState =
       CallEncryptionState.connecting.obs;
 
@@ -1195,10 +1208,12 @@ class CallController extends GetxController {
         isCameraOn.value = _webrtcService.isCameraEnabled;
         isFrontCamera.value = _webrtcService.isFrontCamera;
       }
+      unawaited(ensureVideoRenderers());
     };
 
     _webrtcService.onRemoteStream = (stream) {
       remoteVideoStream.value = stream;
+      unawaited(ensureVideoRenderers());
     };
 
     _webrtcService.onCallStateChange = (state, {reason}) {
@@ -2913,6 +2928,59 @@ class CallController extends GetxController {
     Get.toNamed(route);
   }
 
+  /// Create the call-lifetime video renderers once and bind the current
+  /// streams. Idempotent and concurrency-safe — callers may fire-and-forget
+  /// or await it (the video screen awaits before first build).
+  Future<void> ensureVideoRenderers() async {
+    await (_renderersInitFuture ??= _initVideoRenderers());
+    // Even when init was already cached, a later stream must still be bound.
+    rebindVideoStreams();
+  }
+
+  Future<void> _initVideoRenderers() async {
+    _remoteRenderer ??= RTCVideoRenderer();
+    _localRenderer ??= RTCVideoRenderer();
+    await _remoteRenderer!.initialize();
+    await _localRenderer!.initialize();
+    // Remote frames carry real dimensions — feed them to the PiP aspect ratio.
+    _remoteRenderer!.onResize = () {
+      updatePipAspect(
+        _remoteRenderer!.videoWidth,
+        _remoteRenderer!.videoHeight,
+      );
+    };
+    rebindVideoStreams();
+  }
+
+  /// Re-attach the current streams to the renderers. srcObject assignment is
+  /// idempotent — safe on resume, renderer handoff between screens, and PiP
+  /// transitions.
+  void rebindVideoStreams() {
+    if (_remoteRenderer != null) {
+      _remoteRenderer!.srcObject = remoteVideoStream.value;
+    }
+    if (_localRenderer != null) {
+      _localRenderer!.srcObject = localVideoStream.value;
+    }
+  }
+
+  Future<void> _disposeVideoRenderers() async {
+    _renderersInitFuture = null;
+    final remote = _remoteRenderer;
+    final local = _localRenderer;
+    _remoteRenderer = null;
+    _localRenderer = null;
+    if (remote != null) {
+      remote.onResize = null;
+      remote.srcObject = null;
+      await remote.dispose();
+    }
+    if (local != null) {
+      local.srcObject = null;
+      await local.dispose();
+    }
+  }
+
   /// Heal a missed onLocalStream binding. The self-view tile renders only
   /// when localVideoStream is non-null; if the stream callback fired before
   /// the controller attached it (cold-start/locked-screen accept races) the
@@ -3948,6 +4016,9 @@ class CallController extends GetxController {
     // missed transition must never leave a dead call route up (iOS CallKit
     // end, remote terminate, cancelled call — all funnel through here).
     _scheduleCallRouteDismissal(callId);
+
+    // Call-lifetime renderers die with the call — never with the screen.
+    unawaited(_disposeVideoRenderers());
   }
 
   /// Cleanup resources

@@ -53,7 +53,7 @@ void main() {
         screen.indexOf('didChangeAppLifecycleState'),
       );
       expect(lifecycle, contains('AppLifecycleState.resumed'));
-      expect(lifecycle, contains('_attachStreams'));
+      expect(lifecycle, contains('rebindVideoStreams'));
     });
   });
 }
