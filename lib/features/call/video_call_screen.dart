@@ -21,6 +21,10 @@ class _VideoCallScreenState extends State<VideoCallScreen>
     with WidgetsBindingObserver {
   static const _previewSize = Size(112, 160);
   static const _previewMargin = 16.0;
+  /// Vertical space reserved for the bottom control bar (52px buttons + bar
+  /// padding + bottom margin + a visual gap). The self-view tile must never
+  /// overlap it — the hang-up button sits on top otherwise.
+  static const _controlsReserve = 132.0;
 
   late final bool _videoUiEnabled;
   Worker? _callStateWorker;
@@ -170,7 +174,11 @@ class _VideoCallScreenState extends State<VideoCallScreen>
 
   Offset _initialPreviewOffset(Size size, EdgeInsets padding) => Offset(
         size.width - _previewSize.width - _previewMargin - padding.right,
-        size.height - _previewSize.height - _previewMargin - padding.bottom,
+        size.height -
+            _previewSize.height -
+            _previewMargin -
+            padding.bottom -
+            _controlsReserve,
       );
 
   Widget _buildVideoSurface() {
@@ -309,7 +317,11 @@ class _VideoCallScreenState extends State<VideoCallScreen>
         ),
         offset.dy.clamp(
           _previewMargin + padding.top,
-          size.height - _previewSize.height - _previewMargin - padding.bottom,
+          size.height -
+              _previewSize.height -
+              _previewMargin -
+              padding.bottom -
+              _controlsReserve,
         ),
       );
 
@@ -324,7 +336,11 @@ class _VideoCallScreenState extends State<VideoCallScreen>
       ),
       Offset(
         _previewMargin + padding.left,
-        size.height - _previewSize.height - _previewMargin - padding.bottom,
+        size.height -
+            _previewSize.height -
+            _previewMargin -
+            padding.bottom -
+            _controlsReserve,
       ),
       _initialPreviewOffset(size, padding),
     ];
