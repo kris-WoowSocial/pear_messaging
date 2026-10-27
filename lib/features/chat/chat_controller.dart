@@ -13,6 +13,7 @@ import '../../core/services/socket_service.dart';
 import '../../core/services/block_service.dart';
 import '../../core/services/encryption_service.dart';
 import '../../core/services/image_cache_service.dart';
+import '../../core/services/media_upload_service.dart';
 import '../../core/services/url_preview_service.dart';
 import '../../core/services/badge_service.dart';
 import '../../core/utils/presence_utils.dart';
@@ -1556,6 +1557,57 @@ class ChatController extends GetxController with WidgetsBindingObserver {
     return finalizeImageMessage(msgId, token);
   }
 
+  /// Encrypt + upload + finalize for a pending image bubble whose bytes are
+  /// already in the image cache (keyed by messageId). Used by multi-image
+  /// sequential sends and by tap-to-retry on a failed upload. On failure the
+  /// bubble is marked failed — never silently removed.
+  Future<bool> uploadPendingImage(String messageId) async {
+    if (messages.indexWhere((msg) => msg.id == messageId) == -1) return false;
+    try {
+      final bytes = await Get.find<ImageCacheService>()
+          .getCachedImageById(messageId);
+      if (bytes == null || bytes.isEmpty) {
+        debugPrint('❌ No cached bytes for pending image $messageId');
+        await _updateMessageStatusIfNotRead(messageId, MessageStatus.failed);
+        return false;
+      }
+      uploadProgressMap[messageId] ??= 0.0.obs;
+      final token = await MediaUploadService.uploadImage(
+        EncryptionService.encryptMessage(base64Encode(bytes)),
+        onProgress: (progress) {
+          uploadProgressMap[messageId]?.value = progress;
+        },
+      );
+      return finalizeImageMessage(messageId, token);
+    } catch (e) {
+      debugPrint('❌ Image upload failed for $messageId: $e');
+      uploadProgressMap.remove(messageId);
+      await _updateMessageStatusIfNotRead(messageId, MessageStatus.failed);
+      return false;
+    }
+  }
+
+  /// Multi-image send (WhatsApp-style): each image becomes its own bubble in
+  /// order and uploads SEQUENTIALLY through the same pipeline a single image
+  /// uses. A failure marks only that bubble failed (tap-to-retry); the rest
+  /// continue. Callers pre-trim to [maxPerBatch]; the cap is enforced here too.
+  Future<List<String?>> sendImagesSequentially(
+    List<Uint8List> images, {
+    int maxPerBatch = 5,
+  }) async {
+    final results = <String?>[];
+    for (final bytes in images.take(maxPerBatch)) {
+      final messageId = await createPendingImageMessage(bytes);
+      if (messageId == null) {
+        results.add(null);
+        continue;
+      }
+      await uploadPendingImage(messageId);
+      results.add(messageId);
+    }
+    return results;
+  }
+
   /// Step 1 of file/document send:
   /// Add the bubble immediately with file metadata and uploading state.
   Future<String?> createPendingFileMessage({
@@ -2080,7 +2132,18 @@ class ChatController extends GetxController with WidgetsBindingObserver {
   /// Reset a failed message back to 'sending' and attempt delivery.
   /// Called when the user taps the retry button on a failed message.
   Future<void> retrySendMessage(String messageId) async {
-    if (messages.indexWhere((msg) => msg.id == messageId) == -1) return;
+    final index = messages.indexWhere((msg) => msg.id == messageId);
+    if (index == -1) return;
+
+    // An image that never finished UPLOADING (still 'MEDIA:pending') has no
+    // token to resend — re-run the upload pipeline instead of the outbox.
+    final msg = messages[index];
+    if (msg.type == MessageType.image &&
+        (msg.content == 'MEDIA:pending' || msg.mediaToken == null)) {
+      await _updateMessageStatusIfNotRead(messageId, MessageStatus.sending);
+      await uploadPendingImage(messageId);
+      return;
+    }
 
     // Await so messages[index].status is 'sending' before _flushOutbox reads it
     await _updateMessageStatusIfNotRead(messageId, MessageStatus.sending);
