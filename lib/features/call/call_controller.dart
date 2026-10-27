@@ -768,6 +768,7 @@ class CallController extends GetxController {
       _pauseCameraForBackground();
     } else if (state == AppLifecycleState.resumed) {
       _pipPauseDebounce?.cancel();
+      _ensureLocalVideoStateBound();
       if (_cameraPausedForBackground && isVideoCall.value && isInCall) {
         _cameraPausedForBackground = false;
         unawaited(setCameraEnabled(true));
@@ -2737,6 +2738,7 @@ class CallController extends GetxController {
         isFrontCamera.value = _webrtcService.isFrontCamera;
         isSpeakerOn.value = _webrtcService.isSpeakerOn;
         isVideoCall.value = incomingVideo && _webrtcService.isVideoCall;
+        _ensureLocalVideoStateBound();
       }
 
       if (!success) {
@@ -2909,6 +2911,24 @@ class CallController extends GetxController {
             ? '/call/outgoing'
             : '/call/active';
     Get.toNamed(route);
+  }
+
+  /// Heal a missed onLocalStream binding. The self-view tile renders only
+  /// when localVideoStream is non-null; if the stream callback fired before
+  /// the controller attached it (cold-start/locked-screen accept races) the
+  /// tile would stay hidden for the whole call even though the camera is
+  /// sending. Idempotent — safe to call on connect, resume and unlock.
+  void _ensureLocalVideoStateBound() {
+    final stream = localVideoStream.value ?? _webrtcService.localStream;
+    if (stream == null) return;
+    if (localVideoStream.value == null) {
+      debugPrint('📹 Re-binding missed local video stream (self-view fix)');
+      localVideoStream.value = stream;
+    }
+    if (stream.getVideoTracks().isNotEmpty && !isCameraOn.value) {
+      isCameraOn.value = _webrtcService.isCameraEnabled;
+      isFrontCamera.value = _webrtcService.isFrontCamera;
+    }
   }
 
   /// Toggle mute
@@ -3567,6 +3587,7 @@ class CallController extends GetxController {
         isReconnecting.value = false;
         hasPoorConnection.value = false;
         _wasConnected = true;
+        _ensureLocalVideoStateBound();
         unawaited(_setNativeInCall(true));
         // The encryption indicator stays on "Connecting…" until this point —
         // now resolve it to the real crypto state.
@@ -4450,6 +4471,7 @@ class CallController extends GetxController {
         isFrontCamera.value = _webrtcService.isFrontCamera;
         isSpeakerOn.value = _webrtcService.isSpeakerOn;
         isVideoCall.value = incomingVideo && _webrtcService.isVideoCall;
+        _ensureLocalVideoStateBound();
         debugPrint('📞 Resync accept successful, navigating to active call');
         callState.value = CallState.ringing;
         // Clear pending auto-accept since we successfully accepted

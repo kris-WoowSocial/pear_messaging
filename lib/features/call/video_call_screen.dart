@@ -17,7 +17,8 @@ class VideoCallScreen extends StatefulWidget {
   State<VideoCallScreen> createState() => _VideoCallScreenState();
 }
 
-class _VideoCallScreenState extends State<VideoCallScreen> {
+class _VideoCallScreenState extends State<VideoCallScreen>
+    with WidgetsBindingObserver {
   static const _previewSize = Size(112, 160);
   static const _previewMargin = 16.0;
 
@@ -39,6 +40,7 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
     _videoUiEnabled = Get.isRegistered<FeatureFlagService>() &&
         Get.find<FeatureFlagService>().videoCalling.value;
     if (!_videoUiEnabled) return;
+    WidgetsBinding.instance.addObserver(this);
     _initializeRenderers();
     _scheduleHideControls();
     _callStateWorker = ever(_controller.callState, _onCallStateChanged);
@@ -100,6 +102,20 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
     _remoteRenderer.srcObject = remote;
   }
 
+  /// Re-bind srcObject on resume/unlock. A locked-screen or cold-start accept
+  /// can leave the renderer detached from a live track (or holding a stale
+  /// surface); srcObject assignment is idempotent and forces a re-attach.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed || !mounted || !_videoUiEnabled) {
+      return;
+    }
+    _attachStreams(
+      _controller.localVideoStream.value,
+      _controller.remoteVideoStream.value,
+    );
+  }
+
   void _scheduleHideControls() {
     _hideControlsTimer?.cancel();
     _hideControlsTimer = Timer(const Duration(seconds: 4), () {
@@ -114,6 +130,7 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _hideControlsTimer?.cancel();
     _localStreamWorker?.dispose();
     _remoteStreamWorker?.dispose();
