@@ -122,4 +122,94 @@ void main() {
       expect(connectedCase, contains('_connectionLostWatchdog?.cancel'));
     });
   });
+
+  group('iOS end-call: no stuck screens', () {
+    final controller = 'lib/features/call/call_controller.dart';
+
+    String method(String code, String signature) {
+      final start = code.indexOf(signature);
+      final rest = code.substring(start);
+      final next = rest.indexOf('\n  ///', 1);
+      final end = next > 0 ? next : rest.length;
+      return rest.substring(0, end);
+    }
+
+    test('_resetCallState schedules the guarded route-dismissal watchdog', () {
+      final body = method(source(controller), 'void _resetCallState()');
+      expect(
+        body,
+        contains('_scheduleCallRouteDismissal'),
+        reason: 'every end path (decline, remote end, local end, timeout, '
+            'CallKit end) funnels through _resetCallState — the watchdog '
+            'must live there so no call route can stay up',
+      );
+    });
+
+    test('route-dismissal watchdog uses guarded pop + /chat-list fallback', () {
+      final body =
+          method(source(controller), 'void _scheduleCallRouteDismissal');
+      expect(body, contains("startsWith('/call/')"));
+      expect(body, contains('navigator.canPop()'));
+      expect(body, contains("'/chat-list'"));
+      expect(
+        body,
+        contains('_latestIncomingCallData != null'),
+        reason: 'a new call ringing inside the delay must not be dismissed',
+      );
+    });
+
+    test('CallKit end requires attribution: match current or ringing call',
+        () {
+      final body = method(source(controller), 'void _handleCallKitEnd');
+      expect(
+        body,
+        contains('callId != currentCallId.value && callId != latestCallId'),
+        reason: 'a CallKit end must match the active call or the ringing '
+            'call — a foreign/unresolvable id must be ignored',
+      );
+      expect(body, contains('callId == null || callId.isEmpty'));
+      expect(body, contains('_isRecentlyEnded(callId)'));
+      expect(body, contains('endCall()'));
+    });
+
+    test('late CallKit end for a just-ended call cannot kill a new call', () {
+      final code = source(controller);
+      // _resetCallState records the ended callId so a delayed duplicate
+      // CallKit event for call A is ignored even after call B has started.
+      final reset = method(code, 'void _resetCallState()');
+      expect(reset, contains('_markRecentlyEnded(callId)'));
+      // Both event handlers check the recently-ended registry before acting.
+      final end = method(code, 'void _handleCallKitEnd');
+      final decline = method(code, 'void _handleCallKitDecline');
+      expect(end.indexOf('_isRecentlyEnded'), lessThan(end.indexOf('endCall()')));
+      expect(decline, contains('_isRecentlyEnded(callId)'));
+    });
+
+    test('CallKit decline uses guarded pop + /chat-list and HTTP fallback',
+        () {
+      final body = method(source(controller), 'void _handleCallKitDecline');
+      expect(body, contains('navigator.canPop()'));
+      expect(body, contains("Get.offAllNamed('/chat-list')"));
+      expect(
+        body,
+        contains('callId != ringingId && callId != currentCallId.value'),
+        reason: 'a decline for a foreign call must be ignored, not applied '
+            'to whatever happens to be ringing',
+      );
+      expect(
+        body,
+        contains("_terminateCallOverHttp(callId, 'reject')"),
+        reason: 'decline must still reach the caller when the socket is down',
+      );
+    });
+
+    test('CallKit ring timeout is handled and resets call state', () {
+      final code = source(controller);
+      expect(code, contains('case CallKitEventType.timeout:'));
+      final body = method(code, 'void _handleCallKitTimeout');
+      expect(body, contains('isInCall'));
+      expect(body, contains('_resetCallState()'));
+      expect(body, contains('_ringtoneService.stopRingtone()'));
+    });
+  });
 }

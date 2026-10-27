@@ -1493,6 +1493,9 @@ class CallController extends GetxController {
           case CallKitEventType.end:
             _handleCallKitEnd(event.callId);
             break;
+          case CallKitEventType.timeout:
+            _handleCallKitTimeout(event.callId);
+            break;
           case CallKitEventType.callback:
             // The plugin emits the same callback event for both the active-call
             // "Hang Up" button and the missed-call "Call back" button. Decide
@@ -1940,9 +1943,42 @@ class CallController extends GetxController {
 
   /// Set pending auto-accept call ID for cold-start resync
 
+  /// CallIds of calls ended in the last few seconds. Late duplicate CallKit
+  /// events for an already-ended call must be ignored entirely — acting on
+  /// them would reset (and kill) a new call started in the meantime.
+  final Map<String, DateTime> _recentlyEndedCallIds = {};
+
+  void _markRecentlyEnded(String callId) {
+    if (callId.isEmpty) return;
+    _recentlyEndedCallIds.removeWhere(
+      (_, t) => DateTime.now().difference(t) > const Duration(seconds: 10),
+    );
+    _recentlyEndedCallIds[callId] = DateTime.now();
+  }
+
+  bool _isRecentlyEnded(String? callId) =>
+      callId != null && _recentlyEndedCallIds.containsKey(callId);
+
   /// Handle decline from CallKit UI (app in foreground/background)
   void _handleCallKitDecline(String? callId) {
-    if (callId == null || callId.isEmpty) return;
+    // Attribution: our calls always resolve to a server callId (the plugin
+    // echoes extra.callId, and the UUID->callId map lives for the process
+    // lifetime), so a null id or an id matching neither the ringing call
+    // nor the active call belongs to a foreign/stale call. Acting on it
+    // could reject or reset a new call started after a previous one ended.
+    if (callId == null || callId.isEmpty) {
+      debugPrint('📞 Ignoring CallKit decline with unresolvable id');
+      return;
+    }
+    if (_isRecentlyEnded(callId)) {
+      debugPrint('📞 Ignoring CallKit decline for already-ended $callId');
+      return;
+    }
+    final ringingId = _latestIncomingCallData?['callId'] as String?;
+    if (callId != ringingId && callId != currentCallId.value) {
+      debugPrint('📞 Ignoring CallKit decline for foreign call $callId');
+      return;
+    }
     debugPrint('📞 CallKit decline received for $callId');
 
     // Cancel incoming call notification
@@ -1959,20 +1995,29 @@ class CallController extends GetxController {
       );
       _latestIncomingCallData = null;
       rejectCall(cachedData);
-      // Dismiss the custom incoming call screen if it's open
+      // Dismiss the custom incoming call screen if it's open — guarded pop so
+      // a cold-start root call route lands on /chat-list, not a black screen.
       if (Get.currentRoute == '/call/incoming') {
-        Get.back();
+        final navigator = Get.key.currentState;
+        if (navigator != null && navigator.canPop()) {
+          Get.back();
+        } else {
+          Get.offAllNamed('/chat-list');
+        }
       }
       return;
     }
 
-    // Fallback: reject via socket if connected
+    // Fallback: reject via socket, or over HTTP when the socket is down so
+    // the caller's phone still stops ringing.
     if (_socketService.isConnected.value) {
       _socketService.rejectCall(
         callId: callId,
         callerId: remoteDeviceId.value,
         reason: 'declined',
       );
+    } else {
+      unawaited(_terminateCallOverHttp(callId, 'reject'));
     }
 
     _resetCallState();
@@ -1980,17 +2025,59 @@ class CallController extends GetxController {
 
   /// Handle end from CallKit UI
   void _handleCallKitEnd(String? callId) {
-    if (callId == null ||
-        callId.isEmpty ||
-        currentCallId.value != callId ||
-        callState.value == CallState.idle) {
-      debugPrint('📞 Ignoring stale CallKit end event for $callId');
+    // Attribution: identical to _handleCallKitDecline — our calls always
+    // resolve to a server callId, so an event must match the active call or
+    // the ringing call to be ours. A null id or a foreign id is ignored:
+    // acting on it could end a NEW call that started after a previous one
+    // ended (call A ends -> call B starts -> late CallKit end for A arrives
+    // with A's id or no id — B must survive).
+    if (callId == null || callId.isEmpty) {
+      debugPrint('📞 Ignoring CallKit end with unresolvable id');
+      return;
+    }
+    if (_isRecentlyEnded(callId)) {
+      debugPrint('📞 Ignoring CallKit end for already-ended $callId');
+      return;
+    }
+    final latestCallId = _latestIncomingCallData?['callId'] as String?;
+    if (callId != currentCallId.value && callId != latestCallId) {
+      debugPrint('📞 Ignoring CallKit end for foreign call $callId');
       return;
     }
     debugPrint('📞 CallKit end received for $callId');
 
     // End the call
     endCall();
+  }
+
+  /// Ring timeout from CallKit (the plugin's duration elapsed with no
+  /// answer). The CallKit UI dismisses itself; clean up the Flutter-side
+  /// incoming call so a dead /call/incoming route cannot linger.
+  void _handleCallKitTimeout(String? callId) {
+    debugPrint('📞 CallKit ring timeout for $callId');
+    // Same attribution rule as decline/end: our calls always resolve, so
+    // only a timeout matching the ringing or active call is ours.
+    if (callId == null || callId.isEmpty || _isRecentlyEnded(callId)) {
+      debugPrint('📞 Ignoring CallKit timeout for $callId');
+      return;
+    }
+    final ringingId = _latestIncomingCallData?['callId'] as String?;
+    final isOurRingingCall =
+        callId == ringingId || callId == currentCallId.value;
+    if (!isOurRingingCall) {
+      debugPrint('📞 Ignoring stale CallKit timeout for $callId');
+      return;
+    }
+    NotificationService().cancelNotification(callId.hashCode);
+    if (ringingId == callId) _latestIncomingCallData = null;
+    if (isInCall) {
+      // The timed-out call was ringing while another call is active — clear
+      // its cached data/notification only, never reset the live call.
+      debugPrint('📞 CallKit timeout during active call — cleared ring state only');
+      return;
+    }
+    _ringtoneService.stopRingtone();
+    _resetCallState();
   }
 
   /// Dismiss keyguard on Android to allow call to connect without unlock
@@ -2909,7 +2996,6 @@ class CallController extends GetxController {
     // sets callState to ended/idle. Do not navigate here so a banner or dialog
     // on top cannot be bypassed or duplicated.
     _resetCallState();
-    _scheduleCallRouteDismissal(callId);
   }
 
   /// Watchdog for remote-end: after _resetCallState the call screens close
@@ -2921,10 +3007,13 @@ class CallController extends GetxController {
   /// something is beneath it, otherwise land on /chat-list.
   void _scheduleCallRouteDismissal(String? callId) {
     Future.delayed(const Duration(milliseconds: 600), () {
+      // Another call may have started or started ringing inside the delay —
+      // never dismiss its UI.
       if (callState.value != CallState.ended &&
           callState.value != CallState.idle) {
-        return; // another call already started — don't touch navigation
+        return;
       }
+      if (_latestIncomingCallData != null) return;
       final route = Get.currentRoute;
       if (!route.startsWith('/call/')) return;
       final navigator = Get.key.currentState;
@@ -3495,6 +3584,7 @@ class CallController extends GetxController {
   void _resetCallState() {
     _resetCryptoState();
     final callId = currentCallId.value;
+    _markRecentlyEnded(callId);
     unawaited(_teardownAndroidCall(callId));
     unawaited(_setNativeInCall(false));
     callState.value = CallState.ended;
@@ -3562,6 +3652,11 @@ class CallController extends GetxController {
       _fsiPromptPending = false;
       unawaited(_checkFullScreenIntentPermission());
     }
+
+    // Watchdog: screens close themselves via their callState workers, but a
+    // missed transition must never leave a dead call route up (iOS CallKit
+    // end, remote terminate, cancelled call — all funnel through here).
+    _scheduleCallRouteDismissal(callId);
   }
 
   /// Cleanup resources
