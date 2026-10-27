@@ -3,7 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:get/get.dart';
 import 'local_storage_service.dart';
-import '../utils/string_utils.dart';
+import 'caller_name_resolver.dart';
 import '../../routes/app_routes.dart';
 import '../../storage/models/connection_request_entity.dart';
 import '../../storage/models/message_entity.dart';
@@ -53,7 +53,7 @@ class DeepLinkService extends GetxService {
       final deviceId = uri.queryParameters['device_id'];
 
       if (deviceId != null && deviceId.isNotEmpty) {
-        _openChat(deviceId);
+        _openChat(deviceId, userName: uri.queryParameters['user_name']);
       } else {
         debugPrint('⚠️ No device_id found in deep link');
       }
@@ -61,7 +61,7 @@ class DeepLinkService extends GetxService {
   }
 
   /// Open chat with device ID
-  void _openChat(String deviceId) async {
+  void _openChat(String deviceId, {String? userName}) async {
     debugPrint('📱 Opening chat with device: $deviceId');
 
     // Check if chat exists
@@ -80,7 +80,12 @@ class DeepLinkService extends GetxService {
       );
     } else {
       // No chat exists - create a connection request for the person clicking the link
-      final friendlyName = StringUtils.generateFriendlyName(deviceId);
+      // Resolve the real name (saved contact -> server profile) rather than
+      // the generated @user_xxxxx handle.
+      final friendlyName = await CallerNameResolver.resolve(
+        deviceId,
+        payloadName: userName,
+      );
       debugPrint(
         '📱 No existing chat found, creating connection request for: $friendlyName',
       );

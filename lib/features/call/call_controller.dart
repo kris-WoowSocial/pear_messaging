@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:http/http.dart' as http;
 import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -12,9 +13,11 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import '../../core/services/call_breadcrumbs.dart';
+import '../../core/services/caller_name_resolver.dart';
 import '../../core/services/call_media_helper.dart';
 import '../../core/services/call_diag.dart';
 import '../../core/services/call_signaling_crypto.dart';
+import '../../core/constants/network_constants.dart';
 import '../../core/services/feature_flag_service.dart';
 import '../../core/services/identity_announcement_service.dart';
 import '../../core/services/identity_service.dart';
@@ -675,7 +678,11 @@ class CallController extends GetxController {
     final callData = {
       'callId': callId,
       'callerId': data['caller_id'] ?? '',
-      'callerName': data['caller_name'] ?? 'Incoming Call',
+      'callerName': CallerNameResolver.resolveSync(
+            data['caller_id'] as String? ?? '',
+            payloadName: data['caller_name'] as String?,
+          ) ??
+          'Incoming Call',
       'sdpOffer': null,
       'roomId': data['room_id'] ?? '',
       'avatarUrl': data['avatar_url'] ?? '',
@@ -758,7 +765,11 @@ class CallController extends GetxController {
     currentCallId.value = callId;
     remoteDeviceId.value = data['caller_id'] ?? '';
     isCaller.value = false;
-    remoteDisplayName.value = data['caller_name'] ?? 'Incoming Call';
+    remoteDisplayName.value = CallerNameResolver.resolveSync(
+          remoteDeviceId.value,
+          payloadName: data['caller_name'] as String?,
+        ) ??
+        'Incoming Call';
     remoteAvatarUrl.value = data['avatar_url'] as String? ?? '';
 
     final callData = {
@@ -1543,7 +1554,11 @@ class CallController extends GetxController {
               final callData = {
                 'callId': callId,
                 'callerId': callerId ?? '',
-                'callerName': callerName ?? 'Incoming Call',
+                'callerName': CallerNameResolver.resolveSync(
+                      callerId ?? '',
+                      payloadName: callerName,
+                    ) ??
+                    'Incoming Call',
                 'sdpOffer': null,
                 'roomId': roomId ?? '',
                 'avatarUrl': avatarUrl ?? '',
@@ -2424,14 +2439,49 @@ class CallController extends GetxController {
     // Stop ringtone
     _ringtoneService.stopRingtone();
 
-    _socketService.rejectCall(
-      callId: callId,
-      callerId: callerId,
-      reason: 'rejected',
-    );
+    if (_socketService.isConnected.value) {
+      _socketService.rejectCall(
+        callId: callId,
+        callerId: callerId,
+        reason: 'rejected',
+      );
+    } else {
+      // Socket down — the emit would be silently dropped and the caller's
+      // screen would keep ringing. Same /respond endpoint the native CallKit
+      // decline path uses.
+      unawaited(_terminateCallOverHttp(callId, 'reject'));
+    }
 
     _webrtcService.endCall();
     _resetCallState();
+  }
+
+  /// Reliable termination channel for when the signaling socket is
+  /// unreachable: POSTs the action to the same /api/calls/{id}/respond
+  /// endpoint the native CallKit handlers use. Fire-and-forget.
+  Future<void> _terminateCallOverHttp(String callId, String action) async {
+    try {
+      final deviceId = _storageService.deviceId;
+      if (callId.isEmpty || deviceId == null || deviceId.isEmpty) return;
+      final uri = Uri.parse(
+        '${NetworkConstants.apiBaseUrl}/api/calls/$callId/respond',
+      );
+      final res = await http
+          .post(
+            uri,
+            headers: {
+              'Content-Type': 'application/json',
+              'x-device-id': deviceId,
+            },
+            body: jsonEncode({'action': action}),
+          )
+          .timeout(const Duration(seconds: 8));
+      debugPrint(
+        '📞 HTTP call respond ($action) -> ${res.statusCode} for $callId',
+      );
+    } catch (e) {
+      debugPrint('⚠️ HTTP call respond ($action) failed for $callId: $e');
+    }
   }
 
   /// Reset call state when we know the call has already ended remotely (e.g. FCM
@@ -2466,7 +2516,17 @@ class CallController extends GetxController {
     // Log call history before resetting state
     _logCallHistory(reason: 'ended');
 
-    _socketService.terminateCall(callId: currentCallId.value, reason: 'ended');
+    if (_socketService.isConnected.value) {
+      _socketService.terminateCall(
+          callId: currentCallId.value, reason: 'ended');
+    } else {
+      // Socket suspended (iOS locks/suspends the connection while CallKit
+      // owns the call) — emit() would be silently dropped and the remote
+      // side's call screen would stay up forever. The CallKit native path
+      // already posts to /api/calls/{id}/respond for exactly this reason;
+      // mirror it here so termination always reaches the server.
+      unawaited(_terminateCallOverHttp(currentCallId.value, 'ended'));
+    }
 
     // Dismiss CallKit notification if active
     final callKitService = CallKitService();
@@ -2849,6 +2909,32 @@ class CallController extends GetxController {
     // sets callState to ended/idle. Do not navigate here so a banner or dialog
     // on top cannot be bypassed or duplicated.
     _resetCallState();
+    _scheduleCallRouteDismissal(callId);
+  }
+
+  /// Watchdog for remote-end: after _resetCallState the call screens close
+  /// themselves via their callState workers, but if a call route is still
+  /// showing shortly after (worker missed the transition, route popped
+  /// without settings.name, or the event arrived while minimized) force it
+  /// closed — a remote hangup must never leave a dead call screen up.
+  /// Uses the same guarded pop as the screens: pop the call route when
+  /// something is beneath it, otherwise land on /chat-list.
+  void _scheduleCallRouteDismissal(String? callId) {
+    Future.delayed(const Duration(milliseconds: 600), () {
+      if (callState.value != CallState.ended &&
+          callState.value != CallState.idle) {
+        return; // another call already started — don't touch navigation
+      }
+      final route = Get.currentRoute;
+      if (!route.startsWith('/call/')) return;
+      final navigator = Get.key.currentState;
+      if (navigator != null && navigator.canPop()) {
+        navigator.popUntil((r) => !(r.settings.name ?? '').startsWith('/call/'));
+      } else {
+        Get.offAllNamed('/chat-list');
+      }
+      debugPrint('📞 Remote end: forced call route dismissal from $route');
+    });
   }
 
   /// Handle local ICE candidate from WebRTC
@@ -3726,7 +3812,28 @@ class CallController extends GetxController {
     }
 
     remoteDeviceId.value = incomingCallerId;
-    remoteDisplayName.value = data['callerName'] as String? ?? 'Incoming Call';
+    // Resolve the display name through the single resolver: payload name ->
+    // saved contact -> server profile -> friendly fallback. The socket
+    // payload's callerName is often the sender's generated @user_xxxxx
+    // handle, so it must never win over a saved contact name.
+    final payloadName = data['callerName'] as String?;
+    final resolvedName = CallerNameResolver.resolveSync(
+          incomingCallerId,
+          payloadName: payloadName,
+        ) ??
+        'Incoming Call';
+    remoteDisplayName.value = resolvedName;
+    data['callerName'] = resolvedName;
+    unawaited(
+      CallerNameResolver.resolve(
+        incomingCallerId,
+        payloadName: payloadName,
+      ).then((name) {
+        if (remoteDeviceId.value == incomingCallerId && name.isNotEmpty) {
+          remoteDisplayName.value = name;
+        }
+      }),
+    );
     remoteAvatarUrl.value =
         data['avatarUrl'] as String? ?? data['avatar_url'] as String? ?? '';
 

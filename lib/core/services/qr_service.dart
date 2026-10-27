@@ -8,7 +8,10 @@ class QRService {
   static const String _secretKey = SecurityConstants.qrSecretKey;
 
   /// Generate a secure QR code data for the current user
-  static Future<String> generateQRData(String deviceId) async {
+  static Future<String> generateQRData(
+    String deviceId, {
+    String? userName,
+  }) async {
     final timestamp = DateTime.now().millisecondsSinceEpoch;
     final nonce = _generateNonce();
 
@@ -18,6 +21,11 @@ class QRService {
       'deviceId': deviceId,
       'timestamp': timestamp,
       'nonce': nonce,
+      // Carry the inviter's display name so the scanned side can show the real
+      // name immediately instead of the generated @user_xxxxx handle. The
+      // signature covers every payload key, so older clients still validate
+      // new QRs (extra key included in HMAC on both sides).
+      if (userName != null && userName.isNotEmpty) 'userName': userName,
     };
 
     // Create signature to verify authenticity
@@ -65,6 +73,32 @@ class QRService {
       return payload['deviceId'] as String;
     } catch (e) {
       return null; // Invalid QR code format
+    }
+  }
+
+  /// Validate and extract both the device ID and the embedded inviter display
+  /// name (if present). Same verification as [validateQRData].
+  static Future<({String deviceId, String? userName})?> validateQRDataEx(
+      String qrData) async {
+    try {
+      final jsonString = utf8.decode(base64.decode(qrData));
+      final Map<String, dynamic> payload = json.decode(jsonString);
+
+      if (payload['app'] != _appSignature) return null;
+
+      final timestamp = payload['timestamp'] as int;
+      final now = DateTime.now().millisecondsSinceEpoch;
+      if ((now - timestamp) / (1000 * 60 * 60) > 24) return null;
+
+      final receivedSignature = payload['signature'] as String;
+      payload.remove('signature');
+      if (receivedSignature != _createSignature(payload)) return null;
+
+      final deviceId = payload['deviceId'] as String;
+      final userName = payload['userName'] as String?;
+      return (deviceId: deviceId, userName: userName);
+    } catch (e) {
+      return null;
     }
   }
 
