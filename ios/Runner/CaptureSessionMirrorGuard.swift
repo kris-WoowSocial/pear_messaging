@@ -15,7 +15,7 @@ import Foundation
 ///  - `didStartRunning` is observed as a safety net for connections created
 ///    outside a commit (shouldn't happen, but idempotent and cheap).
 ///
-/// `videoMirrored = false` is a no-op for the rear camera (iOS never mirrors
+/// `isVideoMirrored = false` is a no-op for the rear camera (iOS never mirrors
 /// it anyway) and does not affect the local preview: self-view mirroring is
 /// applied display-side by `LocalCallVideoView` (mirror = front camera only).
 @objcMembers
@@ -61,7 +61,7 @@ extension AVCaptureSession {
         for output in outputs {
             for connection in output.connections {
                 if connection.isVideoMirroringSupported {
-                    connection.automaticallyConfiguresVideoMirroring = false
+                    connection.automaticallyAdjustsVideoMirroring = false
                     connection.isVideoMirrored = false
                 }
             }

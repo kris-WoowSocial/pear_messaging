@@ -127,7 +127,7 @@ void main() {
     final appDelegate = source('ios/Runner/AppDelegate.swift');
 
     test('guard forces every capture connection unmirrored', () {
-      expect(guard, contains('automaticallyConfiguresVideoMirroring = false'));
+      expect(guard, contains('automaticallyAdjustsVideoMirroring = false'));
       expect(guard, contains('isVideoMirrored = false'));
       // Covers camera switch mid-call: connections recreated during
       // commitConfiguration are un-mirrored again.
