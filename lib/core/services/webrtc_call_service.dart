@@ -594,6 +594,7 @@ class WebRTCCallService {
       final stream = await navigator.mediaDevices.getUserMedia(
         CallMediaHelper.mediaConstraints(video: video),
       );
+      _logMirrorState('getUserMedia(video=$video)');
 
       debugPrint(
         video
@@ -710,21 +711,50 @@ class WebRTCCallService {
     }
     _isCameraEnabled = enabled && tracks.isNotEmpty;
     debugPrint('📞 Camera set to: $_isCameraEnabled');
+    _logMirrorState('setCameraEnabled($enabled)');
     await _logVideoSenderState('after setCameraEnabled($enabled)');
   }
 
   /// Switch between front and rear cameras when a video track is active.
+  ///
+  /// NOTE: `Helper.switchCamera` does NOT return a success flag. On both
+  /// platforms the plugin replies with the NEW camera facing
+  /// (`true` = front, `false` = rear) and throws on failure:
+  ///  - iOS: CameraUtils.m -> result(@(self._usingFrontCamera))
+  ///  - Android: onCameraSwitchDone(isFrontCamera) -> result.success(b)
+  /// Treating it as "did it switch" leaves the facing flag stale or inverted
+  /// after odd numbers of switches (front->rear keeps `true`).
   Future<bool> switchCamera() async {
     final tracks = _localStream?.getVideoTracks() ?? const [];
     if (tracks.isEmpty) return false;
+    final previousFacing = _isFrontCamera;
     try {
-      final switched = await Helper.switchCamera(tracks.first);
-      if (switched) _isFrontCamera = !_isFrontCamera;
-      return switched;
+      final newFacingIsFront = await Helper.switchCamera(tracks.first);
+      _isFrontCamera = newFacingIsFront;
+      _logMirrorState(
+        'switchCamera',
+        extra: 'facing ${previousFacing ? "front" : "rear"} -> '
+            '${newFacingIsFront ? "front" : "rear"}',
+      );
+      return true;
     } catch (e) {
-      debugPrint('⚠️ Failed to switch camera: $e');
+      _logMirrorState('switchCamera FAILED', extra: '$e');
       return false;
     }
+  }
+
+  /// Debug-only camera/mirror state trace. Tag: `📹 VantMirror` (logcat /
+  /// Xcode console). Must stay silent in release builds.
+  void _logMirrorState(String where, {String extra = ''}) {
+    assert(() {
+      final tracks = _localStream?.getVideoTracks() ?? const [];
+      debugPrint(
+        '📹 VantMirror [$where] platform=${Platform.isIOS ? 'iOS' : 'android'} '
+        'isFrontCamera=$_isFrontCamera cameraEnabled=$_isCameraEnabled '
+        'videoTracks=${tracks.length} $extra',
+      );
+      return true;
+    }());
   }
 
   /// Cap outbound video bitrate through RTP sender parameters.

@@ -61,6 +61,19 @@ extension AVCaptureSession {
         for output in outputs {
             for connection in output.connections {
                 if connection.isVideoMirroringSupported {
+                    #if DEBUG
+                    if connection.isVideoMirrored ||
+                        connection.automaticallyAdjustsVideoMirroring {
+                        // VantMirror: proves/disproves wire-level mirroring —
+                        // log lines show the state BEFORE it is forced off.
+                        NSLog(
+                            "📹 VantMirror capture connection was mirrored=%d auto=%d on %@ — forcing unmirrored",
+                            connection.isVideoMirrored,
+                            connection.automaticallyAdjustsVideoMirroring,
+                            connection.inputPorts.first?.input?.description ?? "input"
+                        )
+                    }
+                    #endif
                     connection.automaticallyAdjustsVideoMirroring = false
                     connection.isVideoMirrored = false
                 }

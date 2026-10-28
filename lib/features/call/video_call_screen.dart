@@ -32,6 +32,7 @@ class _VideoCallScreenState extends State<VideoCallScreen>
   Timer? _hideControlsTimer;
   Offset? _previewOffset;
   bool _controlsVisible = true;
+  String _lastVideoSurface = '';
 
   CallController get _controller => Get.find<CallController>();
 
@@ -182,6 +183,22 @@ class _VideoCallScreenState extends State<VideoCallScreen>
             _controlsReserve,
       );
 
+  /// Debug-only trace of which surface fills the video area — remote feed
+  /// (never mirrored) vs local-camera fullscreen fallback (mirrored only on
+  /// the front camera). Tag `📹 VantMirror`.
+  void _logSurface(String surface) {
+    assert(() {
+      if (_lastVideoSurface != surface) {
+        _lastVideoSurface = surface;
+        debugPrint(
+          '📹 VantMirror [surface] $surface '
+          'localMirror=${_controller.isFrontCamera.value} remoteMirror=false',
+        );
+      }
+      return true;
+    }());
+  }
+
   Widget _buildVideoSurface() {
     return Obx(() {
       final remoteRenderer = _controller.remoteRenderer;
@@ -189,6 +206,7 @@ class _VideoCallScreenState extends State<VideoCallScreen>
           !_controller.peerCameraOff.value &&
           remoteRenderer != null;
       if (hasRemoteVideo) {
+        _logSurface('remote');
         return RemoteCallVideoView(remoteRenderer);
       }
 
@@ -196,12 +214,14 @@ class _VideoCallScreenState extends State<VideoCallScreen>
       if (_controller.isCameraOn.value &&
           _controller.localVideoStream.value != null &&
           localRenderer != null) {
+        _logSurface('local-fallback');
         return LocalCallVideoView(
           localRenderer,
           isFrontCamera: _controller.isFrontCamera.value,
         );
       }
 
+      _logSurface('placeholder');
       return Container(
         decoration: const BoxDecoration(
           gradient: LinearGradient(

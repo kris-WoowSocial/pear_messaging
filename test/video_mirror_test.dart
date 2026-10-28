@@ -104,21 +104,45 @@ void main() {
     final service = source('lib/core/services/webrtc_call_service.dart');
     final controller = source('lib/features/call/call_controller.dart');
 
-    test('facing flag only flips after a successful switch', () {
+    test(
+        'facing flag is assigned from the switch result (new facing), '
+        'never toggled blindly', () {
       final start = service.indexOf('Future<bool> switchCamera()');
       final end = service.indexOf('///', start + 10);
       final body = service.substring(start, end > start ? end : null);
+      // Helper.switchCamera returns the NEW camera facing
+      // (true = front, false = rear) on both platforms — NOT a success flag.
+      // iOS: CameraUtils.m result(@(_usingFrontCamera));
+      // Android: onCameraSwitchDone(isFrontCamera) -> result.success(b).
+      // Assigning it directly keeps the flag correct across
+      // front->rear->front sequences; toggling leaves it stale/inverted.
       expect(
         body,
-        contains('if (switched) _isFrontCamera = !_isFrontCamera'),
-        reason: 'front->rear must clear the mirror flag, never go stale',
+        contains('_isFrontCamera = newFacingIsFront'),
+        reason: 'switch result is the new facing, not a success flag',
       );
-      expect(body, contains('return false;'));
+      expect(
+        body,
+        isNot(contains('!_isFrontCamera')),
+        reason: 'blind toggle goes stale after odd numbers of switches',
+      );
     });
 
     test('front flag resets on each new capture and on call end', () {
       expect(service, contains('if (video) _isFrontCamera = true;'));
       expect(controller, contains('isFrontCamera.value = true;'));
+    });
+
+    test('debug trace exists at both ends (VantMirror)', () {
+      // Two-sided observability: service logs capture/switch facing;
+      // controller logs the flag it propagates to the views; the screen
+      // logs which surface (remote vs local fallback) is displayed.
+      expect(service, contains('📹 VantMirror'));
+      expect(controller, contains('📹 VantMirror'));
+      expect(
+        source('lib/features/call/video_call_screen.dart'),
+        contains('📹 VantMirror [surface]'),
+      );
     });
   });
 
