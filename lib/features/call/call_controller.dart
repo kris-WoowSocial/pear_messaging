@@ -2962,6 +2962,7 @@ class CallController extends GetxController {
     if (_localRenderer != null) {
       _localRenderer!.srcObject = localVideoStream.value;
     }
+    _logMirrorState('rebindVideoStreams');
   }
 
   Future<void> _disposeVideoRenderers() async {
@@ -3030,8 +3031,25 @@ class CallController extends GetxController {
 
   Future<bool> switchCamera() async {
     final switched = await _webrtcService.switchCamera();
-    if (switched) isFrontCamera.value = _webrtcService.isFrontCamera;
+    isFrontCamera.value = _webrtcService.isFrontCamera;
+    _logMirrorState('switchCamera(switched=$switched)');
     return switched;
+  }
+
+  /// Debug-only camera/mirror trace — tag `📹 VantMirror`.
+  void _logMirrorState(String where, {String extra = ''}) {
+    assert(() {
+      debugPrint(
+        '📹 VantMirror [$where] controller.isFrontCamera=${isFrontCamera.value} '
+        'service.isFrontCamera=${_webrtcService.isFrontCamera} '
+        'isCameraOn=${isCameraOn.value} '
+        'remoteMirror=false(always) localMirror=${isFrontCamera.value} '
+        'remoteStream=${remoteVideoStream.value != null} '
+        'localStream=${localVideoStream.value != null} '
+        'peerCameraOff=${peerCameraOff.value} $extra',
+      );
+      return true;
+    }());
   }
 
   /// Toggle speaker
