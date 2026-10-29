@@ -336,6 +336,8 @@ class CallController extends GetxController {
   @override
   void onInit() {
     super.onInit();
+    CallKitService.liveCallId = () => currentCallId.value;
+    unawaited(CallKitService().reconcileNativeCalls());
     debugPrint('📞 CallController onInit called');
     _lifecycleObserver = _CallLifecycleObserver(this);
     WidgetsBinding.instance.addObserver(_lifecycleObserver!);
@@ -761,6 +763,10 @@ class CallController extends GetxController {
   }
 
   void _didChangeAppLifecycleState(AppLifecycleState state) {
+    CallKitService.liveCallId = () => currentCallId.value;
+    if (state == AppLifecycleState.resumed) {
+      unawaited(CallKitService().reconcileNativeCalls());
+    }
     final prevState = _lastLifecycleState;
     _lastLifecycleState = state;
     // Android + PiP-eligible: on `paused` wait ~250ms and ask native whether
@@ -3337,6 +3343,7 @@ class CallController extends GetxController {
   void _handleCallTerminated(Map<String, dynamic> data) {
     final callId = data['callId'] as String?;
     debugPrint('📞 Call terminated: $data');
+    unawaited(CallKitService().reconcileNativeCalls(completedCallId: callId));
 
     // Only process if this is the current call (ignore if we have a different active call)
     if (callId != null &&
@@ -4072,6 +4079,8 @@ class CallController extends GetxController {
     remoteVideoStream.value = null;
     callDuration.value = '00:00';
     currentCallId.value = '';
+    CallKitService.liveCallId = () => currentCallId.value;
+    unawaited(CallKitService().reconcileNativeCalls(completedCallId: callId));
     isCaller.value = false;
     _latestIncomingCallData = null;
     _shownIncomingCallIds.clear();
