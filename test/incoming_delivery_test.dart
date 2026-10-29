@@ -106,20 +106,59 @@ void main() {
   });
 
   group('foreground ghost CallKit report (C1-i)', () {
-    test('foreground push reports to CallKit then ends the ghost record', () {
+    test('foreground push reports to CallKit, then awaits Dart ack before ending', () {
       final fn = section(
         source('ios/Runner/AppDelegate.swift'),
         'if isAppForeground {',
         'print("📱 PushKit: Showing CallKit UI',
       );
-      // Must report BEFORE ending — every VoIP push requires
+      // Must report BEFORE any end decision — every VoIP push requires
       // reportNewIncomingCall inside the push callback.
-      expect(fn, contains('markCallKitEndSilenced(serverCallId: serverCallId)'));
       expect(fn, contains('showCallkitIncoming(callData, fromPushKit: true)'));
-      expect(fn, contains('endCall(endData)'));
       expect(
         fn.indexOf('showCallkitIncoming'),
         lessThan(fn.indexOf('endCall(endData)')),
+      );
+      // The ghost end is gated on a Dart ack: the Flutter incoming screen
+      // must confirm it is showing this callId, with a ~1 s deadline.
+      expect(fn, contains("invokeMethod(\"confirmIncomingCallScreen\""));
+      expect(fn, contains('.now() + 1.0'));
+      expect(fn, contains('decideGhostEnd(false)'));
+      // The silence marker and endCall live inside the ack-confirmed branch —
+      // they may not run before the ack is evaluated.
+      final ackBranch = section(fn, 'if confirmed {', '} else {');
+      expect(ackBranch, contains('markCallKitEndSilenced'));
+      expect(ackBranch, contains('endCall(endData)'));
+      // No-ack path: CallKit UI stays, nothing is ended, nothing is sent.
+      final noAck = section(fn, '} else {', '}\n      if let controller');
+      expect(noAck, isNot(contains('endCall')));
+      expect(noAck, isNot(contains('markCallKitEndSilenced')));
+      expect(noAck, isNot(contains('respondToCall')));
+    });
+
+    test('Dart acks only when the Flutter incoming screen shows that callId', () {
+      final src = source('lib/features/call/call_controller.dart');
+      // Registry populated before the screen is pushed…
+      final show = section(
+        src,
+        'playIncomingRingtone();\n    _setCallScreenVisible(true);\n    _shownIncomingCallIds.add(incomingCallId);',
+        "Get.toNamed('/call/incoming', arguments: data);",
+      );
+      expect(show, contains('_shownIncomingCallIds.add(incomingCallId)'));
+      // …queried by the native handshake with a bounded wait under ~1 s…
+      final handler = section(
+        src,
+        "call.method == 'confirmIncomingCallScreen'",
+        "if (call.method == 'onCallAction')",
+      );
+      expect(handler, contains('_shownIncomingCallIds.contains'));
+      expect(handler, contains('Duration(milliseconds: 900)'));
+      expect(handler, contains('return true'));
+      // …and cleared when call state resets so a stale id cannot ack a
+      // future call's handshake.
+      expect(
+        section(src, 'void _resetCallState()', '_nativeCallHeld = false;'),
+        contains('_shownIncomingCallIds.clear()'),
       );
     });
 
@@ -178,13 +217,14 @@ void main() {
 
     test('documented edge: lock while ringing in foreground has no CallKit fallback', () {
       // When the phone locks during a foreground ring, the ghost CallKit
-      // record is already ended — the callee must unlock and answer in-app,
-      // or the call times out. Same as the pre-change behavior (foreground
-      // pushes were dropped entirely), so no regression; real CallKit only
-      // appears when the push arrives while already locked/backgrounded.
+      // record is already ended (after the Dart screen ack) — the callee
+      // must unlock and answer in-app, or the call times out. Same as the
+      // pre-change behavior (foreground pushes were dropped entirely), so
+      // no regression; real CallKit only appears when the push arrives
+      // while already locked/backgrounded — or when the ack never arrives.
       expect(
         source('ios/Runner/AppDelegate.swift'),
-        contains('reporting ghost to CallKit then ending'),
+        contains('awaiting Flutter-screen ack'),
       );
     });
   });

@@ -191,6 +191,12 @@ class CallController extends GetxController {
     'com.vant.chat/call_events',
   );
 
+  /// callIds whose Flutter incoming screen is currently shown. iOS queries
+  /// this via `confirmIncomingCallScreen` before it may silently end the
+  /// ghost CallKit record reported for the foreground VoIP-push contract —
+  /// no entry, no ack, CallKit UI stays up for the user to answer.
+  final Set<String> _shownIncomingCallIds = <String>{};
+
   // Reactive state
   final Rx<CallState> callState = CallState.idle.obs;
   final RxBool isMuted = false.obs;
@@ -1815,6 +1821,23 @@ class CallController extends GetxController {
     try {
       // Listen for call actions from native Android receiver/service
       _callChannel.setMethodCallHandler((call) async {
+        if (call.method == 'confirmIncomingCallScreen') {
+          // iOS PushKit foreground path: native reported the VoIP push to
+          // CallKit and may end the ghost record ONLY if the Flutter
+          // incoming screen is up for this callId. The socket event can land
+          // a beat after the push, so poll briefly — the whole wait stays
+          // under ~1 s so native's own deadline still governs.
+          final args = call.arguments as Map?;
+          final confirmCallId = args?['callId'] as String? ?? '';
+          final deadline = DateTime.now().add(
+            const Duration(milliseconds: 900),
+          );
+          while (DateTime.now().isBefore(deadline)) {
+            if (_shownIncomingCallIds.contains(confirmCallId)) return true;
+            await Future<void>.delayed(const Duration(milliseconds: 50));
+          }
+          return _shownIncomingCallIds.contains(confirmCallId);
+        }
         if (call.method == 'onCallAction') {
           final action = call.arguments['action'] as String?;
           final callId = call.arguments['callId'] as String?;
@@ -4051,6 +4074,7 @@ class CallController extends GetxController {
     currentCallId.value = '';
     isCaller.value = false;
     _latestIncomingCallData = null;
+    _shownIncomingCallIds.clear();
     _nativeCallHeld = false;
     _cameraWasOnBeforeNativeHold = false;
     _cameraPausedForBackground = false;
@@ -4410,8 +4434,11 @@ class CallController extends GetxController {
     }
 
     // Foreground and unlocked: ring and show the Flutter incoming call screen.
+    // Register the callId BEFORE navigating — native's ghost-end handshake
+    // can arrive at any point once the push was reported.
     _ringtoneService.playIncomingRingtone();
     _setCallScreenVisible(true);
+    _shownIncomingCallIds.add(incomingCallId);
     Get.toNamed('/call/incoming', arguments: data);
   }
 

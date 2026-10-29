@@ -518,17 +518,44 @@ import CommonCrypto
       // Apple's VoIP contract: EVERY incoming_call push must be reported to
       // CallKit, even when the Flutter socket path already owns the call UI.
       // The old early-return was a violation that gets VoIP pushes throttled.
-      // Report it, then immediately end the ghost CallKit record: the silence
-      // marker makes the resulting end/decline events no-ops both natively
-      // (respondToCall) and in Dart (_handleCallKitEvent), so the caller is
-      // never told the call ended and the Flutter incoming screen is undisturbed.
-      print("📱 PushKit: foreground — reporting ghost to CallKit then ending (callId=\(serverCallId))")
-      markCallKitEndSilenced(serverCallId: serverCallId)
+      // Report first (satisfies the contract), then ask Dart whether the
+      // Flutter incoming screen is actually up for this callId. Only on an
+      // explicit ack is the ghost CallKit record ended — the silence marker
+      // makes the resulting end/decline events no-ops both natively
+      // (respondToCall) and in Dart (_handleCallKitEvent). If no ack arrives
+      // within ~1 s (engine still starting, socket event not yet landed,
+      // another screen in the way), the CallKit UI STAYS so the user can
+      // still answer — and no decline/end is ever sent to the caller.
+      print("📱 PushKit: foreground — reported to CallKit, awaiting Flutter-screen ack (callId=\(serverCallId))")
       SwiftFlutterCallkitIncomingPlugin.sharedInstance?.showCallkitIncoming(callData, fromPushKit: true) {
-        let endData = flutter_callkit_incoming.Data(id: callKitId, nameCaller: nameCaller, handle: handle, type: isVideo ? 1 : 0)
-        endData.extra = ["callId": serverCallId] as NSDictionary
-        SwiftFlutterCallkitIncomingPlugin.sharedInstance?.endCall(endData)
         completion()
+      }
+      let decision = GhostEndDecision()
+      let endData = flutter_callkit_incoming.Data(id: callKitId, nameCaller: nameCaller, handle: handle, type: isVideo ? 1 : 0)
+      endData.extra = ["callId": serverCallId] as NSDictionary
+      let decideGhostEnd: (Bool) -> Void = { [weak self] confirmed in
+        guard !decision.decided else { return }
+        decision.decided = true
+        if confirmed {
+          self?.markCallKitEndSilenced(serverCallId: serverCallId)
+          SwiftFlutterCallkitIncomingPlugin.sharedInstance?.endCall(endData)
+          print("📱 PushKit: Flutter screen acked — ghost CallKit record ended silently")
+        } else {
+          print("📱 PushKit: no Flutter-screen ack — CallKit UI stays, user can answer")
+        }
+      }
+      if let controller = window?.rootViewController as? FlutterViewController {
+        FlutterMethodChannel(
+          name: "com.pear.messaging/call",
+          binaryMessenger: controller.binaryMessenger
+        ).invokeMethod("confirmIncomingCallScreen", arguments: ["callId": serverCallId]) { result in
+          decideGhostEnd((result as? Bool) == true)
+        }
+      }
+      // ~1 s deadline: whichever fires first — the Dart ack or this timer —
+      // settles the decision exactly once.
+      DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+        decideGhostEnd(false)
       }
       return
     }
@@ -549,6 +576,13 @@ import CommonCrypto
   /// Mirrored into UserDefaults so the Dart CallKitService can consume the
   /// same marker when the plugin event reaches Flutter.
   private var silencedCallKitIds = Set<String>()
+
+  /// One-shot latch for the foreground ghost-end handshake. All writers
+  /// (the Dart ack reply and the ~1 s fallback timer) run on the main
+  /// queue, so a plain bool is sufficient.
+  private final class GhostEndDecision {
+    var decided = false
+  }
 
   private func markCallKitEndSilenced(serverCallId: String) {
     guard !serverCallId.isEmpty else { return }
