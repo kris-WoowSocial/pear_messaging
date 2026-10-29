@@ -1878,7 +1878,7 @@ class CallController extends GetxController {
               _latestIncomingCallData = callData;
               Get.toNamed('/call/incoming', arguments: callData);
             }
-            return;
+            return null;
           }
 
           if (action == 'open_ongoing_call') {
@@ -1891,7 +1891,7 @@ class CallController extends GetxController {
                 Get.offAllNamed(activeCallRoute);
               }
             }
-            return;
+            return null;
           }
 
           if (action == 'call_held') {
