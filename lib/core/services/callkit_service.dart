@@ -16,6 +16,8 @@ import 'package:http/http.dart' as http;
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'call_breadcrumbs.dart';
+import 'callkit_reconciler.dart';
+import 'package:flutter/services.dart';
 
 /// CallKit Service - Handles native system incoming call UI
 /// This service runs in background isolate via FCM data messages
@@ -146,6 +148,7 @@ class CallKitService {
     // before Flutter was ready (race condition on first/early launch).
     if (Platform.isIOS) {
       await registerCachedVoipToken();
+      await reconcileNativeCalls();
     }
 
     debugPrint('📞 CallKitService: Initialized');
@@ -369,7 +372,53 @@ class CallKitService {
   }
 
   /// End active call
+  static String Function() liveCallId = () => '';
+  static final Set<String> _completedNativeCallIds = {};
+  static final Set<String> _silentNativeUuids = {};
+  static final _reconciler = CallKitReconciler(
+    activeCalls: () async {
+      final records = await FlutterCallkitIncoming.activeCalls();
+      return records is List
+          ? records.whereType<Map>().map((r) => Map<dynamic, dynamic>.from(r)).toList()
+          : [];
+    },
+    endUuid: (uuid) async {
+      _silentNativeUuids.add(uuid.toLowerCase());
+      try {
+        await const MethodChannel('com.pear.messaging/call')
+            .invokeMethod('endOrphanedCallKitCall', {'uuid': uuid});
+      } catch (_) {
+        _silentNativeUuids.remove(uuid.toLowerCase());
+        rethrow;
+      }
+    },
+  );
+
+  Future<void> reconcileNativeCalls({String? completedCallId}) async {
+    if (!Platform.isIOS) return;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      _completedNativeCallIds.addAll(
+        prefs.getStringList('completed_callkit_call_ids') ?? [],
+      );
+      await _reconciler.reconcile(
+        completedCallIds: _completedNativeCallIds,
+        liveCallId: liveCallId,
+        completedCallId: completedCallId,
+        saveCompleted: (ids) async {
+          await prefs.setStringList('completed_callkit_call_ids', ids.toList());
+        },
+      );
+    } catch (e) {
+      debugPrint('CallKit reconciliation failed: $e');
+    }
+  }
+
   Future<void> endCall(String callId) async {
+    if (Platform.isIOS) {
+      await reconcileNativeCalls(completedCallId: callId);
+      return;
+    }
     debugPrint('📞 CallKitService: Ending call $callId');
 
     final callKitUuid = _getCallKitUuid(callId);
@@ -431,6 +480,13 @@ class CallKitService {
   /// Handle CallKit events (accept, decline, end, timeout)
   Future<void> _handleCallKitEvent(CallEvent? event) async {
     if (event == null) return;
+    final eventUuid = event.body['id']?.toString().toLowerCase();
+    if ((event.event == Event.actionCallEnded ||
+            event.event == Event.actionCallDecline) &&
+        eventUuid != null && _silentNativeUuids.remove(eventUuid)) {
+      _activeCallKitCalls.remove(eventUuid);
+      return;
+    }
 
     debugPrint('📞 CallKitService: Event received - ${event.event}');
 

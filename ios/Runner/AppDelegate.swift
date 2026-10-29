@@ -694,7 +694,13 @@ import CommonCrypto
     UserDefaults.standard.synchronize()
   }
 
+  private var orphanEndUuids = Set<UUID>()
+  private let orphanCallController = CXCallController()
+
   private func respondToCall(call: Call, action: String) {
+    if action != "accept", orphanEndUuids.remove(call.uuid) != nil {
+      return
+    }
     // Ghost ends from the foreground report-then-end path must never reach
     // the server — the caller keeps ringing; the Flutter screen owns the call.
     if consumeSilencedCallEnd(call: call) {
@@ -736,6 +742,24 @@ import CommonCrypto
 
     callStateChannel?.setMethodCallHandler { [weak self] (call, result) in
       switch call.method {
+      case "endOrphanedCallKitCall":
+        guard let args = call.arguments as? [String: Any],
+              let rawUuid = args["uuid"] as? String,
+              let uuid = UUID(uuidString: rawUuid), let owner = self else {
+          result(FlutterError(code: "INVALID_UUID", message: "Missing call UUID", details: nil))
+          return
+        }
+        owner.orphanEndUuids.insert(uuid)
+        owner.orphanCallController.request(CXTransaction(action: CXEndCallAction(call: uuid))) { error in
+          DispatchQueue.main.async {
+            if let error = error {
+              owner.orphanEndUuids.remove(uuid)
+              result(FlutterError(code: "CALLKIT_END", message: error.localizedDescription, details: nil))
+            } else {
+              result(nil)
+            }
+          }
+        }
       case "setInCall":
         if let args = call.arguments as? [String: Any],
            let inCall = args["inCall"] as? Bool {
