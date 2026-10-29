@@ -2725,6 +2725,9 @@ class CallController extends GetxController {
       currentCallId.value = callId;
       remoteDeviceId.value = callerId;
       isCaller.value = false;
+      // callState is left at `ended` after the previous call — advance it to
+      // ringing now or the active screen flashes "Call ended" before Connecting.
+      callState.value = CallState.ringing;
       _videoRequested = incomingVideo;
       isVideoCall.value = incomingVideo && _videoCallingEnabled;
       isCameraOn.value = false;
@@ -4173,7 +4176,9 @@ class CallController extends GetxController {
     return switch (callState.value) {
       CallState.connected => callDuration.value,
       CallState.dialing => 'Calling…',
-      CallState.ringing => isCaller.value ? 'Ringing…' : 'Connecting…',
+      CallState.ringing => isCaller.value
+          ? 'Ringing…'
+          : 'Securing Encrypted Tunnel…',
       CallState.ended => 'Call ended',
       CallState.idle => 'Connecting…',
     };
