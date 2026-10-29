@@ -13,6 +13,7 @@ import 'package:flutter_callkit_incoming/entities/notification_params.dart';
 import 'package:flutter_callkit_incoming/flutter_callkit_incoming.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:http/http.dart' as http;
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'call_breadcrumbs.dart';
 
@@ -143,26 +144,35 @@ class CallKitService {
 
     // Re-register any existing VoIP token that AppDelegate may have received
     // before Flutter was ready (race condition on first/early launch).
-    // flutter_callkit_incoming caches the last token from PushKit.
     if (Platform.isIOS) {
-      try {
-        final deviceTokens =
-            await FlutterCallkitIncoming.getDevicePushTokenVoIP();
-        final cachedToken = deviceTokens as String?;
-        if (cachedToken != null && cachedToken.isNotEmpty) {
-          debugPrint(
-            '📞 CallKitService: Re-registering cached VoIP token on init: ${cachedToken.substring(0, 10)}...',
-          );
-          await _registerVoipToken(cachedToken);
-        }
-      } catch (e) {
-        debugPrint(
-          '⚠️ CallKitService: Could not re-register cached VoIP token: $e',
-        );
-      }
+      await registerCachedVoipToken();
     }
 
     debugPrint('📞 CallKitService: Initialized');
+  }
+
+  /// Re-register the cached PushKit VoIP token with the backend.
+  /// flutter_callkit_incoming caches the last token natively, so this can be
+  /// called any time: app start, device_id (re)generation, token rotation.
+  Future<void> registerCachedVoipToken() async {
+    if (!Platform.isIOS) return;
+    // Same regional gate as initialize(): registering a token for a
+    // CallKit-disabled region would surface CallKit via the native push path.
+    if (!_isCallKitEnabled) return;
+    try {
+      final cachedToken =
+          await FlutterCallkitIncoming.getDevicePushTokenVoIP() as String?;
+      if (cachedToken != null && cachedToken.isNotEmpty) {
+        debugPrint(
+          '📞 CallKitService: Registering cached VoIP token: ${cachedToken.substring(0, 10)}...',
+        );
+        await _registerVoipToken(cachedToken);
+      }
+    } catch (e) {
+      debugPrint(
+        '⚠️ CallKitService: Could not re-register cached VoIP token: $e',
+      );
+    }
   }
 
   /// Show incoming call notification via native system UI
@@ -392,6 +402,32 @@ class CallKitService {
     );
   }
 
+  /// One-shot consume of a "ghost end" marker: the native foreground path
+  /// reports every incoming VoIP push to CallKit (Apple's contract) and then
+  /// immediately ends the record. The resulting decline/end event for that
+  /// callId must be swallowed — the Flutter socket-driven screen owns the
+  /// call and the caller must keep ringing.
+  ///
+  /// Only the FIRST event for a marked callId is silenced (the marker is
+  /// removed on consume): a real decline/end of a different call is never
+  /// affected, and a later real end for the same callId (e.g. after the
+  /// Flutter screen accepted and CallKit re-engaged) processes normally.
+  Future<bool> _consumeSilencedCallKitEvent(String? serverCallId) async {
+    if (serverCallId == null || serverCallId.isEmpty) return false;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString('silenced_call_ids') ?? '';
+      if (raw.isEmpty) return false;
+      final ids =
+          raw.split(',').where((s) => s.isNotEmpty).toSet();
+      if (!ids.remove(serverCallId)) return false;
+      await prefs.setString('silenced_call_ids', ids.join(','));
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
   /// Handle CallKit events (accept, decline, end, timeout)
   Future<void> _handleCallKitEvent(CallEvent? event) async {
     if (event == null) return;
@@ -453,6 +489,12 @@ class CallKitService {
         break;
 
       case Event.actionCallDecline:
+        if (await _consumeSilencedCallKitEvent(_extractCallId(event.body))) {
+          debugPrint(
+            '📞 CallKitService: silenced ghost decline — foreground push reported for compliance, caller keeps ringing',
+          );
+          break;
+        }
         // User declined the call via native UI
         debugPrint('📞 CallKitService: Call declined via native UI');
         logCallBreadcrumb(CallBreadcrumb.decline);
@@ -475,6 +517,12 @@ class CallKitService {
         break;
 
       case Event.actionCallEnded:
+        if (await _consumeSilencedCallKitEvent(_extractCallId(event.body))) {
+          debugPrint(
+            '📞 CallKitService: silenced ghost end — no caller-facing signal, Flutter screen untouched',
+          );
+          break;
+        }
         // Call ended
         debugPrint('📞 CallKitService: Call ended');
         logCallBreadcrumb(CallBreadcrumb.ended);
@@ -822,50 +870,78 @@ class CallKitService {
     }
   }
 
-  /// Register iOS VoIP token with backend
-  /// Called when PushKit provides a new VoIP push token
-  Future<void> _registerVoipToken(String token) async {
+  /// Register iOS VoIP token with backend.
+  /// Called when PushKit provides a new VoIP push token, on every app start,
+  /// and after device_id (re)generation. Retries with backoff — a single
+  /// failed POST must not leave the server with no/stale token until the
+  /// next launch.
+  Future<void> _registerVoipToken(String token, {int maxAttempts = 4}) async {
+    String? appVersion;
+    String? appBuild;
     try {
-      // device_id is stored in SharedPreferences (same as the rest of this service)
-      final prefs = await SharedPreferences.getInstance();
-      final deviceId = prefs.getString('device_id');
-      if (deviceId == null || deviceId.isEmpty) {
-        debugPrint(
-          '⚠️ CallKitService: Cannot register VoIP token - no device_id in SharedPreferences',
-        );
-        return;
+      final info = await PackageInfo.fromPlatform();
+      appVersion = info.version;
+      appBuild = info.buildNumber;
+    } catch (_) {
+      appVersion = '';
+      appBuild = '';
+    }
+
+    for (var attempt = 0; attempt < maxAttempts; attempt++) {
+      if (attempt > 0) {
+        await Future.delayed(Duration(seconds: attempt == 1 ? 2 : 5));
       }
+      try {
+        // device_id is stored in SharedPreferences (same as the rest of this
+        // service); it may not be written yet on a cold first launch.
+        final prefs = await SharedPreferences.getInstance();
+        final deviceId = prefs.getString('device_id');
+        if (deviceId == null || deviceId.isEmpty) {
+          debugPrint(
+            '⚠️ CallKitService: device_id not ready yet '
+            '(attempt ${attempt + 1}/$maxAttempts)',
+          );
+          continue;
+        }
 
-      // NetworkConstants.voipTokenPath is already '/api/devices/voip-token'
-      // so just prepend the base URL — do NOT add apiPath here (avoids double /api)
-      final uri = Uri.parse(
-        '${NetworkConstants.apiBaseUrl}${NetworkConstants.voipTokenPath}',
-      );
-
-      final apnsEnvironment = _apnsEnvironmentFromPrefs(prefs);
-
-      final response = await http.post(
-        uri,
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'deviceId': deviceId,
-          'voipToken': token,
-          'platform': 'ios',
-          'apnsEnvironment': apnsEnvironment,
-        }),
-      );
-
-      if (response.statusCode == 200) {
-        debugPrint(
-          '📞 CallKitService: VoIP token registered successfully for device $deviceId',
+        // NetworkConstants.voipTokenPath is already '/api/devices/voip-token'
+        // so just prepend the base URL — do NOT add apiPath here (avoids double /api)
+        final uri = Uri.parse(
+          '${NetworkConstants.apiBaseUrl}${NetworkConstants.voipTokenPath}',
         );
-      } else {
+
+        final apnsEnvironment = _apnsEnvironmentFromPrefs(prefs);
+
+        final response = await http.post(
+          uri,
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({
+            'deviceId': deviceId,
+            'voipToken': token,
+            'platform': 'ios',
+            'apnsEnvironment': apnsEnvironment,
+            'appVersion': appVersion,
+            'appBuild': appBuild,
+          }),
+        );
+
+        if (response.statusCode == 200) {
+          debugPrint(
+            '📞 CallKitService: VoIP token registered successfully for device $deviceId',
+          );
+          return;
+        }
         debugPrint(
-          '⚠️ CallKitService: VoIP token registration failed: ${response.statusCode} body=${response.body}',
+          '⚠️ CallKitService: VoIP token registration failed '
+          '(attempt ${attempt + 1}/$maxAttempts): '
+          '${response.statusCode} body=${response.body}',
+        );
+      } catch (e) {
+        debugPrint(
+          '❌ CallKitService: Error registering VoIP token '
+          '(attempt ${attempt + 1}/$maxAttempts): $e',
         );
       }
-    } catch (e) {
-      debugPrint('❌ CallKitService: Error registering VoIP token: $e');
     }
   }
 
