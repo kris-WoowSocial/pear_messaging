@@ -83,6 +83,8 @@ class ChatScreen extends GetView<ChatController> {
                     fontWeight: FontWeight.bold,
                     color: Colors.black,
                   ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                 ),
               ),
               Obx(
@@ -96,9 +98,13 @@ class ChatScreen extends GetView<ChatController> {
                           fontWeight: FontWeight.w600,
                           color: Colors.grey,
                         ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
                       )
                     : Text(
                         controller.recipientStatus.value,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
                         style: TextStyle(
                           fontSize: AppSizes.fontS,
                           fontWeight: FontWeight.w600,
@@ -144,21 +150,24 @@ class ChatScreen extends GetView<ChatController> {
                 },
                 tooltip: 'Audio Call',
               ),
-            Obx(() {
-              if (controller.isGroup ||
-                  !Get.isRegistered<FeatureFlagService>() ||
-                  !Get.find<FeatureFlagService>().videoCalling.value) {
-                return const SizedBox.shrink();
-              }
-              return IconButton(
-                icon: const Icon(Icons.videocam, color: Colors.black),
-                onPressed: () {
-                  debugPrint('📞 Video call button pressed');
-                  _startVideoCall();
-                },
-                tooltip: 'Video Call',
-              );
-            }),
+            if (!controller.isGroup &&
+                Get.isRegistered<FeatureFlagService>())
+              Obx(
+                () =>
+                    Get.find<FeatureFlagService>().videoCalling.value
+                        ? IconButton(
+                            icon: const Icon(
+                              Icons.videocam,
+                              color: Colors.black,
+                            ),
+                            onPressed: () {
+                              debugPrint('📞 Video call button pressed');
+                              _startVideoCall();
+                            },
+                            tooltip: 'Video Call',
+                          )
+                        : const SizedBox.shrink(),
+              ),
             IconButton(
               icon: const Icon(Icons.settings, color: Colors.black),
               onPressed: () {
