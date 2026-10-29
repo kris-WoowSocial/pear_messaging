@@ -1,18 +1,26 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io' show Platform;
 import 'package:flutter/material.dart';
 import 'package:flutter_branch_sdk/flutter_branch_sdk.dart';
 import 'package:get/get.dart';
 import 'package:pear_messaging/routes/app_routes.dart';
 import 'package:share_plus/share_plus.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:http/http.dart' as http;
 import '../constants/network_constants.dart';
 import '../../storage/models/connection_request_entity.dart';
 import '../../storage/models/message_entity.dart';
 import '../../features/chat_list/chat_list_controller.dart';
 import 'api_service.dart';
+import 'invite_prompt_gate.dart';
 import 'local_storage_service.dart';
 import 'invitation_storage_service.dart';
+
+Future<bool> _nameSetupCompleted() async {
+  final prefs = await SharedPreferences.getInstance();
+  return prefs.getBool('initial_name_setup_completed') ?? false;
+}
 
 class BranchService extends GetxService {
   final LocalStorageService _storageService = Get.find();
@@ -36,6 +44,24 @@ class BranchService extends GetxService {
     debugPrint('🌿 Initializing Branch SDK...');
 
     try {
+      // On iOS, FlutterBranchSdk.init() triggers checkPasteboardOnInstall(),
+      // which reads the pasteboard and — on a fresh install — fires the
+      // system "would like to paste" prompt immediately. On first launch the
+      // splash controller first shows the name sheet and a short paste
+      // explainer; init waits for that so the prompt never surprises or
+      // stacks with other prompts. A timeout caps the wait so deep linking
+      // can never wedge if the gate is never released.
+      if (Platform.isIOS &&
+          !InvitePromptGate.pasteCheckAllowed &&
+          !(await _nameSetupCompleted())) {
+        debugPrint('🌿 iOS first launch — holding Branch init for invite gate');
+        await InvitePromptGate.pasteCheckReady.timeout(
+          const Duration(seconds: 120),
+          onTimeout: () => debugPrint('⚠️ Invite gate timed out, init anyway'),
+        );
+      }
+      InvitePromptGate.allowPasteCheck();
+
       // Initialize Branch SDK with tracking disabled for the no-tracking variant.
       // Deep links and link generation still work, but no user/device data is
       // sent for attribution or advertising.

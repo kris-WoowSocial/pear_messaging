@@ -32,7 +32,9 @@ void main() {
     test('heal runs on connect, post-accept, and resume', () {
       expect(
         controller,
-        contains("case 'connected':\n        _ringtoneService.stopRingtone();"),
+        contains(
+          "case 'connected':\n        _cancelDialWatchdog();\n        _ringtoneService.stopRingtone();",
+        ),
       );
       final occurrences =
           '_ensureLocalVideoStateBound()'.allMatches(controller).length;

@@ -191,6 +191,12 @@ class CallController extends GetxController {
     'com.vant.chat/call_events',
   );
 
+  /// callIds whose Flutter incoming screen is currently shown. iOS queries
+  /// this via `confirmIncomingCallScreen` before it may silently end the
+  /// ghost CallKit record reported for the foreground VoIP-push contract —
+  /// no entry, no ack, CallKit UI stays up for the user to answer.
+  final Set<String> _shownIncomingCallIds = <String>{};
+
   // Reactive state
   final Rx<CallState> callState = CallState.idle.obs;
   final RxBool isMuted = false.obs;
@@ -297,6 +303,15 @@ class CallController extends GetxController {
   AppLifecycleState _lastLifecycleState = AppLifecycleState.resumed;
   Timer? _pipPauseDebounce;
   Timer? _pipCameraCutWatcher;
+
+  // Caller-side outreach watchdog: if neither peer_ringing nor a rejection/
+  // termination arrives within this window, the callee is unreachable (dead
+  // VoIP token, dead caller socket, server gate) — fail visibly instead of
+  // sitting on "Dialing…" until the server's 45s ring timeout.
+  static const Duration _dialWatchdogTimeout = Duration(seconds: 20);
+  Timer? _dialWatchdog;
+  String _dialWatchdogTarget = '';
+  bool _dialWatchdogVideo = false;
   bool _cameraCutInPip = false;
   bool _videoCallUiVisible = false;
 
@@ -1806,6 +1821,23 @@ class CallController extends GetxController {
     try {
       // Listen for call actions from native Android receiver/service
       _callChannel.setMethodCallHandler((call) async {
+        if (call.method == 'confirmIncomingCallScreen') {
+          // iOS PushKit foreground path: native reported the VoIP push to
+          // CallKit and may end the ghost record ONLY if the Flutter
+          // incoming screen is up for this callId. The socket event can land
+          // a beat after the push, so poll briefly — the whole wait stays
+          // under ~1 s so native's own deadline still governs.
+          final args = call.arguments as Map?;
+          final confirmCallId = args?['callId'] as String? ?? '';
+          final deadline = DateTime.now().add(
+            const Duration(milliseconds: 900),
+          );
+          while (DateTime.now().isBefore(deadline)) {
+            if (_shownIncomingCallIds.contains(confirmCallId)) return true;
+            await Future<void>.delayed(const Duration(milliseconds: 50));
+          }
+          return _shownIncomingCallIds.contains(confirmCallId);
+        }
         if (call.method == 'onCallAction') {
           final action = call.arguments['action'] as String?;
           final callId = call.arguments['callId'] as String?;
@@ -1846,7 +1878,7 @@ class CallController extends GetxController {
               _latestIncomingCallData = callData;
               Get.toNamed('/call/incoming', arguments: callData);
             }
-            return;
+            return null;
           }
 
           if (action == 'open_ongoing_call') {
@@ -1859,7 +1891,7 @@ class CallController extends GetxController {
                 Get.offAllNamed(activeCallRoute);
               }
             }
-            return;
+            return null;
           }
 
           if (action == 'call_held') {
@@ -2387,6 +2419,7 @@ class CallController extends GetxController {
       // callState is left at `ended` after the previous call — advance it to
       // dialing now or the screen flashes "Call ended" before Connecting.
       callState.value = CallState.dialing;
+      _startDialWatchdog(calleeDeviceId, wantsVideo);
       remoteDeviceId.value = calleeDeviceId;
       remoteAvatarUrl.value = '';
       isCaller.value = true;
@@ -3532,7 +3565,7 @@ class CallController extends GetxController {
             'callerFp': base64Encode(begin.fp),
             'sdpOfferEnc': await crypto.encryptOffer(sdp),
           };
-          _socketService.initiateCall(
+          final offerSent = _socketService.initiateCall(
             callerId: callerDeviceId,
             calleeId: remoteDeviceId.value,
             callerName: callerDisplayName.value.isNotEmpty
@@ -3541,6 +3574,10 @@ class CallController extends GetxController {
             isVideo: _videoRequested && _videoCallingEnabled,
             crypto: cryptoPayload,
           );
+          if (!offerSent) {
+            _failOutreachUnreachable();
+            return;
+          }
           debugPrint('📞 Encrypted SDP offer sent');
         } catch (e) {
           debugPrint('❌ Encrypted call offer failed: $e');
@@ -3549,7 +3586,7 @@ class CallController extends GetxController {
         return;
       }
 
-      _socketService.initiateCall(
+      final offerSent = _socketService.initiateCall(
         callerId: callerDeviceId,
         calleeId: remoteDeviceId.value,
         sdpOffer: sdp,
@@ -3557,6 +3594,10 @@ class CallController extends GetxController {
             callerDisplayName.value.isNotEmpty ? callerDisplayName.value : null,
         isVideo: _videoRequested && _videoCallingEnabled,
       );
+      if (!offerSent) {
+        _failOutreachUnreachable();
+        return;
+      }
       debugPrint(
         '📞 SDP offer sent to socket with callerName: ${callerDisplayName.value}',
       );
@@ -3650,7 +3691,65 @@ class CallController extends GetxController {
   /// Handle peer ringing notification
   void _handlePeerRinging(Map<String, dynamic> data) {
     debugPrint('📞 Peer is ringing: $data');
+    _cancelDialWatchdog();
     callState.value = CallState.ringing;
+  }
+
+  /// Arm the caller-side outreach watchdog. It is cancelled the moment any
+  /// forward progress is observed (peer_ringing, connected) or the call is
+  /// reset for any reason (rejection, termination, user hang-up).
+  void _startDialWatchdog(String target, bool isVideo) {
+    _cancelDialWatchdog();
+    _dialWatchdogTarget = target;
+    _dialWatchdogVideo = isVideo;
+    _dialWatchdog = Timer(_dialWatchdogTimeout, _onDialWatchdogFired);
+  }
+
+  void _cancelDialWatchdog() {
+    _dialWatchdog?.cancel();
+    _dialWatchdog = null;
+  }
+
+  void _onDialWatchdogFired() {
+    _dialWatchdog = null;
+    if (!isCaller.value || callState.value != CallState.dialing) return;
+    final target = _dialWatchdogTarget;
+    final wasVideo = _dialWatchdogVideo;
+    final peerName = target.isNotEmpty
+        ? (remoteDisplayName.value.isNotEmpty
+            ? remoteDisplayName.value
+            : StringUtils.generateFriendlyName(target))
+        : 'The other person';
+    debugPrint(
+      '📞 Dial watchdog: no ringing/rejection within '
+      '${_dialWatchdogTimeout.inSeconds}s for $target — failing visibly',
+    );
+    logCallBreadcrumb(CallBreadcrumb.ended, reason: 'unreachable_timeout');
+    // endCall() emits call terminate (or queues it via _pendingEndCall) so a
+    // delivered-but-unacknowledged callee does not ring on, then resets state.
+    endCall();
+    _showFriendlyCallMessage(FriendlyCallMessage(
+      title: 'Could not reach',
+      body: "$peerName couldn't be reached. Try again.",
+      actionLabel: 'Retry',
+      action: target.isEmpty ? null : () => startCall(target, isVideo: wasVideo),
+    ));
+  }
+
+  /// The call_initiate emit was dropped because the socket is disconnected.
+  /// Fail immediately (don't wait for the watchdog) and offer a retry.
+  void _failOutreachUnreachable() {
+    debugPrint('❌ call_initiate not sent — socket disconnected');
+    final target = remoteDeviceId.value;
+    final wasVideo = isCaller.value && _videoRequested;
+    _webrtcService.endCall();
+    _resetCallState();
+    _showFriendlyCallMessage(FriendlyCallMessage(
+      title: 'Could not reach',
+      body: 'No connection — check your network and try again.',
+      actionLabel: 'Retry',
+      action: target.isEmpty ? null : () => startCall(target, isVideo: wasVideo),
+    ));
   }
 
   /// Handle call state change from WebRTC
@@ -3668,6 +3767,7 @@ class CallController extends GetxController {
         callState.value = CallState.ringing;
         break;
       case 'connected':
+        _cancelDialWatchdog();
         _ringtoneService.stopRingtone();
         callState.value = CallState.connected;
         isReconnecting.value = false;
@@ -3951,6 +4051,7 @@ class CallController extends GetxController {
 
   /// Reset call state
   void _resetCallState() {
+    _cancelDialWatchdog();
     _resetCryptoState();
     final callId = currentCallId.value;
     _markRecentlyEnded(callId);
@@ -3973,6 +4074,7 @@ class CallController extends GetxController {
     currentCallId.value = '';
     isCaller.value = false;
     _latestIncomingCallData = null;
+    _shownIncomingCallIds.clear();
     _nativeCallHeld = false;
     _cameraWasOnBeforeNativeHold = false;
     _cameraPausedForBackground = false;
@@ -4332,8 +4434,11 @@ class CallController extends GetxController {
     }
 
     // Foreground and unlocked: ring and show the Flutter incoming call screen.
+    // Register the callId BEFORE navigating — native's ghost-end handshake
+    // can arrive at any point once the push was reported.
     _ringtoneService.playIncomingRingtone();
     _setCallScreenVisible(true);
+    _shownIncomingCallIds.add(incomingCallId);
     Get.toNamed('/call/incoming', arguments: data);
   }
 

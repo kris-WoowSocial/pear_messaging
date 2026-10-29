@@ -23,6 +23,7 @@ import 'app_lifecycle_service.dart';
 import 'badge_service.dart';
 import 'callkit_service.dart';
 import 'call_foreground_service.dart';
+import 'invite_prompt_gate.dart';
 import '../../features/call/call_controller.dart';
 
 // Global notification settings for our custom notifications
@@ -680,6 +681,25 @@ class FCMService extends GetxService {
           if (!status.isGranted) {
             debugPrint(
               '⚠️ Android notification permission not granted - notifications may not work',
+            );
+          }
+        }
+
+        // On an iOS first launch this prompt must not stack with the Branch
+        // paste prompt — wait until the invite step (name sheet → paste
+        // explainer → invite match or fallback sheet) is done. Timed out so
+        // a stuck gate can never kill notifications.
+        if (Platform.isIOS) {
+          final prefs = await SharedPreferences.getInstance();
+          final nameSetupDone =
+              prefs.getBool('initial_name_setup_completed') ?? false;
+          if (!nameSetupDone && !InvitePromptGate.isInviteStepDone) {
+            debugPrint('📱 iOS first launch — deferring notification prompt '
+                'until the invite step completes');
+            await InvitePromptGate.inviteDone.timeout(
+              const Duration(seconds: 180),
+              onTimeout: () =>
+                  debugPrint('⚠️ Invite gate timed out — asking anyway'),
             );
           }
         }

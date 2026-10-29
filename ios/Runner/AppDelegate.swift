@@ -46,12 +46,20 @@ import CommonCrypto
     // Set status bar style for iOS
     UIApplication.shared.statusBarStyle = .darkContent
     
-    // Request notification permissions early
-    UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .badge, .sound]) { granted, error in
-      print("📱 iOS Notification permission granted: \(granted)")
-      if let error = error {
-        print("📱 iOS Notification permission error: \(error)")
+    // Request notification permissions early — but NOT on first launch.
+    // On a fresh install the system prompt would stack with the Branch
+    // pasteboard prompt and the in-app name sheet; FCMService asks later,
+    // after the invite step completes. The flag is the SharedPreferences
+    // key ("flutter."-prefixed) written by the Dart name-setup flow.
+    if UserDefaults.standard.bool(forKey: "flutter.initial_name_setup_completed") {
+      UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .badge, .sound]) { granted, error in
+        print("📱 iOS Notification permission granted: \(granted)")
+        if let error = error {
+          print("📱 iOS Notification permission error: \(error)")
+        }
       }
+    } else {
+      print("📱 First launch — deferring notification permission to the invite step")
     }
     
     // Register for remote notifications
@@ -303,6 +311,12 @@ import CommonCrypto
   override func applicationDidBecomeActive(_ application: UIApplication) {
     super.applicationDidBecomeActive(application)
     isAppForeground = true
+    // Re-upload the VoIP token on every activation: covers device_id writes
+    // that landed after the first PushKit callback, device_id regeneration,
+    // and any earlier POST that failed on a cold network.
+    if let token = latestVoipToken {
+      registerVoipTokenWithBackend(token: token)
+    }
   }
 
   override func applicationWillResignActive(_ application: UIApplication) {
@@ -321,9 +335,12 @@ import CommonCrypto
 
   // MARK: - PKPushRegistryDelegate
 
+  private var latestVoipToken: String?
+
   func pushRegistry(_ registry: PKPushRegistry, didUpdate pushCredentials: PKPushCredentials, for type: PKPushType) {
     let tokenParts = pushCredentials.token.map { String(format: "%02.2hhx", $0) }
     let token = tokenParts.joined()
+    latestVoipToken = token
     print("📱 PushKit: VoIP token received: \(token)")
 
     // Forward token to flutter_callkit_incoming so it can emit it to Dart
@@ -388,11 +405,21 @@ import CommonCrypto
 
   /// Register VoIP token with the backend server directly from native Swift.
   /// Uses URLSession so it works even before Flutter is fully initialized.
-  private func registerVoipTokenWithBackend(token: String) {
+  /// Retries with backoff: covers both "device_id not written yet" (PushKit
+  /// fires before Flutter's initializeCriticalServices) and transient POST
+  /// failures on a cold network.
+  private func registerVoipTokenWithBackend(token: String, attempt: Int = 0) {
     // Flutter SharedPreferences stores keys with "flutter." prefix in NSUserDefaults.standard
     guard let deviceId = UserDefaults.standard.string(forKey: "flutter.device_id"),
           !deviceId.isEmpty else {
-      print("📱 PushKit: device_id not in UserDefaults yet — Flutter will register token after init")
+      if attempt < 5 {
+        print("📱 PushKit: device_id not in UserDefaults yet — retrying token upload (attempt \(attempt + 1))")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+          self?.registerVoipTokenWithBackend(token: token, attempt: attempt + 1)
+        }
+      } else {
+        print("📱 PushKit: device_id still missing after retries — Dart re-register path will cover")
+      }
       return
     }
 
@@ -402,21 +429,31 @@ import CommonCrypto
     request.httpMethod = "POST"
     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
+    let info = Bundle.main.infoDictionary
     let body: [String: String] = [
       "deviceId": deviceId,
       "voipToken": token,
       "platform": "ios",
-      "apnsEnvironment": currentApsEnvironment()
+      "apnsEnvironment": currentApsEnvironment(),
+      "appVersion": (info?["CFBundleShortVersionString"] as? String) ?? "",
+      "appBuild": (info?["CFBundleVersion"] as? String) ?? ""
     ]
 
     guard let httpBody = try? JSONSerialization.data(withJSONObject: body) else { return }
     request.httpBody = httpBody
 
-    URLSession.shared.dataTask(with: request) { _, response, error in
-      if let error = error {
-        print("📱 PushKit: VoIP token registration failed: \(error.localizedDescription)")
-      } else if let httpResponse = response as? HTTPURLResponse {
-        print("📱 PushKit: VoIP token registered — HTTP \(httpResponse.statusCode) for device \(deviceId)")
+    URLSession.shared.dataTask(with: request) { [weak self] _, response, error in
+      let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+      if error == nil, statusCode == 200 {
+        print("📱 PushKit: VoIP token registered — HTTP 200 for device \(deviceId)")
+        return
+      }
+      print("📱 PushKit: VoIP token registration failed (status=\(statusCode), error=\(error?.localizedDescription ?? "none"), attempt=\(attempt))")
+      if attempt < 3 {
+        let delay = attempt == 0 ? 2.0 : 5.0
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+          self?.registerVoipTokenWithBackend(token: token, attempt: attempt + 1)
+        }
       }
     }.resume()
   }
@@ -447,13 +484,8 @@ import CommonCrypto
       return
     }
 
-    if isAppForeground {
-      print("📱 PushKit: app is active, custom Flutter call screen will handle incoming call")
-      completion()
-      return
-    }
-
-    // Extract call data from VoIP push payload
+    // Extract call data from VoIP push payload (needed by BOTH the foreground
+    // ghost-report path and the normal CallKit path below).
     let serverCallId = payload.dictionaryPayload["callId"] as? String ?? payload.dictionaryPayload["id"] as? String ?? ""
     let handle = payload.dictionaryPayload["callerId"] as? String ?? ""
     // Prefer the contact name the user saved locally — the push payload only
@@ -472,11 +504,8 @@ import CommonCrypto
     // deterministic UUID v5 so it matches the id generated by Dart's CallKitService.
     let callKitId = serverCallId.isEmpty ? UUID().uuidString : (uuidV5(from: serverCallId)?.uuidString ?? UUID().uuidString)
 
-    print("📱 PushKit: Showing CallKit UI — callId=\(callKitId) caller=\(nameCaller) isVideo=\(isVideo)")
-
-    // Build CallKit data and show native incoming call UI on the lock screen.
-    // CRITICAL: iOS 13+ requires reportNewIncomingCall within this method's call stack.
-    // fromPushKit: true satisfies that requirement.
+    // Build CallKit data (shared by the foreground ghost report and the
+    // normal lock-screen report below).
     let callData = flutter_callkit_incoming.Data(id: callKitId, nameCaller: nameCaller, handle: handle, type: isVideo ? 1 : 0)
     var extra = payload.dictionaryPayload
     extra["callId"] = serverCallId
@@ -484,9 +513,97 @@ import CommonCrypto
     // the same name the lock screen did.
     extra["callerName"] = nameCaller
     callData.extra = extra as NSDictionary
+
+    if isAppForeground {
+      // Apple's VoIP contract: EVERY incoming_call push must be reported to
+      // CallKit, even when the Flutter socket path already owns the call UI.
+      // The old early-return was a violation that gets VoIP pushes throttled.
+      // Report first (satisfies the contract), then ask Dart whether the
+      // Flutter incoming screen is actually up for this callId. Only on an
+      // explicit ack is the ghost CallKit record ended — the silence marker
+      // makes the resulting end/decline events no-ops both natively
+      // (respondToCall) and in Dart (_handleCallKitEvent). If no ack arrives
+      // within ~1 s (engine still starting, socket event not yet landed,
+      // another screen in the way), the CallKit UI STAYS so the user can
+      // still answer — and no decline/end is ever sent to the caller.
+      print("📱 PushKit: foreground — reported to CallKit, awaiting Flutter-screen ack (callId=\(serverCallId))")
+      SwiftFlutterCallkitIncomingPlugin.sharedInstance?.showCallkitIncoming(callData, fromPushKit: true) {
+        completion()
+      }
+      let decision = GhostEndDecision()
+      let endData = flutter_callkit_incoming.Data(id: callKitId, nameCaller: nameCaller, handle: handle, type: isVideo ? 1 : 0)
+      endData.extra = ["callId": serverCallId] as NSDictionary
+      let decideGhostEnd: (Bool) -> Void = { [weak self] confirmed in
+        guard !decision.decided else { return }
+        decision.decided = true
+        if confirmed {
+          self?.markCallKitEndSilenced(serverCallId: serverCallId)
+          SwiftFlutterCallkitIncomingPlugin.sharedInstance?.endCall(endData)
+          print("📱 PushKit: Flutter screen acked — ghost CallKit record ended silently")
+        } else {
+          print("📱 PushKit: no Flutter-screen ack — CallKit UI stays, user can answer")
+        }
+      }
+      if let controller = window?.rootViewController as? FlutterViewController {
+        FlutterMethodChannel(
+          name: "com.pear.messaging/call",
+          binaryMessenger: controller.binaryMessenger
+        ).invokeMethod("confirmIncomingCallScreen", arguments: ["callId": serverCallId]) { result in
+          decideGhostEnd((result as? Bool) == true)
+        }
+      }
+      // ~1 s deadline: whichever fires first — the Dart ack or this timer —
+      // settles the decision exactly once.
+      DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+        decideGhostEnd(false)
+      }
+      return
+    }
+
+    print("📱 PushKit: Showing CallKit UI — callId=\(callKitId) caller=\(nameCaller) isVideo=\(isVideo)")
+
+    // Build CallKit data and show native incoming call UI on the lock screen.
+    // CRITICAL: iOS 13+ requires reportNewIncomingCall within this method's call stack.
+    // fromPushKit: true satisfies that requirement.
     SwiftFlutterCallkitIncomingPlugin.sharedInstance?.showCallkitIncoming(callData, fromPushKit: true) {
       completion()
     }
+  }
+
+  // MARK: - Silenced CallKit ghost ends (foreground VoIP pushes)
+
+  /// Server callIds whose next CallKit end/decline event must be swallowed.
+  /// Mirrored into UserDefaults so the Dart CallKitService can consume the
+  /// same marker when the plugin event reaches Flutter.
+  private var silencedCallKitIds = Set<String>()
+
+  /// One-shot latch for the foreground ghost-end handshake. All writers
+  /// (the Dart ack reply and the ~1 s fallback timer) run on the main
+  /// queue, so a plain bool is sufficient.
+  private final class GhostEndDecision {
+    var decided = false
+  }
+
+  private func markCallKitEndSilenced(serverCallId: String) {
+    guard !serverCallId.isEmpty else { return }
+    silencedCallKitIds.insert(serverCallId)
+    let existing = UserDefaults.standard.string(forKey: "flutter.silenced_call_ids") ?? ""
+    var ids = Set(existing.split(separator: ",").map(String.init).filter { !$0.isEmpty })
+    ids.insert(serverCallId)
+    UserDefaults.standard.set(ids.joined(separator: ","), forKey: "flutter.silenced_call_ids")
+    UserDefaults.standard.synchronize()
+  }
+
+  /// One-shot consume: true only for the ghost end of a foreground-reported
+  /// push. A real decline/end of a DIFFERENT callId, or a second event for the
+  /// same callId after the ghost end was consumed, is NOT silenced.
+  private func consumeSilencedCallEnd(call: Call) -> Bool {
+    guard let callId = call.data.extra["callId"] as? String,
+          silencedCallKitIds.contains(callId) else {
+      return false
+    }
+    silencedCallKitIds.remove(callId)
+    return true
   }
 
   /// Saved contact name for a device ID, readable before Flutter starts.
@@ -578,6 +695,12 @@ import CommonCrypto
   }
 
   private func respondToCall(call: Call, action: String) {
+    // Ghost ends from the foreground report-then-end path must never reach
+    // the server — the caller keeps ringing; the Flutter screen owns the call.
+    if consumeSilencedCallEnd(call: call) {
+      print("📱 CallKit: silenced ghost end — no server \(action)")
+      return
+    }
     guard let callId = call.data.extra["callId"] as? String,
           !callId.isEmpty,
           let deviceId = UserDefaults.standard.string(forKey: "flutter.device_id"),
