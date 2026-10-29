@@ -940,17 +940,24 @@ class SocketService extends GetxService {
     // ✅ Encrypt content using EncryptionService
     final encryptedContent = EncryptionService.encryptMessage(content);
 
-    // PRIVACY: Never send actual message content in the notification body.
-    // The server sends a generic "You have a new encrypted message" notification body to
-    // FCM/APNs so no message content is ever visible to push servers or on
-    // the lock screen.
-    String notificationBody = 'New message';
+    // Notification body policy: text messages send a truncated preview of
+    // the content (intended product feature); media sends only its type
+    // label. The server sanitizes and applies its own length cap.
+    String notificationBody;
     if (content.startsWith('MEDIA:') || content.startsWith('IMAGE:')) {
       notificationBody = '📷 Photo';
     } else if (content.startsWith('FILE:')) {
       notificationBody = '📎 Document';
     } else if (content.startsWith('AUDIO:')) {
       notificationBody = '🎤 Voice message';
+    } else {
+      // Message previews are an intended product feature: text messages
+      // send the content as the notification body, truncated to 100
+      // characters (the server also enforces this). Media never sends
+      // content — only its type label.
+      notificationBody = content.runes.length > 100
+          ? String.fromCharCodes(content.runes.take(100))
+          : content;
     }
 
     final messageData = {
