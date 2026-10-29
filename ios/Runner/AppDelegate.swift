@@ -46,12 +46,20 @@ import CommonCrypto
     // Set status bar style for iOS
     UIApplication.shared.statusBarStyle = .darkContent
     
-    // Request notification permissions early
-    UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .badge, .sound]) { granted, error in
-      print("📱 iOS Notification permission granted: \(granted)")
-      if let error = error {
-        print("📱 iOS Notification permission error: \(error)")
+    // Request notification permissions early — but NOT on first launch.
+    // On a fresh install the system prompt would stack with the Branch
+    // pasteboard prompt and the in-app name sheet; FCMService asks later,
+    // after the invite step completes. The flag is the SharedPreferences
+    // key ("flutter."-prefixed) written by the Dart name-setup flow.
+    if UserDefaults.standard.bool(forKey: "flutter.initial_name_setup_completed") {
+      UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .badge, .sound]) { granted, error in
+        print("📱 iOS Notification permission granted: \(granted)")
+        if let error = error {
+          print("📱 iOS Notification permission error: \(error)")
+        }
       }
+    } else {
+      print("📱 First launch — deferring notification permission to the invite step")
     }
     
     // Register for remote notifications
