@@ -944,7 +944,7 @@ class SocketService extends GetxService {
     // The server sends a generic "You have a new encrypted message" notification body to
     // FCM/APNs so no message content is ever visible to push servers or on
     // the lock screen.
-    String notificationBody = content;
+    String notificationBody = 'New message';
     if (content.startsWith('MEDIA:') || content.startsWith('IMAGE:')) {
       notificationBody = '📷 Photo';
     } else if (content.startsWith('FILE:')) {
