@@ -104,4 +104,88 @@ void main() {
       expect(fn, contains('registerVoipTokenWithBackend'));
     });
   });
+
+  group('foreground ghost CallKit report (C1-i)', () {
+    test('foreground push reports to CallKit then ends the ghost record', () {
+      final fn = section(
+        source('ios/Runner/AppDelegate.swift'),
+        'if isAppForeground {',
+        'print("📱 PushKit: Showing CallKit UI',
+      );
+      // Must report BEFORE ending — every VoIP push requires
+      // reportNewIncomingCall inside the push callback.
+      expect(fn, contains('markCallKitEndSilenced(serverCallId: serverCallId)'));
+      expect(fn, contains('showCallkitIncoming(callData, fromPushKit: true)'));
+      expect(fn, contains('endCall(endData)'));
+      expect(
+        fn.indexOf('showCallkitIncoming'),
+        lessThan(fn.indexOf('endCall(endData)')),
+      );
+    });
+
+    test('native respondToCall never posts ghost ends to the server', () {
+      final src = source('ios/Runner/AppDelegate.swift');
+      final respond = section(
+        src,
+        'private func respondToCall(call: Call, action: String)',
+        'x-device-id',
+      );
+      // Silenced consume happens BEFORE any URL/request is built.
+      expect(
+        respond.indexOf('consumeSilencedCallEnd'),
+        lessThan(respond.indexOf('URLRequest')),
+      );
+      // One-shot: only the first end for a marked callId is swallowed.
+      expect(
+        section(src, 'private func consumeSilencedCallEnd',
+            '/// Saved contact name'),
+        contains('silencedCallKitIds.remove(callId)'),
+      );
+    });
+
+    test('Dart swallows ghost decline/end only for marked callIds, once', () {
+      final src = source('lib/core/services/callkit_service.dart');
+      final consume = section(
+        src,
+        'Future<bool> _consumeSilencedCallKitEvent',
+        '/// Handle CallKit events',
+      );
+      // Marker is removed on consume — a later real end for the SAME callId
+      // (e.g. user accepted on the Flutter screen, then CallKit ends it)
+      // processes normally; a different callId is never matched.
+      expect(consume, contains('ids.remove(serverCallId)'));
+      expect(consume, contains('setString'));
+
+      final decline = section(
+        src,
+        'case Event.actionCallDecline:',
+        'CallKitEventType.decline',
+      );
+      expect(
+        decline.indexOf('_consumeSilencedCallKitEvent'),
+        lessThan(decline.indexOf('logCallBreadcrumb(CallBreadcrumb.decline)')),
+      );
+      final end = section(
+        src,
+        'case Event.actionCallEnded:',
+        'CallKitEventType.end',
+      );
+      expect(
+        end.indexOf('_consumeSilencedCallKitEvent'),
+        lessThan(end.indexOf('logCallBreadcrumb(CallBreadcrumb.ended)')),
+      );
+    });
+
+    test('documented edge: lock while ringing in foreground has no CallKit fallback', () {
+      // When the phone locks during a foreground ring, the ghost CallKit
+      // record is already ended — the callee must unlock and answer in-app,
+      // or the call times out. Same as the pre-change behavior (foreground
+      // pushes were dropped entirely), so no regression; real CallKit only
+      // appears when the push arrives while already locked/backgrounded.
+      expect(
+        source('ios/Runner/AppDelegate.swift'),
+        contains('reporting ghost to CallKit then ending'),
+      );
+    });
+  });
 }

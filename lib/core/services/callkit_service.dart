@@ -402,6 +402,32 @@ class CallKitService {
     );
   }
 
+  /// One-shot consume of a "ghost end" marker: the native foreground path
+  /// reports every incoming VoIP push to CallKit (Apple's contract) and then
+  /// immediately ends the record. The resulting decline/end event for that
+  /// callId must be swallowed — the Flutter socket-driven screen owns the
+  /// call and the caller must keep ringing.
+  ///
+  /// Only the FIRST event for a marked callId is silenced (the marker is
+  /// removed on consume): a real decline/end of a different call is never
+  /// affected, and a later real end for the same callId (e.g. after the
+  /// Flutter screen accepted and CallKit re-engaged) processes normally.
+  Future<bool> _consumeSilencedCallKitEvent(String? serverCallId) async {
+    if (serverCallId == null || serverCallId.isEmpty) return false;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString('silenced_call_ids') ?? '';
+      if (raw.isEmpty) return false;
+      final ids =
+          raw.split(',').where((s) => s.isNotEmpty).toSet();
+      if (!ids.remove(serverCallId)) return false;
+      await prefs.setString('silenced_call_ids', ids.join(','));
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
   /// Handle CallKit events (accept, decline, end, timeout)
   Future<void> _handleCallKitEvent(CallEvent? event) async {
     if (event == null) return;
@@ -463,6 +489,12 @@ class CallKitService {
         break;
 
       case Event.actionCallDecline:
+        if (await _consumeSilencedCallKitEvent(_extractCallId(event.body))) {
+          debugPrint(
+            '📞 CallKitService: silenced ghost decline — foreground push reported for compliance, caller keeps ringing',
+          );
+          break;
+        }
         // User declined the call via native UI
         debugPrint('📞 CallKitService: Call declined via native UI');
         logCallBreadcrumb(CallBreadcrumb.decline);
@@ -485,6 +517,12 @@ class CallKitService {
         break;
 
       case Event.actionCallEnded:
+        if (await _consumeSilencedCallKitEvent(_extractCallId(event.body))) {
+          debugPrint(
+            '📞 CallKitService: silenced ghost end — no caller-facing signal, Flutter screen untouched',
+          );
+          break;
+        }
         // Call ended
         debugPrint('📞 CallKitService: Call ended');
         logCallBreadcrumb(CallBreadcrumb.ended);
