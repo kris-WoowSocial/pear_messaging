@@ -303,6 +303,12 @@ import CommonCrypto
   override func applicationDidBecomeActive(_ application: UIApplication) {
     super.applicationDidBecomeActive(application)
     isAppForeground = true
+    // Re-upload the VoIP token on every activation: covers device_id writes
+    // that landed after the first PushKit callback, device_id regeneration,
+    // and any earlier POST that failed on a cold network.
+    if let token = latestVoipToken {
+      registerVoipTokenWithBackend(token: token)
+    }
   }
 
   override func applicationWillResignActive(_ application: UIApplication) {
@@ -321,9 +327,12 @@ import CommonCrypto
 
   // MARK: - PKPushRegistryDelegate
 
+  private var latestVoipToken: String?
+
   func pushRegistry(_ registry: PKPushRegistry, didUpdate pushCredentials: PKPushCredentials, for type: PKPushType) {
     let tokenParts = pushCredentials.token.map { String(format: "%02.2hhx", $0) }
     let token = tokenParts.joined()
+    latestVoipToken = token
     print("📱 PushKit: VoIP token received: \(token)")
 
     // Forward token to flutter_callkit_incoming so it can emit it to Dart
@@ -388,11 +397,21 @@ import CommonCrypto
 
   /// Register VoIP token with the backend server directly from native Swift.
   /// Uses URLSession so it works even before Flutter is fully initialized.
-  private func registerVoipTokenWithBackend(token: String) {
+  /// Retries with backoff: covers both "device_id not written yet" (PushKit
+  /// fires before Flutter's initializeCriticalServices) and transient POST
+  /// failures on a cold network.
+  private func registerVoipTokenWithBackend(token: String, attempt: Int = 0) {
     // Flutter SharedPreferences stores keys with "flutter." prefix in NSUserDefaults.standard
     guard let deviceId = UserDefaults.standard.string(forKey: "flutter.device_id"),
           !deviceId.isEmpty else {
-      print("📱 PushKit: device_id not in UserDefaults yet — Flutter will register token after init")
+      if attempt < 5 {
+        print("📱 PushKit: device_id not in UserDefaults yet — retrying token upload (attempt \(attempt + 1))")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+          self?.registerVoipTokenWithBackend(token: token, attempt: attempt + 1)
+        }
+      } else {
+        print("📱 PushKit: device_id still missing after retries — Dart re-register path will cover")
+      }
       return
     }
 
@@ -402,21 +421,31 @@ import CommonCrypto
     request.httpMethod = "POST"
     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
+    let info = Bundle.main.infoDictionary
     let body: [String: String] = [
       "deviceId": deviceId,
       "voipToken": token,
       "platform": "ios",
-      "apnsEnvironment": currentApsEnvironment()
+      "apnsEnvironment": currentApsEnvironment(),
+      "appVersion": (info?["CFBundleShortVersionString"] as? String) ?? "",
+      "appBuild": (info?["CFBundleVersion"] as? String) ?? ""
     ]
 
     guard let httpBody = try? JSONSerialization.data(withJSONObject: body) else { return }
     request.httpBody = httpBody
 
-    URLSession.shared.dataTask(with: request) { _, response, error in
-      if let error = error {
-        print("📱 PushKit: VoIP token registration failed: \(error.localizedDescription)")
-      } else if let httpResponse = response as? HTTPURLResponse {
-        print("📱 PushKit: VoIP token registered — HTTP \(httpResponse.statusCode) for device \(deviceId)")
+    URLSession.shared.dataTask(with: request) { [weak self] _, response, error in
+      let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+      if error == nil, statusCode == 200 {
+        print("📱 PushKit: VoIP token registered — HTTP 200 for device \(deviceId)")
+        return
+      }
+      print("📱 PushKit: VoIP token registration failed (status=\(statusCode), error=\(error?.localizedDescription ?? "none"), attempt=\(attempt))")
+      if attempt < 3 {
+        let delay = attempt == 0 ? 2.0 : 5.0
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+          self?.registerVoipTokenWithBackend(token: token, attempt: attempt + 1)
+        }
       }
     }.resume()
   }

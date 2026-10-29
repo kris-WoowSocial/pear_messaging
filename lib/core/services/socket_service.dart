@@ -1500,8 +1500,9 @@ class SocketService extends GetxService {
 
   // WebRTC Call Signaling Methods
 
-  /// Initiate a call
-  void initiateCall({
+  /// Initiate a call. Returns false when the socket is not connected so the
+  /// caller can surface a visible failure instead of hanging on "Dialing…".
+  bool initiateCall({
     required String callerId,
     required String calleeId,
     String? sdpOffer,
@@ -1511,7 +1512,7 @@ class SocketService extends GetxService {
   }) {
     if (!isConnected.value) {
       debugPrint('❌ Cannot initiate call: not connected');
-      return;
+      return false;
     }
 
     final payload = buildCallInitiatePayload(
@@ -1524,6 +1525,7 @@ class SocketService extends GetxService {
     if (isVideo) payload['isVideo'] = true;
     _socket?.emit('call_initiate', payload);
     debugPrint('📞 Call initiated: $callerId -> $calleeId');
+    return true;
   }
 
   // ---------------------------------------------------------------------------

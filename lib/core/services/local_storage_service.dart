@@ -13,6 +13,7 @@ import 'package:pear_messaging/storage/models/group_member_entity.dart';
 import 'package:pear_messaging/storage/models/message_entity.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'callkit_service.dart';
 import 'username_sync_service.dart';
 import 'secure_encryption_service.dart';
 import '../utils/string_utils.dart';
@@ -176,6 +177,11 @@ class LocalStorageService extends GetxService {
 
   Future<void> setDeviceId(String id) async {
     await _prefs.setString(_prefsDeviceIdKey, id);
+    // A created/regenerated device_id needs the VoIP token re-uploaded under
+    // the new id — the server keys tokens as voip:<deviceId>.
+    if (Platform.isIOS) {
+      unawaited(CallKitService().registerCachedVoipToken());
+    }
   }
 
   // Authentication preference
