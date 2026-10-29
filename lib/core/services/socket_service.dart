@@ -7,6 +7,7 @@ import 'package:get/get.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:socket_io_client/socket_io_client.dart' as IO;
 import 'call_breadcrumbs.dart';
+import 'callkit_service.dart';
 import 'call_media_helper.dart';
 import 'call_diag.dart';
 import 'encryption_service.dart';
@@ -549,6 +550,11 @@ class SocketService extends GetxService {
     // WebRTC Call: Call terminated
     _socket?.on('call_terminated', (data) {
       debugPrint('📞 Call terminated: $data');
+      if (data is Map && data['callId'] is String) {
+        unawaited(CallKitService().reconcileNativeCalls(
+          completedCallId: data['callId'] as String,
+        ));
+      }
       if (onCallTerminated != null && data != null) {
         onCallTerminated!(Map<String, dynamic>.from(data));
       }
@@ -938,7 +944,7 @@ class SocketService extends GetxService {
     // The server sends a generic "You have a new encrypted message" notification body to
     // FCM/APNs so no message content is ever visible to push servers or on
     // the lock screen.
-    String notificationBody = content;
+    String notificationBody = 'New message';
     if (content.startsWith('MEDIA:') || content.startsWith('IMAGE:')) {
       notificationBody = '📷 Photo';
     } else if (content.startsWith('FILE:')) {
