@@ -1836,6 +1836,13 @@ class CallController extends GetxController {
     try {
       // Listen for call actions from native Android receiver/service
       _callChannel.setMethodCallHandler((call) async {
+        if (call.method == 'armGhostCallKitEnd') {
+          final args = call.arguments as Map?;
+          final uuid = args?['uuid'] as String?;
+          if (uuid == null || uuid.isEmpty) return false;
+          CallKitService.ghostEvents.arm(uuid);
+          return true;
+        }
         if (call.method == 'confirmIncomingCallScreen') {
           // iOS PushKit foreground path: native reported the VoIP push to
           // CallKit and may end the ghost record ONLY if the Flutter

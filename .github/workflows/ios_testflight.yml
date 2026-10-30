@@ -8,9 +8,11 @@ on:
       version_name:
         description: "Marketing version (e.g. 1.8.8)"
         required: true
+        default: "2.0.5"
       build_number:
         description: "App Store build number — real next number, NOT the 9999 placeholder"
         required: true
+        default: "208"
       confirm_upload:
         description: "Type 'yes' to upload to TestFlight after validation"
         required: true
