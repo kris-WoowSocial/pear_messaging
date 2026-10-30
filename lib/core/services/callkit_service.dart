@@ -17,6 +17,7 @@ import 'package:package_info_plus/package_info_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'call_breadcrumbs.dart';
 import 'callkit_reconciler.dart';
+import 'callkit_ghost_events.dart';
 import 'package:flutter/services.dart';
 
 /// CallKit Service - Handles native system incoming call UI
@@ -375,6 +376,7 @@ class CallKitService {
   static String Function() liveCallId = () => '';
   static final Set<String> _completedNativeCallIds = {};
   static final Set<String> _silentNativeUuids = {};
+  static final ghostEvents = CallKitGhostEvents();
   static final _reconciler = CallKitReconciler(
     activeCalls: () async {
       final records = await FlutterCallkitIncoming.activeCalls();
@@ -478,9 +480,17 @@ class CallKitService {
   }
 
   /// Handle CallKit events (accept, decline, end, timeout)
+  @visibleForTesting
+  Future<void> replayPluginEvent(CallEvent event) => _handleCallKitEvent(event);
+
   Future<void> _handleCallKitEvent(CallEvent? event) async {
     if (event == null) return;
     final eventUuid = event.body['id']?.toString().toLowerCase();
+    if (ghostEvents.suppress(eventUuid)) {
+      _activeCallKitCalls.remove(eventUuid);
+      debugPrint('CallKitService: silenced ghost event ${event.event}');
+      return;
+    }
     if ((event.event == Event.actionCallEnded ||
             event.event == Event.actionCallDecline) &&
         eventUuid != null && _silentNativeUuids.remove(eventUuid)) {

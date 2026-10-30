@@ -537,9 +537,19 @@ import CommonCrypto
         guard !decision.decided else { return }
         decision.decided = true
         if confirmed {
-          self?.markCallKitEndSilenced(serverCallId: serverCallId)
-          SwiftFlutterCallkitIncomingPlugin.sharedInstance?.endCall(endData)
-          print("📱 PushKit: Flutter screen acked — ghost CallKit record ended silently")
+          guard let controller = self?.window?.rootViewController as? FlutterViewController else { return }
+          FlutterMethodChannel(
+            name: "com.pear.messaging/call",
+            binaryMessenger: controller.binaryMessenger
+          ).invokeMethod("armGhostCallKitEnd", arguments: ["uuid": callKitId]) { armed in
+            guard (armed as? Bool) == true else { return }
+            self?.markCallKitEndSilenced(serverCallId: serverCallId)
+            if let uuid = UUID(uuidString: callKitId) {
+              self?.ghostEndUuids.insert(uuid)
+            }
+            SwiftFlutterCallkitIncomingPlugin.sharedInstance?.endCall(endData)
+            print("📱 PushKit: Flutter screen acked — ghost CallKit record ended silently")
+          }
         } else {
           print("📱 PushKit: no Flutter-screen ack — CallKit UI stays, user can answer")
         }
@@ -694,10 +704,15 @@ import CommonCrypto
     UserDefaults.standard.synchronize()
   }
 
+  private var ghostEndUuids = Set<UUID>()
   private var orphanEndUuids = Set<UUID>()
   private let orphanCallController = CXCallController()
 
   private func respondToCall(call: Call, action: String) {
+    if ghostEndUuids.contains(call.uuid) {
+      print("📱 CallKit: silenced ghost event — no server \(action)")
+      return
+    }
     if action != "accept", orphanEndUuids.remove(call.uuid) != nil {
       return
     }
