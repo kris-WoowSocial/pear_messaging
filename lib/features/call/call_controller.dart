@@ -1266,6 +1266,15 @@ class CallController extends GetxController {
     };
 
     _webrtcService.onConnectionFailed = (_) {
+      // The ringing-time warm PC can report Failed before an answer exists —
+      // that is a warm-up failure, not a dead call. Ending here would kill
+      // the incoming screen while the call is still ringing at the server.
+      if (_isRingingAsCallee) {
+        debugPrint(
+          '📞 Ignoring warm-PC connection failure during callee ringing',
+        );
+        return;
+      }
       if (!_videoCallingEnabled) {
         endCall();
         return;
@@ -2725,6 +2734,13 @@ class CallController extends GetxController {
       currentCallId.value = callId;
       remoteDeviceId.value = callerId;
       isCaller.value = false;
+      // Consume the pending incoming data: from here on a WebRTC end is a
+      // real call failure, not a ringing-time warm-PC artifact — the
+      // _isRingingAsCallee suppression must be off for the rest of this call.
+      _latestIncomingCallData = null;
+      // callState is left at `ended` after the previous call — advance it to
+      // ringing now or the active screen flashes "Call ended" before Connecting.
+      callState.value = CallState.ringing;
       _videoRequested = incomingVideo;
       isVideoCall.value = incomingVideo && _videoCallingEnabled;
       isCameraOn.value = false;
@@ -3834,6 +3850,17 @@ class CallController extends GetxController {
         }
         break;
       case 'ended':
+        // Callee ringing window: an 'ended' emitted by the warm/prepared
+        // PeerConnection (e.g. its failure cleanup closing the PC) must not
+        // collapse the incoming-call screen. Every legitimate end —
+        // caller cancel, reject, CallKit end/timeout — resets state via its
+        // own handler, so nothing depends on this fallback during ringing.
+        if (_isRingingAsCallee) {
+          debugPrint(
+            '📞 Ignoring WebRTC ended during callee ringing ($reason)',
+          );
+          break;
+        }
         _ringtoneService.stopRingtone();
         // Fallback log when no server termination event was received.
         _logCallHistory(reason: reason ?? 'ended');
@@ -3849,9 +3876,41 @@ class CallController extends GetxController {
     }
   }
 
+  /// True while we are the callee with a live, unanswered incoming call.
+  /// WebRTC fallback-end emissions in this window come from the ringing-time
+  /// PC warmup/teardown, not from a real call lifecycle event — the legit
+  /// ends (terminate/reject/CallKit) reset state through their own handlers.
+  bool get _isRingingAsCallee => shouldSuppressWebRtcEndDuringRinging(
+        isCaller: isCaller.value,
+        wasConnected: _wasConnected,
+        isConnected: isConnected,
+        hasPendingIncomingCall: _latestIncomingCallData != null,
+      );
+
+  /// Pure form of the ringing-suppression decision. A WebRTC 'ended' (or a
+  /// connection failure routed through endCall) may only be ignored while the
+  /// callee's incoming call is still unanswered: once the call is accepted the
+  /// pending incoming data is cleared and this returns false, so real
+  /// post-accept failures end the call normally.
+  static bool shouldSuppressWebRtcEndDuringRinging({
+    required bool isCaller,
+    required bool wasConnected,
+    required bool isConnected,
+    required bool hasPendingIncomingCall,
+  }) {
+    return !isCaller &&
+        !wasConnected &&
+        !isConnected &&
+        hasPendingIncomingCall;
+  }
+
   /// Handle call ended from WebRTC
   void _handleCallEnded(String callId) {
     debugPrint('📞 Call ended: $callId');
+    if (_isRingingAsCallee) {
+      debugPrint('📞 Ignoring WebRTC call-ended during callee ringing');
+      return;
+    }
     // Fallback log when no server termination event was received.
     _logCallHistory(reason: 'ended');
     // Note: _logCallHistory may already have been called by endCall() or
@@ -4173,7 +4232,9 @@ class CallController extends GetxController {
     return switch (callState.value) {
       CallState.connected => callDuration.value,
       CallState.dialing => 'Calling…',
-      CallState.ringing => isCaller.value ? 'Ringing…' : 'Connecting…',
+      CallState.ringing => isCaller.value
+          ? 'Ringing…'
+          : 'Securing Encrypted Tunnel…',
       CallState.ended => 'Call ended',
       CallState.idle => 'Connecting…',
     };
@@ -4643,6 +4704,7 @@ class CallController extends GetxController {
       remoteAvatarUrl.value =
           data['avatarUrl'] as String? ?? data['avatar_url'] as String? ?? '';
       isCaller.value = false;
+      _latestIncomingCallData = null;
       _videoRequested = incomingVideo;
       isVideoCall.value = incomingVideo && _videoCallingEnabled;
       isCameraOn.value = false;

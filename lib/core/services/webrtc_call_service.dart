@@ -475,6 +475,11 @@ class WebRTCCallService {
       return true;
     } catch (e) {
       debugPrint('⚠️ Ringing-time prepare failed, will rebuild on accept: $e');
+      // This cleanup must stay silent: close() fires onConnectionState →
+      // Closed, which would surface an 'ended' state and collapse the
+      // incoming-call screen — the call is still ringing and owns the UI
+      // until the user answers or the call times out.
+      _peerConnection?.onConnectionState = null;
       _peerConnection?.close();
       _peerConnection?.dispose();
       _peerConnection = null;
