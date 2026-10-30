@@ -152,14 +152,10 @@ class ChatScreen extends GetView<ChatController> {
               ),
             if (!controller.isGroup &&
                 Get.isRegistered<FeatureFlagService>())
-              Obx(
-                () =>
+              Obx(() =>
                     Get.find<FeatureFlagService>().videoCalling.value
                         ? IconButton(
-                            icon: const Icon(
-                              Icons.videocam,
-                              color: Colors.black,
-                            ),
+                            icon: const Icon(Icons.videocam, color: Colors.black),
                             onPressed: () {
                               debugPrint('📞 Video call button pressed');
                               _startVideoCall();

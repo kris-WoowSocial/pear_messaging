@@ -3837,6 +3837,17 @@ class CallController extends GetxController {
         }
         break;
       case 'ended':
+        // Callee ringing window: an 'ended' emitted by the warm/prepared
+        // PeerConnection (e.g. its failure cleanup closing the PC) must not
+        // collapse the incoming-call screen. Every legitimate end —
+        // caller cancel, reject, CallKit end/timeout — resets state via its
+        // own handler, so nothing depends on this fallback during ringing.
+        if (_isRingingAsCallee) {
+          debugPrint(
+            '📞 Ignoring WebRTC ended during callee ringing ($reason)',
+          );
+          break;
+        }
         _ringtoneService.stopRingtone();
         // Fallback log when no server termination event was received.
         _logCallHistory(reason: reason ?? 'ended');
@@ -3852,9 +3863,23 @@ class CallController extends GetxController {
     }
   }
 
+  /// True while we are the callee with a live, unanswered incoming call.
+  /// WebRTC fallback-end emissions in this window come from the ringing-time
+  /// PC warmup/teardown, not from a real call lifecycle event — the legit
+  /// ends (terminate/reject/CallKit) reset state through their own handlers.
+  bool get _isRingingAsCallee =>
+      !isCaller.value &&
+      !_wasConnected &&
+      !isConnected &&
+      _latestIncomingCallData != null;
+
   /// Handle call ended from WebRTC
   void _handleCallEnded(String callId) {
     debugPrint('📞 Call ended: $callId');
+    if (_isRingingAsCallee) {
+      debugPrint('📞 Ignoring WebRTC call-ended during callee ringing');
+      return;
+    }
     // Fallback log when no server termination event was received.
     _logCallHistory(reason: 'ended');
     // Note: _logCallHistory may already have been called by endCall() or
