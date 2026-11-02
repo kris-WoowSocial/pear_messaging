@@ -1,0 +1,1324 @@
+# CALL PATH SNAPSHOT - Generated Nov 2, 2026
+# Branch: fix-android-call-delivery (from ios_production_main a533e72)
+# Client version: 2.0.8+208
+
+# ============================================
+# SERVER: call.handlers.js (lines 480-600)
+# ============================================
+      });
+      return;
+    }
+
+    // Get callee socket ID (may be null if offline)
+    const calleeSocketId = connection.getSocketIdForDevice(calleeId);
+
+    // Store call session with pending delivery state
+    activeCalls.set(callId, {
+      callId,
+      callerId,
+      calleeId,
+      callerSocketId: socket.id,
+      calleeSocketId,
+      sdpOffer,        // Stored server-side for call_resync; never sent via FCM
+      sdpAnswer: null,  // Stored server-side for caller reconnection
+      cryptoOffer: wireOfferCrypto || null,
+      cryptoAnswer: null,
+      callerBundle,
+      calleeBundle,
+      callerName,
+      isVideo,
+      isEncryptedCall: encryptedCall,
+      cryptoSessionId: encryptedCall ? offerCrypto.sessionId : null,
+      startTime: Date.now(),
+      deliveredVia: null, // 'socket' or 'fcm'
+      ringTimer: null,
+      resyncTimer: null,
+      answerDelivered: false,
+      // Buffer for ICE candidates that arrive while a target is offline (e.g.
+      // callee app closed, accepting from a notification cold-start). Keyed by
+      // target device ID. Critical so the caller's early candidates are not lost.
+      pendingIceCandidates: { [callerId]: [], [calleeId]: [] },
+    });
+
+    logger.info("Call initiated", { callId, callerId, calleeId });
+
+    const callSession = activeCalls.get(callId);
+    const callPushService = require("../services/call_push.service");
+
+    // Start 45s ring timeout
+    callSession.ringTimer = setTimeout(async () => {
+      if (!activeCalls.has(callId)) return;
+      logger.info("Call ring timeout (no answer)", { callId });
+
+      const currentCallerSocketId = connection.getSocketIdForDevice(callSession.callerId);
+      const callerSocket = currentCallerSocketId ? io.sockets.sockets.get(currentCallerSocketId) : null;
+      if (callerSocket) {
+        callerSocket.emit(SERVER_EVENTS.CALL_TERMINATED, { callId, reason: 'no_answer' });
+      }
+
+      // Dismiss callee's CallKit UI via FCM
+      await callPushService.sendCallCancelledPush({ deviceId: calleeId, callId });
+
+      // Send missed call notification
+      await callPushService.sendMissedCallPush({ deviceId: calleeId, callId, callerId, callerName });
+
+      activeCalls.delete(callId);
+    }, CALL_RING_TIMEOUT_MS);
+
+    // Send call ID back to caller
+    socket.emit(SERVER_EVENTS.CALL_INITIATED, { callId, calleeId });
+
+    // ALWAYS send FCM in parallel with socket delivery (not as fallback)
+    // FCM wakes the device regardless of socket state; socket handles live signaling
+    callPushService.sendIncomingCallPush({
+      deviceId: calleeId,
+      callId,
+      callerId,
+      callerName,
+      callerAvatarUrl: '',
+      isVideo,
+      timestamp: Date.now(),
+    }).then(sent => {
+      if (sent && callSession.deliveredVia === null) {
+        callSession.deliveredVia = 'fcm';
+        logger.info("Call delivered via FCM (parallel)", { callId, calleeId });
+      }
+    }).catch(err => {
+      logger.error("FCM parallel push error", { callId, error: err.message });
+    });
+
+    if (!connection.isDeviceForeground(calleeId)) {
+      // Send APNs VoIP push for iOS (in parallel - non-blocking)
+      // Requires APNs Auth Key in Firebase Console for production use
+      callPushService.sendApnsVoipPush({
+        deviceId: calleeId,
+        callId,
+        callerId,
+        callerName,
+        isVideo,
+      }).then(sent => {
+        if (sent) {
+          logger.info("Call delivered via APNs VoIP", { callId, calleeId });
+        }
+      }).catch(err => {
+        // APNs errors are expected if not configured - log as debug
+        logger.debug("APNs VoIP push not sent (may need configuration)", { callId, error: err.message });
+      });
+    }
+
+    // Also attempt socket delivery
+    const calleeSocket = io.sockets.sockets.get(calleeSocketId);
+    if (calleeSocket) {
+      const calleeIceServers = iceServersForDevice(calleeId);
+      calleeSocket.emit(SERVER_EVENTS.INCOMING_CALL, {
+        callId,
+        callerId,
+        calleeId,
+        ...(sdpOffer ? { sdpOffer } : {}),
+        callerName,
+        ...(wireOfferCrypto ? { crypto: wireOfferCrypto } : {}),
+        ...(isVideo ? { isVideo: true } : {}),
+        ...(calleeIceServers ? { iceServers: calleeIceServers } : {}),
+      });
+      callSession.deliveredVia = 'socket';
+      logger.info("Call delivered via socket", { callId, calleeId });
+    } else {
+      logger.info("Callee socket not reachable, FCM is primary delivery", { callId, calleeId });
+    }
+  } catch (error) {
+
+# ============================================
+# SERVER: call_push.service.js (full)
+# ============================================
+// Call Push Service - High-priority push messages for VoIP wake-up
+// iOS: uses APNs VoIP push via PushKit (primary) — wakes even killed apps
+// Android: uses FCM data-only message (primary)
+const logger = require("../utils/logger")("CallPushService");
+const admin = require("firebase-admin");
+const dynamoDBFCMService = require("./dynamodb_fcm.service");
+const redisService = require("./redis_message.service");
+const usernameService = require("./username.service");
+const apnsService = require("./apns.service");
+const pendingVoipPushes = new Set();
+
+/**
+ * Send high-priority data-only FCM message to wake up device for incoming call
+ * Uses data-only payload (no notification block) so OS delivers to background handler
+ * 
+ * @param {Object} params
+ * @param {string} params.deviceId - Target device ID
+ * @param {string} params.callId - Unique call ID
+ * @param {string} params.callerId - Device ID of caller
+ * @param {string} params.callerName - Display name of caller
+ * @param {string} [params.callerAvatarUrl] - Avatar URL for caller
+ * @param {number} params.timestamp - Call initiation timestamp
+ * @returns {Promise<boolean>} - Success status
+ */
+async function sendIncomingCallPush({
+  deviceId,
+  callId,
+  callerId,
+  callerName,
+  callerAvatarUrl = '',
+  isVideo = false,
+  timestamp = Date.now()
+}) {
+  // Resolve display name
+  let displayName = callerName;
+  if (callerId) {
+    const resolved = usernameService.getDisplayName(callerId, deviceId);
+    if (resolved && resolved !== callerId) {
+      displayName = resolved;
+    } else if (!displayName || displayName === 'Unknown') {
+      displayName = `@user_${callerId.substring(callerId.length - 5)}`;
+    }
+  }
+  if (!displayName || displayName === 'Unknown') {
+    displayName = `@user_${(callerId || 'unknown').substring((callerId || 'unknown').length - 5)}`;
+  }
+
+  // iOS path: VoIP push is the ONLY reliable way to wake a killed iOS app.
+  // If the device has a registered VoIP token, send APNs VoIP push and return.
+  // FCM does NOT reliably wake killed iOS apps — PushKit VoIP push does.
+  const voipToken = await redisService.getVoipToken(deviceId);
+  if (voipToken) {
+    logger.info("iOS device with VoIP token — sending APNs VoIP push (primary)", { deviceId, callId });
+    return sendApnsVoipPush({ deviceId, callId, callerId, callerName: displayName, isVideo });
+  }
+
+  // Android / non-iOS fallback: FCM data-only message
+  try {
+    const fcmToken = await dynamoDBFCMService.getFCMToken(deviceId);
+    if (!fcmToken) {
+      logger.warn("No FCM token found for device", { deviceId, callId });
+      return false;
+    }
+
+    // Build data-only payload — NO notification block (critical for background wake-up)
+    // SECURITY: sdpOffer excluded — re-delivered via call_resync over authenticated socket
+    const message = {
+      data: {
+        type: "incoming_call",
+        callId: callId,
+        callerId: callerId,
+        callerName: displayName,
+        ...(isVideo ? { isVideo: "true" } : {}),
+        timestamp: timestamp.toString()
+      },
+      android: {
+        priority: "high",
+        ttl: 0,
+        directBootOk: true
+      },
+      token: fcmToken
+    };
+
+    logger.info("Sending incoming call FCM push (Android)", {
+      deviceId,
+      callId,
+      callerId,
+      fcmTokenPrefix: fcmToken.substring(0, 20)
+    });
+
+    const response = await admin.messaging().send(message);
+    logger.info("Incoming call FCM push sent", { deviceId, callId, messageId: response });
+    return true;
+  } catch (error) {
+    logger.error("Failed to send incoming call FCM push", {
+      deviceId,
+      callId,
+      error: error.message,
+      code: error.code
+    });
+
+    if (error.code === 'messaging/registration-token-not-registered' ||
+        error.code === 'messaging/invalid-argument') {
+      await dynamoDBFCMService.deleteFCMToken(deviceId).catch(() => {});
+      logger.info("Invalid FCM token deleted after push failure", { deviceId });
+    }
+
+    return false;
+  }
+}
+
+/**
+ * Check if device is online via socket connection
+ * @param {string} deviceId 
+ * @returns {Promise<boolean>}
+ */
+async function isDeviceOnline(deviceId) {
+  const connection = require("../sockets/connection");
+  const socketId = connection.getSocketIdForDevice(deviceId);
+  return !!socketId;
+}
+
+/**
+ * Attempt socket delivery with FCM fallback
+ * 
+ * @param {Object} params
+ * @param {string} params.deviceId - Target device
+ * @param {string} params.callId - Call ID
+ * @param {string} params.callerId - Caller device ID
+ * @param {string} params.callerName - Caller display name
+ * @param {string} params.sdpOffer - SDP offer
+ * @param {Function} params.socketDeliver - Function to attempt socket delivery
+ * @param {number} params.timeoutMs - Timeout for socket delivery (default 1500ms)
+ * @returns {Promise<{delivered: boolean, via: 'socket'|'fcm'|'failed'}>}
+ */
+async function deliverWithFallback({
+  deviceId,
+  callId,
+  callerId,
+  callerName,
+  callerAvatarUrl = '',
+  socketDeliver,
+  timeoutMs = 1500
+}) {
+  const startTime = Date.now();
+  
+  logger.info("Starting call delivery with fallback", {
+    deviceId,
+    callId,
+    callerId,
+    timeoutMs
+  });
+
+  // Check if device is online via socket
+  const isOnline = await isDeviceOnline(deviceId);
+  
+  if (!isOnline) {
+    logger.info("Device offline via socket, immediately using FCM fallback", {
+      deviceId,
+      callId
+    });
+    
+    const pushSent = await sendIncomingCallPush({
+      deviceId,
+      callId,
+      callerId,
+      callerName,
+      callerAvatarUrl,
+      timestamp: startTime
+    });
+
+    return {
+      delivered: pushSent,
+      via: pushSent ? 'fcm' : 'failed'
+    };
+  }
+
+  // Device appears online, try socket delivery with timeout
+  return new Promise((resolve) => {
+    let resolved = false;
+    let socketSuccess = false;
+
+    // Set timeout for socket delivery
+    const timeout = setTimeout(async () => {
+      if (!resolved && !socketSuccess) {
+        resolved = true;
+        
+        logger.info("Socket delivery timeout, triggering FCM fallback", {
+          deviceId,
+          callId,
+          elapsedMs: Date.now() - startTime
+        });
+
+        const pushSent = await sendIncomingCallPush({
+          deviceId,
+          callId,
+          callerId,
+          callerName,
+          callerAvatarUrl,
+          timestamp: startTime
+        });
+
+        resolve({
+          delivered: pushSent,
+          via: pushSent ? 'fcm' : 'failed'
+        });
+      }
+    }, timeoutMs);
+
+    // Attempt socket delivery
+    socketDeliver()
+      .then((success) => {
+        if (!resolved) {
+          socketSuccess = success;
+          
+          if (success) {
+            clearTimeout(timeout);
+            resolved = true;
+            
+            logger.info("Call delivered via socket successfully", {
+              deviceId,
+              callId,
+              elapsedMs: Date.now() - startTime
+            });
+
+            resolve({
+              delivered: true,
+              via: 'socket'
+            });
+          }
+          // If socketDeliver returns false, let timeout continue to FCM fallback
+        }
+      })
+      .catch((error) => {
+        logger.error("Socket delivery error", {
+          deviceId,
+          callId,
+          error: error.message
+        });
+        // Let timeout handle FCM fallback
+      });
+  });
+}
+
+/**
+ * Send FCM push to dismiss callee's CallKit UI when caller cancels/times out
+ * @param {Object} params
+ * @param {string} params.deviceId - Callee device ID
+ * @param {string} params.callId - Call ID to dismiss
+ * @returns {Promise<boolean>}
+ */
+async function sendCallCancelledPush({ deviceId, callId }) {
+  // iOS path: send VoIP push so AppDelegate can dismiss the CallKit UI
+  // even when the app is killed — direct APNs HTTP/2, not FCM.
+  const voipToken = await redisService.getVoipToken(deviceId);
+  if (voipToken) {
+    const payload = {
+      type: "call_cancelled",
+      callId: callId,
+      timestamp: Date.now().toString()
+    };
+    const sent = await apnsService.sendVoipPush(voipToken, payload);
+    if (sent) {
+      logger.info("call_cancelled VoIP push sent (iOS, direct APNs)", { deviceId, callId });
+      return true;
+    }
+    logger.warn("call_cancelled VoIP push failed, falling back to FCM", { deviceId, callId });
+  }
+
+  // Android / fallback: FCM data message
+  try {
+    const fcmToken = await dynamoDBFCMService.getFCMToken(deviceId);
+    if (!fcmToken) {
+      logger.warn("No FCM token for call_cancelled push", { deviceId, callId });
+      return false;
+    }
+
+    const message = {
+      data: {
+        type: "call_cancelled",
+        callId: callId,
+        timestamp: Date.now().toString()
+      },
+      android: {
+        priority: "high",
+        ttl: 0,
+        directBootOk: true
+      },
+      token: fcmToken
+    };
+
+    await admin.messaging().send(message);
+    logger.info("call_cancelled FCM push sent (Android)", { deviceId, callId });
+    return true;
+  } catch (error) {
+    logger.error("Failed to send call_cancelled push", { deviceId, callId, error: error.message });
+    return false;
+  }
+}
+
+/**
+ * Send a normal (non-VoIP) "Missed call" notification to callee
+ * @param {Object} params
+ * @param {string} params.deviceId - Callee device ID
+ * @param {string} params.callId - Call ID
+ * @param {string} params.callerId - Caller device ID (used for name lookup)
+ * @param {string} params.callerName - Caller display name (fallback)
+ * @returns {Promise<boolean>}
+ */
+async function sendMissedCallPush({ deviceId, callId, callerId, callerName }) {
+  try {
+    const fcmToken = await dynamoDBFCMService.getFCMToken(deviceId);
+    if (!fcmToken) return false;
+
+    // Resolve display name same way chat notifications do:
+    // 1. Receiver's saved contact name for caller
+    // 2. Caller's global username
+    // 3. @user_XXXXX fallback
+    let displayName = callerName;
+    if (callerId) {
+      const resolved = usernameService.getDisplayName(callerId, deviceId);
+      if (resolved && resolved !== callerId) {
+        displayName = resolved;
+      } else if (!displayName || displayName === 'Unknown') {
+        displayName = `@user_${callerId.substring(callerId.length - 5)}`;
+      }
+    }
+    if (!displayName || displayName === 'Unknown') {
+      displayName = `@user_${(callerId || 'unknown').substring((callerId || 'unknown').length - 5)}`;
+    }
+
+    // Data-only message so the Flutter app can display a local notification
+    // with a "Call back" action button (system notifications cannot add custom actions).
+    const message = {
+      data: {
+        type: "missed_call",
+        callId: callId,
+        callerId: callerId,
+        callerName: displayName,
+        timestamp: Date.now().toString()
+      },
+      android: {
+        priority: "high",
+        ttl: 0,
+        directBootOk: true
+      },
+      token: fcmToken
+    };
+
+    await admin.messaging().send(message);
+    logger.info("Missed call push sent", { deviceId, callId });
+    return true;
+  } catch (error) {
+    logger.error("Failed to send missed call push", { deviceId, callId, error: error.message });
+    return false;
+  }
+}
+
+/**
+ * Send APNs VoIP push for iOS background wake
+ * Requires APNs Authentication Key (.p8) configured in Firebase Console
+ * 
+ * @param {Object} params
+ * @param {string} params.deviceId - Target device ID
+ * @param {string} params.callId - Unique call ID
+ * @param {string} params.callerId - Device ID of caller
+ * @param {string} params.callerName - Display name of caller
+ * @returns {Promise<boolean>} - Success status
+ */
+async function sendApnsVoipPush({
+  deviceId,
+  callId,
+  callerId,
+  callerName,
+  isVideo = false
+}) {
+  const pushKey = `${deviceId}:${callId}`;
+  if (pendingVoipPushes.has(pushKey)) {
+    logger.debug("Skipping duplicate APNs VoIP push", { deviceId, callId });
+    return false;
+  }
+
+  pendingVoipPushes.add(pushKey);
+  try {
+    // Get VoIP token for iOS device from Redis
+  const voipToken = await redisService.getVoipToken(deviceId);
+  if (!voipToken) {
+    logger.debug("No VoIP token found for device (iOS may not be registered)", { deviceId, callId });
+    return false;
+  }
+
+  // Send directly via APNs HTTP/2 — the ONLY way to deliver to a VoIP token.
+  // Firebase Admin SDK (admin.messaging()) routes through FCM and CANNOT send
+  // to APNs VoIP tokens. Direct APNs is how WhatsApp/Signal do this.
+  // SECURITY: sdpOffer excluded — re-delivered via call_resync over authenticated socket
+  const payload = {
+    type: "incoming_call",
+    callId: callId,
+    callerId: callerId,
+    callerName: callerName || "Unknown",
+    isVideo: isVideo ? "true" : "false",
+    timestamp: Date.now().toString()
+  };
+
+    const sent = await apnsService.sendVoipPush(voipToken, payload);
+    if (sent) {
+      logger.info("APNs VoIP push sent (direct HTTP/2)", { deviceId, callId, callerName });
+    } else {
+      logger.warn("APNs VoIP push failed — check APNS_KEY_ID/APNS_TEAM_ID/APNS_KEY env vars", { deviceId, callId });
+    }
+    return sent;
+  } finally {
+    pendingVoipPushes.delete(pushKey);
+  }
+}
+
+module.exports = {
+  sendIncomingCallPush,
+  sendCallCancelledPush,
+  sendMissedCallPush,
+  isDeviceOnline,
+  deliverWithFallback,
+  sendApnsVoipPush
+};
+
+# ============================================
+# SERVER: dynamodb_fcm.service.js (full)
+# ============================================
+// FCM token storage backed by DynamoDB
+const { PutCommand, GetCommand, DeleteCommand } = require('@aws-sdk/lib-dynamodb');
+const { dynamoDB, isConfigured } = require('../config/aws');
+const logger = require('../utils/logger')('DynamoDBFCMService');
+
+const TABLE = process.env.DYNAMODB_FCM_TABLE || 'fcm-tokens';
+const FCM_TTL_SECONDS = 7 * 24 * 60 * 60; // 7 days
+
+class DynamoDBFCMService {
+  async storeFCMToken(deviceId, fcmToken) {
+    if (!isConfigured()) {
+      logger.warn('AWS not configured, FCM token not stored', { deviceId });
+      return false;
+    }
+
+    try {
+      const ttl = Math.floor(Date.now() / 1000) + FCM_TTL_SECONDS;
+
+      await dynamoDB.send(new PutCommand({
+        TableName: TABLE,
+        Item: { deviceId, fcmToken, ttl },
+      }));
+
+      logger.debug('FCM token stored in DynamoDB', { deviceId });
+      return true;
+    } catch (error) {
+      logger.error('Failed to store FCM token', { deviceId, error: error.message });
+      return false;
+    }
+  }
+
+  async getFCMToken(deviceId) {
+    if (!isConfigured()) return null;
+
+    try {
+      const result = await dynamoDB.send(new GetCommand({
+        TableName: TABLE,
+        Key: { deviceId },
+      }));
+
+      return result.Item?.fcmToken || null;
+    } catch (error) {
+      logger.error('Failed to get FCM token', { deviceId, error: error.message });
+      return null;
+    }
+  }
+
+  async deleteFCMToken(deviceId) {
+    if (!isConfigured()) return false;
+
+    try {
+      await dynamoDB.send(new DeleteCommand({
+        TableName: TABLE,
+        Key: { deviceId },
+      }));
+
+      logger.debug('FCM token deleted from DynamoDB', { deviceId });
+      return true;
+    } catch (error) {
+      logger.error('Failed to delete FCM token', { deviceId, error: error.message });
+      return false;
+    }
+  }
+}
+
+module.exports = new DynamoDBFCMService();
+
+# ============================================
+# SERVER: Redis VoIP token storage (lines 58-108)
+# ============================================
+
+  // VoIP token storage for iOS PushKit
+  async setVoipToken(deviceId, voipToken) {
+    if (!redisConfig.isAvailable()) {
+      logger.warn('Redis not available, VoIP token not stored', { deviceId });
+      return false;
+    }
+    
+    try {
+      const key = `voip:${deviceId}`;
+      await redisConfig.client.set(key, voipToken, {
+        EX: VOIP_TOKEN_TTL
+      });
+      logger.debug('VoIP token stored', { deviceId });
+      return true;
+    } catch (error) {
+      logger.error('Failed to store VoIP token', { deviceId, error: error.message });
+      return false;
+    }
+  }
+
+  async getVoipToken(deviceId) {
+    if (!redisConfig.isAvailable()) {
+      return null;
+    }
+    
+    try {
+      const key = `voip:${deviceId}`;
+      const token = await redisConfig.client.get(key);
+      return token;
+    } catch (error) {
+      logger.error('Failed to get VoIP token', { deviceId, error: error.message });
+      return null;
+    }
+  }
+
+  async deleteVoipToken(deviceId) {
+    if (!redisConfig.isAvailable()) {
+      return false;
+    }
+    
+    try {
+      const key = `voip:${deviceId}`;
+      await redisConfig.client.del(key);
+      logger.debug('VoIP token deleted', { deviceId });
+      return true;
+    } catch (error) {
+      logger.error('Failed to delete VoIP token', { deviceId, error: error.message });
+      return false;
+    }
+  }
+
+# ============================================
+# ANDROID: VantFirebaseMessagingService.kt (incoming_call handler)
+# ============================================
+        val data = remoteMessage.data
+        val type = data["type"]
+
+        Log.d(TAG, "📞 FCM received: type=$type, data=$data")
+
+        when (type) {
+            "incoming_call" -> handleIncomingCall(data)
+            "call_cancelled" -> handleCallCancelled(data)
+            "missed_call" -> handleMissedCall(data)
+            else -> {
+                Log.d(TAG, "ℹ️ Non-call message received: $type, forwarding to Flutter")
+                forwardToFlutter(remoteMessage)
+            }
+        }
+    }
+
+    // ==================== FLUTTER BACKGROUND FORWARDING ====================
+
+    /**
+     * Forward non-call messages to Flutter's background message handler.
+     * This replaces the old super.onMessageReceived() from FlutterFirebaseMessagingService.
+     * We spin up a background FlutterEngine (if not already running) and invoke the
+     * registered Dart background callback via MethodChannel.
+     */
+    private fun forwardToFlutter(remoteMessage: RemoteMessage) {
+        try {
+            val prefs = getSharedPreferences(
+                "io.flutter.firebase.messaging.callback",
+                Context.MODE_PRIVATE
+            )
+            val callbackHandle = prefs.getLong("callback_handle", 0L)
+
+            if (callbackHandle == 0L) {
+                Log.w(TAG, "No Flutter background callback registered. Message dropped.")
+                return
+            }
+
+            // Never spin up a second engine during a ringing/active call — it
+            // would compete for CPU/audio resources and run plugin init while
+            // the user is on the call screen.
+            if (VantCallManager.activeConnection != null) {
+                Log.d(TAG, "Call in progress — deferring background forwarding")
+                return
+            }
+
+            // FlutterLoader.startInitialization must run on the main thread —
+            // onMessageReceived arrives on a worker thread, so hop over before
+            // touching the engine. Everything downstream (MethodChannel invoke)
+            // must be on the main thread anyway.
+            Handler(Looper.getMainLooper()).post {
+                try {
+                    // Burst-safe: posts are serialized on the main thread and
+                    // startFlutterBackgroundEngine sets this flag only after a
+                    // successful start, so a burst of pushes can never create
+                    // more than one engine.
+                    if (!flutterEngineStarted.get()) {
+                        startFlutterBackgroundEngine(callbackHandle)
+                    }
+                    val engine = backgroundFlutterEngine
+                    if (engine != null) {
+                        val channel = MethodChannel(
+                            engine.dartExecutor.binaryMessenger,
+                            "plugins.flutter.io/firebase_messaging_background"
+                        )
+
+                        val messageMap = mutableMapOf<String, Any?>(
+                            "data" to remoteMessage.data,
+                            "messageId" to remoteMessage.messageId,
+                            "sentTime" to remoteMessage.sentTime,
+                            "from" to remoteMessage.from,
+                            "ttl" to remoteMessage.ttl
+                        )
+
+                        remoteMessage.notification?.let { notification ->
+                            messageMap["notification"] = mapOf(
+                                "title" to notification.title,
+                                "body" to notification.body
+                            )
+                        }
+
+                        channel.invokeMethod("MessagingBackground#onMessage", messageMap)
+                        Log.d(TAG, "Message forwarded to Flutter background handler")
+                    } else {
+                        Log.w(TAG, "Background engine unavailable, message dropped")
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error forwarding to Flutter on main thread: ${e.message}", e)
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error forwarding to Flutter: ${e.message}", e)
+        }
+    }
+
+    private fun startFlutterBackgroundEngine(callbackHandle: Long) {
+        try {
+            if (flutterEngineStarted.get()) return
+
+            val flutterLoader = FlutterLoader()
+            if (!flutterLoader.initialized()) {
+                flutterLoader.startInitialization(applicationContext)
+            }
+            flutterLoader.ensureInitializationComplete(applicationContext, null)
+
+            val callbackInfo = FlutterCallbackInformation.lookupCallbackInformation(callbackHandle)
+            if (callbackInfo == null) {
+                Log.e(TAG, "Could not find Flutter callback information for handle: $callbackHandle")
+                return
+            }
+
+            val appBundlePath = flutterLoader.findAppBundlePath()
+
+            val engine = FlutterEngine(applicationContext)
+            val args = DartExecutor.DartCallback(
+                applicationContext.assets,
+                appBundlePath,
+                callbackInfo
+            )
+
+            engine.dartExecutor.executeDartCallback(args)
+            backgroundFlutterEngine = engine
+            flutterEngineStarted.set(true)
+
+            Log.d(TAG, "Flutter background engine started for message forwarding")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error starting Flutter background engine: ${e.message}", e)
+        }
+    }
+
+    // ==================== CALL HANDLING METHODS ====================
+
+    /**
+     * Incoming-call display name resolution (same order as the Dart
+     * CallerNameResolver): non-placeholder payload name -> saved contact name
+     * from FlutterSharedPreferences -> raw payload -> "Unknown". The wire's
+     * callerName is often the sender's generated @user_xxxxx handle, which
+     * must never win over a name the user actually saved.
+     */
+    private fun isPlaceholderCallerName(name: String?, callerId: String): Boolean {
+        if (name.isNullOrBlank()) return true
+        val t = name.trim()
+        if (t == callerId || t.startsWith("@user_")) return true
+        return t == "Unknown" || t == "Unknown User" ||
+               t == "Incoming Call" || t == "Vant Call"
+    }
+
+    private fun savedContactName(callerId: String): String? {
+        if (callerId.isEmpty()) return null
+        return getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+            .getString("flutter.chat_name_$callerId", null)
+            ?.takeIf { it.isNotBlank() }
+    }
+
+    private fun resolveCallerName(callerId: String, payloadName: String?): String {
+        if (!isPlaceholderCallerName(payloadName, callerId)) return payloadName!!.trim()
+        val saved = savedContactName(callerId)
+        if (!saved.isNullOrBlank()) return saved
+        return payloadName?.trim()?.takeIf { it.isNotEmpty() } ?: "Unknown"
+    }
+
+    private fun handleIncomingCall(data: Map<String, String>) {
+        val callerId = data["callerId"] ?: data["caller_id"] ?: ""
+        val callerName = resolveCallerName(
+            callerId, data["callerName"] ?: data["caller_name"]
+        )
+        val callId = data["callId"] ?: data["call_id"] ?: ""
+        val roomId = data["roomId"] ?: data["room_id"] ?: ""
+        val avatarUrl = data["avatarUrl"] ?: data["avatar_url"] ?: ""
+        val isVideo = data["isVideo"] == "true" || data["is_video"] == "true"
+
+        if (callId.isEmpty() || callerId.isEmpty()) {
+            Log.w(TAG, "⚠️ Invalid incoming_call data: missing callId or callerId")
+            return
+        }
+
+        Log.d(TAG, "📞 Incoming call from $callerName (callId=$callId)")
+        VantCallManager.logIncomingCallDiagnostics(this)
+
+        wakeUpDevice()
+
+        if (isAppForeground() && isFlutterCallScreenVisible()) {
+            Log.d(TAG, "📞 Flutter call screen already visible, skipping native UI")
+            return
+        }
+
+        // If app is in foreground and unlocked, send broadcast to Flutter
+        if (isAppForeground() && !isScreenLockedOrOff()) {
+            Log.d(TAG, "📞 App foreground and unlocked, sending broadcast to Flutter")
+            VantCallManager.startRinging(this, callerName, callerId, callId, roomId, avatarUrl, isVideo)
+            sendFlutterCallBroadcast(data)
+            return
+        }
+
+        // App is background/killed OR screen is locked.
+        // Boot the Dart engine now so socket registration + resync + ICE
+        // prefetch can complete during the ring — MainActivity attaches this
+        // engine on Accept instead of cold-booting a second one.
+        prewarmCallEngine(callId)
+
+        // Make the ringing callId visible to the (headless) Dart side so it can
+        // proactively fetch the offer via call_resync before Accept.
+        getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+            .edit()
+            .putString("flutter.ringing_call_id", callId)
+            .putString("flutter.ringing_caller_id", callerId)
+            .apply()
+
+        // Use Android Telecom framework (like WhatsApp) for guaranteed full-screen intent.
+        Log.d(TAG, "📞 Reporting incoming call to Telecom framework")
+        val telecomSuccess = VantCallManager.reportIncomingCall(
+            this, callerName, callerId, callId, roomId, avatarUrl, isVideo
+        )
+
+        if (!telecomSuccess) {
+            // Fallback: activity first; if it can't be launched, a notification with
+            // answer/decline actions + full-screen intent is shown.
+            Log.w(TAG, "📞 Telecom failed, using fallback approach")
+            VantCallManager.presentIncomingCall(this, callerName, callerId, callId, roomId, avatarUrl, isVideo)
+        }
+    }
+
+# ============================================
+# CLIENT: call_controller.dart (dial watchdog + ringing states)
+# ============================================
+  // Caller-side outreach watchdog: if neither peer_ringing nor a rejection/
+  // termination arrives within this window, the callee is unreachable (dead
+  // VoIP token, dead caller socket, server gate) — fail visibly instead of
+  // sitting on "Dialing…" until the server's 45s ring timeout.
+  static const Duration _dialWatchdogTimeout = Duration(seconds: 20);
+  Timer? _dialWatchdog;
+  String _dialWatchdogTarget = '';
+  bool _dialWatchdogVideo = false;
+  bool _cameraCutInPip = false;
+  bool _videoCallUiVisible = false;
+
+  // Full-screen-intent state: true while USE_FULL_SCREEN_INTENT is denied
+  // (incoming calls fall back to a heads-up notification). When a call rings
+  // while denied, _fsiPromptPending defers the settings dialog until the call
+
+
+  /// Handle peer ringing notification
+  void _handlePeerRinging(Map<String, dynamic> data) {
+    debugPrint('📞 Peer is ringing: $data');
+    _cancelDialWatchdog();
+    callState.value = CallState.ringing;
+  }
+
+  /// Arm the caller-side outreach watchdog. It is cancelled the moment any
+  /// forward progress is observed (peer_ringing, connected) or the call is
+  /// reset for any reason (rejection, termination, user hang-up).
+  void _startDialWatchdog(String target, bool isVideo) {
+    _cancelDialWatchdog();
+    _dialWatchdogTarget = target;
+    _dialWatchdogVideo = isVideo;
+    _dialWatchdog = Timer(_dialWatchdogTimeout, _onDialWatchdogFired);
+  }
+
+  void _cancelDialWatchdog() {
+    _dialWatchdog?.cancel();
+    _dialWatchdog = null;
+  }
+
+  void _onDialWatchdogFired() {
+    _dialWatchdog = null;
+    if (!isCaller.value || callState.value != CallState.dialing) return;
+    final target = _dialWatchdogTarget;
+    final wasVideo = _dialWatchdogVideo;
+    final peerName = target.isNotEmpty
+        ? (remoteDisplayName.value.isNotEmpty
+            ? remoteDisplayName.value
+            : StringUtils.generateFriendlyName(target))
+        : 'The other person';
+    debugPrint(
+      '📞 Dial watchdog: no ringing/rejection within '
+      '${_dialWatchdogTimeout.inSeconds}s for $target — failing visibly',
+    );
+    logCallBreadcrumb(CallBreadcrumb.ended, reason: 'unreachable_timeout');
+    // endCall() emits call terminate (or queues it via _pendingEndCall) so a
+    // delivered-but-unacknowledged callee does not ring on, then resets state.
+    endCall();
+
+# ============================================
+# CLIENT: socket_service.dart (notifyPeerRinging)
+# ============================================
+    );
+  }
+
+  /// Notify peer that device is ringing
+  void notifyPeerRinging({required String callId, required String callerId}) {
+    if (!isConnected.value) {
+      debugPrint('❌ Cannot notify peer ringing: not connected');
+      return;
+    }
+
+    _socket?.emit('peer_ringing', {'callId': callId, 'callerId': callerId});
+    debugPrint('📞 Peer ringing notified');
+  }
+
+  /// Request ICE restart
+  void requestIceRestart({
+
+# ============================================
+# CLIENT: socket_service.dart (peer_ringing receiver)
+# ============================================
+    // WebRTC Call: Peer ringing
+    _socket?.on('peer_ringing', (data) {
+      debugPrint('📞 Peer ringing: $data');
+      if (onPeerRinging != null && data != null) {
+        onPeerRinging!(Map<String, dynamic>.from(data));
+      }
+    });
+
+# ============================================
+# GIT LOG - Key files since Oct 25
+# ============================================
+27ee59d fix(ios): arm ghost CallKit suppression before native teardown
+729ae5a Gate ringing-time suppression behind a testable pure function and lift it on accept.
+726b2c8 Keep the callee ringing screen up when the warm PeerConnection reports a terminal state before accept.
+56341c4 fix(call): show "Securing Encrypted Tunnel" instead of stale "Call ended" on accept
+fb4e608 feat(push): send truncated message preview as notification body
+2370177 fix(privacy): stop sending plaintext message content as push body
+875e0d3 fix(ios): reconcile orphaned CallKit records after cold-start calls
+c7f38df perf(calls): memoize ICE server list with single-flight + stale fallback
+ccde07d fix(calls): return null explicitly in call-action method handler
+896948e fix(ios): gate foreground ghost CallKit end on Flutter-screen ack
+fc03ffe Merge fix-incoming-delivery into release-2.0.x (version 2.0.3+206)
+b2a9f05 fix(calls): harden VoIP token upload and surface unreachable outgoing calls
+d72d47b fix(calls): camera-facing flag stale/inverted after camera switch
+8a1ea58 fix(calls): black remote video for ~4s after minimize/restore
+bf466be fix(calls): self-view tile missing after locked/cold-start video accept
+bb4910a fix(android): classify PiP exit natively + restore correct call route
+f3e4c27 feat(android): video-call Picture-in-Picture behind ff_pip_android
+cc8921e fix(calls): iOS end-call hardening — attribution + no stuck screens
+d2a5eb5 fix(calls): unified caller-name resolution, iOS decline double-end guard, remote-end delivery + UI dismissal
+dc8e5f3 Fixed — all 4 call screens had the same root-route bug.
+
+# ============================================
+# SERVER GIT LOG - call.handlers.js and call_push.service.js
+# ============================================
+f32c426 Allow plain audio calls to bound encrypted-capable callees
+338e187 Persist client capabilities to SQLite so offline callees resolve
+1285d02 Preserve cold-start resync grace
+bc67540 Evict oldest crypto session claims under pressure
+f183453 Preserve signed encrypted capability floor
+7194dc4 Bind encrypted call sessions and reject downgrade
+6615808 Rate limit short-lived TURN credentials
+d9ef421 Relay encrypted call signaling envelopes
+392471b Issue expiring TURN credentials over signaling
+61fbcbc Gate video calls on announced capabilities
+57eb37c Update call.handlers.js
+9dd9364 Update call.handlers.js
+fb7c610 Update call.handlers.js
+69d70df Use custom UI for foreground iOS calls
+85990db Deduplicate concurrent iOS VoIP call pushes
+bcda72b update code
+4d0268d Update call_push.service.js
+79dd241 update code
+6e5e88a Add ICE restart offer signaling for TURN relay recovery
+e07422a Update call.handlers.js
+b7d2b7c update code
+d2ffc58 Update call_push.service.js
+975a0f8 Add missed call notification when caller ends before callee answers
+ba77352 Add username resolution to call notifications
+5f6af8f Fix call termination and remove avatar images from notifications
+aa2a6dd Fix missed call notification: resolve caller name from DB with @user_ fallback
+7afa314 Fix: remove remaining redisService references in call_push.service
+89d63b3 Remove debug logging from call handlers
+deb52c0 Fix call notifications: use DynamoDB for FCM tokens instead of Redis
+b16256c Add iOS VoIP push support, call resync, and auto-accept features
+118d835 fix: clean up active calls on socket disconnect; add stale call TTL
+c34d8fa feat(calls): add terminatedAt timestamp to CALL_TERMINATED event for call history tracking
+f8fff5f Update call handlers and push service for background call FCM delivery
+8b7f508 Fix nginx config for privacy-policy.html and update call handlers
+71a24a1 Fix audio flow: forEach->for loop, add ICE candidate sdpMid/sdpMLineIndex, add stats logging for diagnostics
+2b4a414 Fix caller socket ID lookup to handle reconnections - Use current socket ID from device mapping instead of stored stale socket ID
+65cb55f Fix call ID mismatch - send backend call ID to caller
+330f862 feat: Add WebRTC audio calling with E2EE
+
+# ============================================
+# CURRENT VERSION INFO
+# ============================================
+Branch: fix-android-call-delivery
+Last commit: a533e72 Merge pull request #29 from kris-WoowSocial/fix-callkit-orphan
+pubspec version: version: 2.0.8+208
+
+# ============================================
+# IOS: AppDelegate.swift PushKit/CallKit section
+# ============================================
+  func pushRegistry(_ registry: PKPushRegistry, didReceiveIncomingPushWith payload: PKPushPayload, for type: PKPushType, completion: @escaping () -> Void) {
+    print("📱 PushKit: Incoming VoIP push received: \(payload.dictionaryPayload)")
+    guard type == .voIP else {
+      completion()
+      return
+    }
+
+    let pushType = payload.dictionaryPayload["type"] as? String ?? "incoming_call"
+
+    // Caller cancelled — dismiss the CallKit UI if it's showing (works even when app is killed)
+    if pushType == "call_cancelled" {
+      let callId = payload.dictionaryPayload["callId"] as? String ?? ""
+      print("📱 PushKit: call_cancelled received for callId=\(callId), ending CallKit call")
+      if !callId.isEmpty, let uuid = uuidV5(from: callId) {
+        let endData = flutter_callkit_incoming.Data(id: uuid.uuidString, nameCaller: "", handle: "", type: 0)
+        SwiftFlutterCallkitIncomingPlugin.sharedInstance?.endCall(endData)
+      }
+      completion()
+      return
+    }
+
+    // Extract call data from VoIP push payload (needed by BOTH the foreground
+    // ghost-report path and the normal CallKit path below).
+    let serverCallId = payload.dictionaryPayload["callId"] as? String ?? payload.dictionaryPayload["id"] as? String ?? ""
+    let handle = payload.dictionaryPayload["callerId"] as? String ?? ""
+    // Prefer the contact name the user saved locally — the push payload only
+    // carries the caller's server-side username (e.g. @user_1234). The cache
+    // lives in the App Group UserDefaults (mirrored from Dart's chat_name_*
+    // SharedPreferences keys) so it is readable here, before Flutter starts.
+    let pushName = payload.dictionaryPayload["callerName"] as? String ?? ""
+    let nameCaller = savedContactName(for: handle)
+      ?? (pushName.isEmpty ? nil : pushName)
+      ?? "Vant Call"
+    // isVideo arrives as a String "true"/"false" from the server data dict
+    let isVideoStr = payload.dictionaryPayload["isVideo"] as? String ?? "false"
+    let isVideo = (payload.dictionaryPayload["isVideo"] as? Bool) ?? (isVideoStr == "true")
+
+    // CallKit requires a valid UUID for the call id. Convert the server callId to a
+    // deterministic UUID v5 so it matches the id generated by Dart's CallKitService.
+    let callKitId = serverCallId.isEmpty ? UUID().uuidString : (uuidV5(from: serverCallId)?.uuidString ?? UUID().uuidString)
+
+    // Build CallKit data (shared by the foreground ghost report and the
+    // normal lock-screen report below).
+    let callData = flutter_callkit_incoming.Data(id: callKitId, nameCaller: nameCaller, handle: handle, type: isVideo ? 1 : 0)
+    var extra = payload.dictionaryPayload
+    extra["callId"] = serverCallId
+    // Carry the resolved display name through so the post-accept path shows
+    // the same name the lock screen did.
+    extra["callerName"] = nameCaller
+    callData.extra = extra as NSDictionary
+
+    if isAppForeground {
+      // Apple's VoIP contract: EVERY incoming_call push must be reported to
+      // CallKit, even when the Flutter socket path already owns the call UI.
+      // The old early-return was a violation that gets VoIP pushes throttled.
+      // Report first (satisfies the contract), then ask Dart whether the
+      // Flutter incoming screen is actually up for this callId. Only on an
+      // explicit ack is the ghost CallKit record ended — the silence marker
+      // makes the resulting end/decline events no-ops both natively
+      // (respondToCall) and in Dart (_handleCallKitEvent). If no ack arrives
+      // within ~1 s (engine still starting, socket event not yet landed,
+      // another screen in the way), the CallKit UI STAYS so the user can
+      // still answer — and no decline/end is ever sent to the caller.
+      print("📱 PushKit: foreground — reported to CallKit, awaiting Flutter-screen ack (callId=\(serverCallId))")
+      SwiftFlutterCallkitIncomingPlugin.sharedInstance?.showCallkitIncoming(callData, fromPushKit: true) {
+        completion()
+      }
+      let decision = GhostEndDecision()
+      let endData = flutter_callkit_incoming.Data(id: callKitId, nameCaller: nameCaller, handle: handle, type: isVideo ? 1 : 0)
+      endData.extra = ["callId": serverCallId] as NSDictionary
+      let decideGhostEnd: (Bool) -> Void = { [weak self] confirmed in
+        guard !decision.decided else { return }
+        decision.decided = true
+        if confirmed {
+          guard let controller = self?.window?.rootViewController as? FlutterViewController else { return }
+          FlutterMethodChannel(
+            name: "com.pear.messaging/call",
+            binaryMessenger: controller.binaryMessenger
+          ).invokeMethod("armGhostCallKitEnd", arguments: ["uuid": callKitId]) { armed in
+            guard (armed as? Bool) == true else { return }
+            self?.markCallKitEndSilenced(serverCallId: serverCallId)
+            if let uuid = UUID(uuidString: callKitId) {
+              self?.ghostEndUuids.insert(uuid)
+            }
+            SwiftFlutterCallkitIncomingPlugin.sharedInstance?.endCall(endData)
+            print("📱 PushKit: Flutter screen acked — ghost CallKit record ended silently")
+          }
+        } else {
+          print("📱 PushKit: no Flutter-screen ack — CallKit UI stays, user can answer")
+        }
+      }
+      if let controller = window?.rootViewController as? FlutterViewController {
+        FlutterMethodChannel(
+          name: "com.pear.messaging/call",
+          binaryMessenger: controller.binaryMessenger
+        ).invokeMethod("confirmIncomingCallScreen", arguments: ["callId": serverCallId]) { result in
+          decideGhostEnd((result as? Bool) == true)
+        }
+      }
+      // ~1 s deadline: whichever fires first — the Dart ack or this timer —
+      // settles the decision exactly once.
+      DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+        decideGhostEnd(false)
+      }
+      return
+    }
+
+    print("📱 PushKit: Showing CallKit UI — callId=\(callKitId) caller=\(nameCaller) isVideo=\(isVideo)")
+
+    // Build CallKit data and show native incoming call UI on the lock screen.
+    // CRITICAL: iOS 13+ requires reportNewIncomingCall within this method's call stack.
+    // fromPushKit: true satisfies that requirement.
+    SwiftFlutterCallkitIncomingPlugin.sharedInstance?.showCallkitIncoming(callData, fromPushKit: true) {
+      completion()
+    }
+  }
+
+# ============================================
+# SERVER: connection.js (deviceSocketMap, getDevicePlatform)
+# ============================================
+20:const deviceSocketMap = new Map();
+102:    const connection = deviceSocketMap.get(deviceId);
+192:      getSocketIdForDevice,
+218:    identityService.relayAnnounceAck(io, getSocketIdForDevice, {
+382:    // deviceSocketMap, so a failed claim can never displace the real
+587:    const existingData = deviceSocketMap.get(deviceId);
+609:      const prev = deviceSocketMap.get(previousDeviceId);
+611:        deviceSocketMap.delete(previousDeviceId);
+616:    deviceSocketMap.set(deviceId, {
+682:      totalDevices: deviceSocketMap.size,
+775:      const current = deviceSocketMap.get(deviceId);
+776:      if (current?.socketId === socket.id) deviceSocketMap.delete(deviceId);
+786:        remainingDevices: deviceSocketMap.size,
+805:function getSocketIdForDevice(deviceId) {
+806:  const data = deviceSocketMap.get(deviceId);
+816:  const data = deviceSocketMap.get(deviceId);
+835:  return deviceSocketMap.has(deviceId);
+844:  return deviceSocketMap.get(deviceId)?.isForeground === true;
+848:  const metadata = deviceSocketMap.get(deviceId);
+902:  const connection = deviceId ? deviceSocketMap.get(deviceId) : null;
+
+# ============================================
+# SERVER: VoIP token TTL constant
+# ============================================
+6:const VOIP_TOKEN_TTL = 30 * 24 * 60 * 60; // 30 days in seconds (VoIP tokens are long-lived)
+69:        EX: VOIP_TOKEN_TTL
+
+# ============================================
+# CLIENT: callkit_service.dart (full - 1037 lines)
+# ============================================
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
+import 'package:uuid/uuid.dart';
+import '../constants/network_constants.dart';
+import 'package:flutter_callkit_incoming/entities/android_params.dart';
+import 'package:flutter_callkit_incoming/entities/call_event.dart';
+import 'package:flutter_callkit_incoming/entities/call_kit_params.dart';
+import 'package:flutter_callkit_incoming/entities/ios_params.dart';
+import 'package:flutter_callkit_incoming/entities/notification_params.dart';
+import 'package:flutter_callkit_incoming/flutter_callkit_incoming.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:http/http.dart' as http;
+import 'package:package_info_plus/package_info_plus.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'call_breadcrumbs.dart';
+import 'callkit_reconciler.dart';
+import 'callkit_ghost_events.dart';
+import 'package:flutter/services.dart';
+
+/// CallKit Service - Handles native system incoming call UI
+/// This service runs in background isolate via FCM data messages
+/// MUST be self-contained - NO GetX dependencies (no Get.find())
+///
+/// Works with flutter_callkit_incoming to display Android system-level
+/// incoming call notifications that wake up the app even when closed
+///
+/// IMPORTANT: CallKit is disabled for China region to comply with MIIT regulations
+/// VoIP calling still works, just without native CallKit UI in China
+///
+/// TODO: iOS VoIP Push requires manual configuration:
+/// 1. Apple Developer account with VoIP Services certificate
+/// 2. APNs Authentication Key (.p8) configured in Firebase Console
+///    → Project Settings → Cloud Messaging → iOS app configuration
+/// 3. App ID with PushKit entitlement enabled in Xcode
+/// Without these, iOS background calling will not work even though code is ready.
+class CallKitService {
+  static final CallKitService _instance = CallKitService._internal();
+  factory CallKitService() => _instance;
+  CallKitService._internal();
+
+  // Check if device is in China region (for CallKit compliance)
+  bool _isChinaRegion() {
+    try {
+      final locale = Platform.localeName.toLowerCase();
+      return locale.contains('zh') || locale.contains('cn');
+    } catch (e) {
+      debugPrint('❌ Error detecting region: $e');
+      return false;
+    }
+  }
+
+  // Check if CallKit should be enabled (disabled in China)
+  bool get _isCallKitEnabled => !_isChinaRegion();
+
+  /// APNs environment reported at VoIP token registration.
+  /// Prefers the value read by native from the real aps-environment
+  /// entitlement; falls back to the build mode if it is not yet available.
+  static String _apnsEnvironmentFromPrefs(SharedPreferences prefs) {
+    return prefs.getString('apns_environment') ??
+        (kReleaseMode ? 'production' : 'sandbox');
+  }
+
+  // Event controller for UI layer to listen to call events
+  final StreamController<CallKitEvent> _eventController =
+      StreamController<CallKitEvent>.broadcast();
+  Stream<CallKitEvent> get eventStream => _eventController.stream;
+
+  // Map of callId -> callerId for callback actions from missed call notifications
+  static final Map<String, String> _callIdToCallerId = {};
+
+  // Track which calls are currently managed by CallKit to avoid ending non-existent calls
+  static final Set<String> _activeCallKitCalls = {};
+  // UUIDs with an in-flight FlutterCallkitIncoming.endCall request. Guards
+  // against the decline-event path and a manual reject/end racing into a
+  // second CXEndCallAction for the same call.
+  static final Set<String> _endingCallKitUuids = {};
+
+  // CallKit requires a valid UUID for the call id; our server callIds are not UUIDs.
+  // Map callId <-> CallKit UUID so we can pass a valid UUID to the plugin while
+  // still referencing calls by server callId everywhere else.
+  static final Map<String, String> _callIdToCallKitUuid = {};
+  static final Map<String, String> _callKitUuidToCallId = {};
+
+  // Stable namespace for generating a deterministic UUID from a callId.
+  static const String _uuidNamespace = '6ba7b811-9dad-11d1-80b4-00c04fd430c8';
+
+  String _getCallKitUuid(String callId) {
+    if (_callIdToCallKitUuid.containsKey(callId)) {
+      return _callIdToCallKitUuid[callId]!;
+    }
+    final uuid = const Uuid().v5(_uuidNamespace, callId);
+    _callIdToCallKitUuid[callId] = uuid;
+    _callKitUuidToCallId[uuid.toLowerCase()] = callId;
+    return uuid;
+  }
+
+  String? _getCallIdFromUuid(String? uuid) {
+... (file truncated for brevity, full file is 1037 lines)
