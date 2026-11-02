@@ -506,7 +506,11 @@ class SplashController extends GetxController {
   }
 
   Future<void> _setupDeviceId() async {
-    if (_storageService.deviceId == null) {
+    // Self-repair: a stored ID that fails the server's format check
+    // (legacy truncated UUID / build fingerprint) can never register —
+    // replace it with a fresh epoch-ms ID rather than waiting for the
+    // device_id_invalid round-trip.
+    if (!DeviceUtils.isValidDeviceId(_storageService.deviceId)) {
       final deviceId = await DeviceUtils.getDeviceId();
       await _storageService.setDeviceId(deviceId);
     }

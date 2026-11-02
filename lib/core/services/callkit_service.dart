@@ -374,6 +374,11 @@ class CallKitService {
 
   /// End active call
   static String Function() liveCallId = () => '';
+
+  /// Called when `actionCallIncoming` confirms the CallKit UI is actually
+  /// showing — i.e. the iOS callee's verified "ringing" moment. Set by
+  /// CallController to emit peer_ringing; null is fine off-call.
+  void Function(String callId, String callerId)? onIncomingCallShown;
   static final Set<String> _completedNativeCallIds = {};
   static final Set<String> _silentNativeUuids = {};
   static final ghostEvents = CallKitGhostEvents();
@@ -510,6 +515,16 @@ class CallKitService {
         final incomingId = event.body['id'] as String?;
         if (incomingId != null) {
           _activeCallKitCalls.add(incomingId.toLowerCase());
+        }
+        // iOS callee ack: the CallKit report is the verified ring. The
+        // callback is set by CallController and emits peer_ringing (deduped).
+        final shownCallId = _extractCallId(event.body);
+        if (shownCallId != null && shownCallId.isNotEmpty) {
+          final extra = event.body['extra'] as Map<dynamic, dynamic>?;
+          onIncomingCallShown?.call(
+            shownCallId,
+            extra?['callerId'] as String? ?? '',
+          );
         }
         break;
 

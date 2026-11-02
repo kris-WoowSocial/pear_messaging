@@ -28,10 +28,17 @@ void main() {
       final src = source('lib/features/call/call_controller.dart');
       expect(src, contains('Duration(seconds: 20)'));
       expect(src, contains('Timer(_dialWatchdogTimeout, _onDialWatchdogFired)'));
+      // Two-stage watchdog: stage 1 shows "Trying to reach…" and re-arms;
+      // stage 2 (past the server's 45s ring window) fails visibly.
       expect(
         section(src, 'void _onDialWatchdogFired()', "title: 'Could not reach'"),
-        contains("callState.value != CallState.dialing"),
+        contains('callState.value = CallState.reaching'),
       );
+      expect(
+        section(src, 'void _onDialWatchdogFired()', "title: 'Could not reach'"),
+        contains('callState.value != CallState.reaching'),
+      );
+      expect(src, contains('Timer(_dialWatchdogFinalTimeout, _onDialWatchdogFired)'));
       expect(src, contains("actionLabel: 'Retry'"));
       expect(src, contains('_failOutreachUnreachable();'));
       // Watchdog disarmed on every forward-progress or teardown path.

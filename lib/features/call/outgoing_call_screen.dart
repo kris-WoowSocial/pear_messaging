@@ -187,7 +187,9 @@ class _OutgoingCallScreenState extends State<OutgoingCallScreen> {
   String _getCallStatusText(CallState state) {
     switch (state) {
       case CallState.dialing:
-        return 'Dialing...';
+        return 'Calling...';
+      case CallState.reaching:
+        return 'Trying to reach...';
       case CallState.ringing:
         return 'Ringing...';
       case CallState.connected:

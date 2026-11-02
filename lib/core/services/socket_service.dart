@@ -105,6 +105,11 @@ class SocketService extends GetxService {
   void Function(Map<String, dynamic>)? onIdentityBound;
   void Function(Map<String, dynamic>)? onRegisterRejected;
   void Function(Map<String, dynamic>)? onIdentityConflict;
+
+  /// Server-side signal that the registered deviceId failed format
+  /// validation (digits-only). The client must mint a new epoch-ms ID and
+  /// re-register — wired by main_prod's self-repair path.
+  void Function(Map<String, dynamic>)? onDeviceIdInvalid;
   void Function(Map<String, dynamic>)? onIdentityAnnounceAcked;
 
   /// Inbound verification echo ({from, bundle, mac}) during contact
@@ -333,6 +338,13 @@ class SocketService extends GetxService {
       debugPrint('⚠️ Register rejected by server: $data');
       if (data is Map && onRegisterRejected != null) {
         onRegisterRejected!(Map<String, dynamic>.from(data));
+      }
+    });
+
+    _socket?.on('device_id_invalid', (data) {
+      debugPrint('⚠️ Server rejected deviceId format: $data');
+      if (data is Map && onDeviceIdInvalid != null) {
+        onDeviceIdInvalid!(Map<String, dynamic>.from(data));
       }
     });
 

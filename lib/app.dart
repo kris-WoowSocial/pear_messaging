@@ -6,6 +6,7 @@ import 'package:get/get.dart';
 import 'config/flavor_config.dart';
 import 'core/theme/app_theme.dart';
 import 'core/services/socket_service.dart';
+import 'core/services/fcm_service.dart';
 import 'core/services/webrtc_call_service.dart';
 import 'features/chat_list/chat_list_controller.dart';
 import 'features/chat/chat_controller.dart';
@@ -101,6 +102,16 @@ class _PearMessagingAppState extends State<PearMessagingApp>
       }
     } catch (e) {
       debugPrint('⚠️ Error checking socket: $e');
+    }
+
+    // 1b. Re-upload the FCM token on resume — tokens rotate silently and a
+    // stale token is a dead notification path.
+    try {
+      if (Get.isRegistered<FCMService>()) {
+        unawaited(Get.find<FCMService>().registerTokenIfAvailable());
+      }
+    } catch (e) {
+      debugPrint('⚠️ Error re-registering FCM token on resume: $e');
     }
 
     // 2. Initialize CallController if not already registered (for background accept handling)
