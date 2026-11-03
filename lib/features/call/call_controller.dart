@@ -778,6 +778,7 @@ class CallController extends GetxController {
   void _didChangeAppLifecycleState(AppLifecycleState state) {
     CallKitService.liveCallId = () => currentCallId.value;
     if (state == AppLifecycleState.resumed) {
+      _expireStaleIncomingCall();
       unawaited(CallKitService().reconcileNativeCalls());
     }
     final prevState = _lastLifecycleState;
@@ -995,6 +996,9 @@ class CallController extends GetxController {
       'roomId': data['room_id'] ?? '',
       'avatarUrl': data['avatar_url'] ?? '',
       'isVideo': data['is_video'] == 'true',
+      // Local receipt stamp — used only for same-clock elapsed checks, never
+      // compared against server time (avoids device-clock skew issues).
+      'receivedAtMs': DateTime.now().millisecondsSinceEpoch,
     };
     remoteAvatarUrl.value = callData['avatarUrl'] as String? ?? '';
     _latestIncomingCallData = callData;
@@ -1914,6 +1918,7 @@ class CallController extends GetxController {
                 'roomId': roomId ?? '',
                 'avatarUrl': avatarUrl ?? '',
                 'isVideo': isVideo,
+                'receivedAtMs': DateTime.now().millisecondsSinceEpoch,
               };
               remoteAvatarUrl.value = callData['avatarUrl'] as String? ?? '';
               _latestIncomingCallData = callData;
@@ -3969,6 +3974,64 @@ class CallController extends GetxController {
         hasPendingIncomingCall;
   }
 
+  /// Max local age of a pending incoming ring before it is treated as stale.
+  /// Matches the server's 45 s ring timeout: an unanswered call older than
+  /// this no longer exists server-side, so presenting its UI can only ring a
+  /// phantom (airplane-mode stale-ring case).
+  static const int incomingRingWindowMs = 45000;
+
+  /// Staleness decision for a pending incoming call. [receivedAtMs] and
+  /// [nowMs] come from the SAME local clock, so the delta is skew-free — the
+  /// server's push timestamp is never compared against the device clock.
+  /// A missing receipt stamp fails open (the call keeps ringing).
+  static bool isIncomingRingExpired({
+    required int? receivedAtMs,
+    required int nowMs,
+    int windowMs = incomingRingWindowMs,
+  }) {
+    if (receivedAtMs == null) return false;
+    return nowMs - receivedAtMs > windowMs;
+  }
+
+  /// On wake/resume, drop a pending incoming-call presentation that is older
+  /// than the server ring window. No liveness probe is needed: elapsed > 45 s
+  /// on the local clock already proves the server tore the call down; the
+  /// socket call_resync -> CALL_TERMINATED{expired} path is the backstop.
+  void _expireStaleIncomingCall() {
+    final data = _latestIncomingCallData;
+    if (data == null) return;
+    final callId = data['callId'] as String?;
+    if (!isIncomingRingExpired(
+      receivedAtMs: data['receivedAtMs'] as int?,
+      nowMs: DateTime.now().millisecondsSinceEpoch,
+    )) {
+      return;
+    }
+    debugPrint(
+      '📞 Expiring stale incoming-call presentation for $callId '
+      '(older than server ring window)',
+    );
+    _latestIncomingCallData = null;
+    _ringtoneService.stopRingtone();
+    if (callId != null) {
+      NotificationService().cancelNotification(callId.hashCode);
+    }
+    // Drop the incoming-call route if it is still on the stack — guarded so a
+    // dead cold-start route lands on /chat-list, not a black screen.
+    if (Get.currentRoute == '/call/incoming') {
+      final navigator = Get.key.currentState;
+      if (navigator != null && navigator.canPop()) {
+        Get.back();
+      } else {
+        Get.offAllNamed('/chat-list');
+      }
+    }
+    // End the CallKit/native record too so a stale banner cannot keep ringing.
+    if (callId != null && callId.isNotEmpty) {
+      unawaited(CallKitService().endCall(callId));
+    }
+  }
+
   /// Handle call ended from WebRTC
   void _handleCallEnded(String callId) {
     debugPrint('📞 Call ended: $callId');
@@ -4005,6 +4068,9 @@ class CallController extends GetxController {
     if (_pendingAutoAcceptCallId == callId) {
       // fall through to the accept path below
     } else if (!isInCall && !isCaller.value) {
+      // A resync re-emit means the server session is live right now — stamp
+      // local receipt so the wake-time staleness check ages from here.
+      data['receivedAtMs'] = DateTime.now().millisecondsSinceEpoch;
       _latestIncomingCallData = data;
       _prepareIncomingWebRtc(data, callId, callerId);
       debugPrint('📞 Resync offer cached during ringing for $callId');
