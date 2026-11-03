@@ -5,6 +5,7 @@ import UserNotifications
 import PushKit
 import CallKit
 import AVFoundation
+import WebRTC
 import flutter_callkit_incoming
 import CommonCrypto
 
@@ -656,10 +657,12 @@ import CommonCrypto
 
   func didActivateAudioSession(_ audioSession: AVAudioSession) {
     print("📱 CallKit: didActivateAudioSession")
+    RTCAudioSession.sharedInstance().audioSessionDidActivate(audioSession)
   }
 
   func didDeactivateAudioSession(_ audioSession: AVAudioSession) {
     print("📱 CallKit: didDeactivateAudioSession")
+    RTCAudioSession.sharedInstance().audioSessionDidDeactivate(audioSession)
   }
 
   func onAccept(_ call: Call, _ action: CXAnswerCallAction) {

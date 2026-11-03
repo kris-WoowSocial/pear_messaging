@@ -3163,6 +3163,7 @@ class CallController extends GetxController {
 
   /// Initialize audio mode to prevent 60-second speaker delay
   Future<void> _initializeAudioMode() async {
+    if (Platform.isIOS) return;
     try {
       await _callChannel.invokeMethod('ensureAudioMode');
       // Small delay to let Android audio subsystem settle
