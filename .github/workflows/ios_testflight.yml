@@ -56,6 +56,9 @@ jobs:
           fi
           xcodebuild -version
 
+      - name: PushKit structural check — every completion() must follow a CallKit report
+        run: python3 scripts/check_pushkit_report.py
+
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
@@ -144,6 +147,32 @@ jobs:
           fi
           echo "Privacy manifest present in $IPA"
           unzip -l "$IPA" | grep "PrivacyInfo.xcprivacy"
+
+      # Crashlytics symbolication: flutter build ipa leaves dSYMs in the
+      # xcarchive. Always list them + UUIDs (dry-run evidence); upload only
+      # when confirm_upload=yes so a validate-only run exercises the path
+      # without touching Crashlytics.
+      - name: Enumerate dSYMs from the archive
+        run: |
+          DSYM_DIR="build/ios/archive/Runner.xcarchive/dSYMs"
+          if [ ! -d "$DSYM_DIR" ] || [ -z "$(ls -A "$DSYM_DIR" 2>/dev/null)" ]; then
+            echo "::error::No dSYMs in $DSYM_DIR — Crashlytics crashes for this build will be unsymbolicated"
+            exit 1
+          fi
+          for d in "$DSYM_DIR"/*.dSYM; do
+            echo "dSYM: $d"
+            dwarfdump --uuid "$d" | head -2
+          done
+
+      - name: Upload dSYMs to Crashlytics
+        if: github.event.inputs.confirm_upload == 'yes'
+        run: |
+          DSYM_DIR="build/ios/archive/Runner.xcarchive/dSYMs"
+          cd build/ios/archive/Runner.xcarchive && zip -qr "$RUNNER_TEMP/dsyms.zip" dSYMs && cd -
+          ios/Pods/FirebaseCrashlytics/upload-symbols \
+            -gsp ios/Runner/GoogleService-Info.plist \
+            -p ios \
+            "$RUNNER_TEMP/dsyms.zip"
 
       - name: Store App Store Connect API key
         env:

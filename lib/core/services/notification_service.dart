@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:get/get.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../../features/call/call_controller.dart';
 
 /// Notification Service - Handles high-priority call notifications with Accept/Reject buttons
@@ -203,6 +204,21 @@ class NotificationService {
     required String callerId,
     required String callerName,
   }) async {
+    // Dedupe: the CallKit plugin already posts its own missed-call
+    // notification on ring timeout — suppress a second one for the same call.
+    final prefs = await SharedPreferences.getInstance();
+    final alreadyNotifiedAt = prefs.getInt('missed_call_notified_$callId');
+    if (alreadyNotifiedAt != null &&
+        DateTime.now().millisecondsSinceEpoch - alreadyNotifiedAt <
+            const Duration(hours: 1).inMilliseconds) {
+      debugPrint('🔔 Missed call notification already shown for $callId — skipping');
+      return;
+    }
+    await prefs.setInt(
+      'missed_call_notified_$callId',
+      DateTime.now().millisecondsSinceEpoch,
+    );
+
     debugPrint('🔔 Showing missed call notification for $callerName');
 
     final AndroidNotificationDetails androidDetails =

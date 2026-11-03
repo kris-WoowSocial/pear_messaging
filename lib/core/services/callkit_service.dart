@@ -73,6 +73,11 @@ class CallKitService {
 
   // Track which calls are currently managed by CallKit to avoid ending non-existent calls
   static final Set<String> _activeCallKitCalls = {};
+
+  /// Test-only: whether a CallKit uuid is currently tracked as active.
+  @visibleForTesting
+  static bool debugIsCallKitTracked(String uuid) =>
+      _activeCallKitCalls.contains(uuid.toLowerCase());
   // UUIDs with an in-flight FlutterCallkitIncoming.endCall request. Guards
   // against the decline-event path and a manual reject/end racing into a
   // second CXEndCallAction for the same call.
@@ -260,7 +265,9 @@ class CallKitService {
       type: isVideo ? 1 : 0, // 0 = audio call, 1 = video call
       textAccept: 'Accept',
       textDecline: 'Decline',
-      duration: 30000, // Ring for 30 seconds
+      // Match the server's 45 s ring timeout so the callee's CallKit UI and
+      // the caller's "no answer" end happen together instead of ~15 s apart.
+      duration: 45000,
       extra: <String, dynamic>{
         'callerId': callerId,
         'callId': callId,
@@ -570,6 +577,13 @@ class CallKitService {
         break;
 
       case Event.actionCallDecline:
+        // Drop tracking before the silenced-consume break: a silenced end
+        // (placeholder report / ghost end) must not leak the uuid into
+        // _activeCallKitCalls, where it would stale-guard a later call that
+        // reuses the same deterministic CallKit uuid.
+        if (eventUuid != null) {
+          _activeCallKitCalls.remove(eventUuid);
+        }
         if (await _consumeSilencedCallKitEvent(_extractCallId(event.body))) {
           debugPrint(
             '📞 CallKitService: silenced ghost decline — foreground push reported for compliance, caller keeps ringing',
@@ -598,6 +612,9 @@ class CallKitService {
         break;
 
       case Event.actionCallEnded:
+        if (eventUuid != null) {
+          _activeCallKitCalls.remove(eventUuid);
+        }
         if (await _consumeSilencedCallKitEvent(_extractCallId(event.body))) {
           debugPrint(
             '📞 CallKitService: silenced ghost end — no caller-facing signal, Flutter screen untouched',
@@ -622,6 +639,19 @@ class CallKitService {
         final uuid = event.body['id'] as String?;
         if (uuid != null) {
           _activeCallKitCalls.remove(uuid.toLowerCase());
+        }
+        // The plugin posts its own missed-call notification natively here —
+        // mark it so the server's missed_call push doesn't post a second one.
+        final timeoutCallId = _extractCallId(event.body);
+        if (timeoutCallId != null && timeoutCallId.isNotEmpty) {
+          unawaited(
+            SharedPreferences.getInstance().then(
+              (p) => p.setInt(
+                'missed_call_notified_$timeoutCallId',
+                DateTime.now().millisecondsSinceEpoch,
+              ),
+            ),
+          );
         }
         _eventController.add(
           CallKitEvent(type: CallKitEventType.timeout, callId: _extractCallId(event.body)),
