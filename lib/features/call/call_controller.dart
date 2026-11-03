@@ -32,6 +32,7 @@ import '../../core/services/pip_service.dart';
 import '../../core/services/notification_service.dart';
 import '../../core/services/call_foreground_service.dart';
 import '../../core/services/callkit_service.dart';
+import '../../core/services/peer_ringing_notifier.dart';
 import '../../core/services/fcm_service.dart';
 import '../../core/utils/string_utils.dart';
 import '../../storage/models/call_history_entry.dart';
@@ -42,6 +43,7 @@ import 'fsi_prompt_decision.dart';
 enum CallState {
   idle,
   dialing, // Server searching for peer
+  reaching, // No callee life yet — still inside the server's ring window
   ringing, // Peer device alerting
   connected,
   ended,
@@ -304,14 +306,22 @@ class CallController extends GetxController {
   Timer? _pipPauseDebounce;
   Timer? _pipCameraCutWatcher;
 
-  // Caller-side outreach watchdog: if neither peer_ringing nor a rejection/
-  // termination arrives within this window, the callee is unreachable (dead
-  // VoIP token, dead caller socket, server gate) — fail visibly instead of
-  // sitting on "Dialing…" until the server's 45s ring timeout.
+  // Caller-side outreach watchdog, two stages. Stage 1 (20s): no callee life
+  // yet — surface "Trying to reach…" and keep waiting; the callee may still
+  // wake via push. Stage 2 (+35s ≈ 55s total, past the server's 45s ring
+  // timeout): still nothing — fail visibly. Once ANY forward progress
+  // arrives (peer_ringing / callee_connecting / accept / reject / terminate)
+  // the watchdog is cancelled and the server's ring window governs.
   static const Duration _dialWatchdogTimeout = Duration(seconds: 20);
+  static const Duration _dialWatchdogFinalTimeout = Duration(seconds: 35);
   Timer? _dialWatchdog;
   String _dialWatchdogTarget = '';
   bool _dialWatchdogVideo = false;
+
+  // Callee-side: emits peer_ringing to the caller exactly once per call when
+  // this device's call UI is actually presented (deduped per callId).
+  late final PeerRingingNotifier _peerRinging =
+      PeerRingingNotifier(_socketService.notifyPeerRinging);
   bool _cameraCutInPip = false;
   bool _videoCallUiVisible = false;
 
@@ -337,6 +347,9 @@ class CallController extends GetxController {
   void onInit() {
     super.onInit();
     CallKitService.liveCallId = () => currentCallId.value;
+    CallKitService().onIncomingCallShown = (callId, callerId) {
+      _peerRinging.notify(callId: callId, callerId: callerId);
+    };
     unawaited(CallKitService().reconcileNativeCalls());
     debugPrint('📞 CallController onInit called');
     _lifecycleObserver = _CallLifecycleObserver(this);
@@ -843,6 +856,7 @@ class CallController extends GetxController {
     final incomingRinging =
         Get.currentRoute == '/call/incoming' ||
         callState.value == CallState.ringing ||
+        callState.value == CallState.reaching ||
         callState.value == CallState.dialing;
     final allowed = shouldEnterPip(
       isVideoCall: isVideoCall.value,
@@ -984,6 +998,11 @@ class CallController extends GetxController {
     };
     remoteAvatarUrl.value = callData['avatarUrl'] as String? ?? '';
     _latestIncomingCallData = callData;
+    // Callee ack (FCM data-message path): incoming UI is being presented.
+    _peerRinging.notify(
+      callId: callId,
+      callerId: callData['callerId'] as String,
+    );
     _prefetchIceServersDuringRinging();
     _setCallScreenVisible(true);
     _showWhenLocked();
@@ -1898,6 +1917,12 @@ class CallController extends GetxController {
               };
               remoteAvatarUrl.value = callData['avatarUrl'] as String? ?? '';
               _latestIncomingCallData = callData;
+              // Callee ack (native/Telecom path): the full-screen incoming UI
+              // is being presented — verified callee life for the caller.
+              _peerRinging.notify(
+                callId: callId,
+                callerId: callerId ?? '',
+              );
               Get.toNamed('/call/incoming', arguments: callData);
             }
             return null;
@@ -3145,7 +3170,15 @@ class CallController extends GetxController {
   void _handleCalleeConnecting(Map<String, dynamic> data) {
     if (!isCaller.value || data['callId'] != currentCallId.value) return;
     debugPrint('📞 Callee accepted and is connecting: ${data['callId']}');
+    // REST/CallKit accept is verified callee life — stop the outreach
+    // watchdog (this is what killed calls accepted from a cold start) and
+    // show "Ringing…"; the server's ring/resync timers govern from here.
+    _cancelDialWatchdog();
     _ringtoneService.stopRingtone();
+    if (callState.value == CallState.dialing ||
+        callState.value == CallState.reaching) {
+      callState.value = CallState.ringing;
+    }
   }
 
   /// Handle call accepted from socket
@@ -3718,8 +3751,23 @@ class CallController extends GetxController {
     debugPrint('📞 SDP answer sent to socket');
   }
 
-  /// Handle peer ringing notification
+  /// Handle peer ringing notification (callee ack, or the server's
+  /// ring signal on verified callee life). Validated: must target THIS
+  /// call and arrive while we're still reaching out — a late signal must
+  /// never regress a connected/ended call to "Ringing…".
   void _handlePeerRinging(Map<String, dynamic> data) {
+    final callId = data['callId'] as String?;
+    if (!isCaller.value ||
+        callId == null ||
+        callId != currentCallId.value ||
+        (callState.value != CallState.dialing &&
+            callState.value != CallState.reaching)) {
+      debugPrint(
+        '📞 Ignoring peer_ringing: callId=$callId current=${currentCallId.value} '
+        'caller=${isCaller.value} state=${callState.value}',
+      );
+      return;
+    }
     debugPrint('📞 Peer is ringing: $data');
     _cancelDialWatchdog();
     callState.value = CallState.ringing;
@@ -3742,7 +3790,17 @@ class CallController extends GetxController {
 
   void _onDialWatchdogFired() {
     _dialWatchdog = null;
-    if (!isCaller.value || callState.value != CallState.dialing) return;
+    if (!isCaller.value) return;
+    if (callState.value == CallState.dialing) {
+      // Stage 1: no callee life within the outreach window. The callee may
+      // still wake via push — surface "Trying to reach…" and give the
+      // server's 45s ring timeout room to fire instead of aborting now.
+      callState.value = CallState.reaching;
+      _dialWatchdog = Timer(_dialWatchdogFinalTimeout, _onDialWatchdogFired);
+      return;
+    }
+    if (callState.value != CallState.reaching) return;
+    // Stage 2: ~55s with zero callee life — past the server's ring window.
     final target = _dialWatchdogTarget;
     final wasVideo = _dialWatchdogVideo;
     final peerName = target.isNotEmpty
@@ -3751,8 +3809,8 @@ class CallController extends GetxController {
             : StringUtils.generateFriendlyName(target))
         : 'The other person';
     debugPrint(
-      '📞 Dial watchdog: no ringing/rejection within '
-      '${_dialWatchdogTimeout.inSeconds}s for $target — failing visibly',
+      '📞 Dial watchdog: no callee life after reach window for $target — '
+      'failing visibly',
     );
     logCallBreadcrumb(CallBreadcrumb.ended, reason: 'unreachable_timeout');
     // endCall() emits call terminate (or queues it via _pendingEndCall) so a
@@ -4125,6 +4183,7 @@ class CallController extends GetxController {
   /// Reset call state
   void _resetCallState() {
     _cancelDialWatchdog();
+    _peerRinging.reset();
     _resetCryptoState();
     final callId = currentCallId.value;
     _markRecentlyEnded(callId);
@@ -4231,6 +4290,7 @@ class CallController extends GetxController {
       callState.value != CallState.idle && callState.value != CallState.ended;
   bool get isConnecting =>
       callState.value == CallState.dialing ||
+      callState.value == CallState.reaching ||
       callState.value == CallState.ringing;
   bool get isConnected => callState.value == CallState.connected;
 
@@ -4239,6 +4299,7 @@ class CallController extends GetxController {
     return switch (callState.value) {
       CallState.connected => callDuration.value,
       CallState.dialing => 'Calling…',
+      CallState.reaching => 'Trying to reach…',
       CallState.ringing => isCaller.value
           ? 'Ringing…'
           : 'Securing Encrypted Tunnel…',
@@ -4449,6 +4510,11 @@ class CallController extends GetxController {
     // always have the SDP offer available.
     _latestIncomingCallData = data;
     _socketService.callUrgency = true;
+
+    // Callee ack (socket path): the call has survived every reject gate and
+    // this device is processing it — tell the caller so their outreach
+    // watchdog can stand down. Deduped per callId.
+    _peerRinging.notify(callId: incomingCallId, callerId: incomingCallerId);
 
     // Warm the PeerConnection + remote offer while the phone rings —
     // skipped internally if a call is already active.

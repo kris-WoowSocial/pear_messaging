@@ -113,8 +113,15 @@ void main() async {
 Future<void> initializeCriticalServices() async {
   final storageService = await Get.putAsync(() => LocalStorageService().init());
   var deviceId = storageService.deviceId ?? '';
-  if (deviceId.isEmpty) {
-    deviceId = DateTime.now().millisecondsSinceEpoch.toString();
+  if (!DeviceUtils.isValidDeviceId(deviceId)) {
+    // Self-repair: legacy writers (truncated UUIDs, Android build
+    // fingerprints) persisted IDs the server now rejects at register.
+    // Mint a server-valid epoch-ms ID — the socket register + FCM upload
+    // below pick up the repaired value automatically.
+    if (deviceId.isNotEmpty) {
+      debugPrint('🔧 Stored deviceId invalid ($deviceId) — self-repairing');
+    }
+    deviceId = DeviceUtils.generateNewDeviceId();
     await storageService.setDeviceId(deviceId);
   }
 
@@ -172,6 +179,8 @@ Future<void> initializeCriticalServices() async {
       requestIdentityRecovery('identity_conflict');
   earlySocketService.onRegisterRejected = (data) =>
       requestIdentityRecovery(data['reason'] as String?);
+  earlySocketService.onDeviceIdInvalid = (_) =>
+      _repairInvalidDeviceId(storageService, earlySocketService);
 
   // Unreadable secure storage is an error state, never an auto-recovery
   // trigger. Surface it once the UI is up.
@@ -295,6 +304,36 @@ Future<void> initializeCriticalServices() async {
   // Initialize CallController for handling incoming calls when app launches from background
   debugPrint('✅ CallController initialized');
 }
+
+/// Self-repair for a stored deviceId the server rejects on format grounds
+/// (legacy truncated-UUID / build-fingerprint IDs). Mints a fresh epoch-ms
+/// ID, persists it, and re-registers the socket — which also re-uploads the
+/// FCM token. No identity-key conflict exists here, so no confirm gate;
+/// the snackbar keeps it visible rather than a silent loop.
+Future<void> _repairInvalidDeviceId(
+  LocalStorageService storageService,
+  SocketService socketService,
+) async {
+  if (_deviceIdRepairInFlight) return;
+  _deviceIdRepairInFlight = true;
+  try {
+    final newId = DeviceUtils.generateNewDeviceId();
+    await storageService.setDeviceId(newId);
+    await socketService.switchDeviceId(newId);
+    debugPrint('🔧 device_id_invalid: repaired and re-registered');
+    Get.snackbar(
+      'Device identity reset',
+      'Your device ID was reset because the stored ID was invalid. '
+          'You are reachable again.',
+      snackPosition: SnackPosition.BOTTOM,
+      duration: const Duration(seconds: 5),
+    );
+  } finally {
+    _deviceIdRepairInFlight = false;
+  }
+}
+
+bool _deviceIdRepairInFlight = false;
 
 /// Mint a fresh deviceId + identity keypair after an identity conflict or
 /// confirmed-orphan state. Returns the new deviceId. Existing chats are

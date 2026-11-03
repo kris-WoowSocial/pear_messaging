@@ -581,7 +581,7 @@ class _SelfDestructSheetState extends State<_SelfDestructSheet> {
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 32),
             child: Text(
-              'This will permanently delete ALL chats, messages, and app data.\n\nThis action cannot be undone and data cannot be recovered.',
+              'This will permanently delete ALL chats, messages, and app data.\n\nYou will get a NEW device identity — your contacts will need to re-add you to reach you again.\n\nThis action cannot be undone and data cannot be recovered.',
               textAlign: TextAlign.center,
               style: TextStyle(
                 color: Colors.white60,
