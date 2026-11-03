@@ -483,7 +483,7 @@ import CommonCrypto
       // end it immediately. The real call's record is ended separately.
       // completion() runs only after the report callback.
       let placeholderId = UUID().uuidString
-      let placeholderData = flutter_callkit_incoming.Data(id: placeholderId, nameCaller: "", handle: "", type: 0)
+      let placeholderData = flutter_callkit_incoming.Data(id: placeholderId, nameCaller: "Vant", handle: "Vant", type: 0)
       placeholderData.extra = ["callId": placeholderId] as NSDictionary
       SwiftFlutterCallkitIncomingPlugin.sharedInstance?.showCallkitIncoming(placeholderData, fromPushKit: true) { [weak self] in
         // End the real call's CallKit record (silenced: no decline/end
