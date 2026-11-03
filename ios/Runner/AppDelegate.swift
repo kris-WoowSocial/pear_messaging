@@ -8,6 +8,7 @@ import AVFoundation
 import WebRTC
 import flutter_callkit_incoming
 import CommonCrypto
+import os.log
 
 @main
 @objc class AppDelegate: FlutterAppDelegate, PKPushRegistryDelegate, CallkitIncomingAppDelegate {
@@ -850,7 +851,7 @@ import CommonCrypto
     }
     let inputs = session.currentRoute.inputs.map { $0.portType.rawValue }.joined(separator: ",")
     let outputs = session.currentRoute.outputs.map { $0.portType.rawValue }.joined(separator: ",")
-    NSLog("%@", "VantAudio event=\(event) app=\(appState) protectedDataAvailable=\(app.isProtectedDataAvailable) category=\(session.category.rawValue) mode=\(session.mode.rawValue) inputs=\(inputs) outputs=\(outputs) avActive=unavailable rtcActive=\(rtc.isActive) rtcAudioEnabled=\(rtc.isAudioEnabled) rtcManualAudio=\(rtc.useManualAudio)")
+    os_log("%{public}@", log: .default, type: .info, "VantAudio event=\(event) app=\(appState) protectedDataAvailable=\(app.isProtectedDataAvailable) category=\(session.category.rawValue) mode=\(session.mode.rawValue) inputs=\(inputs) outputs=\(outputs) avActive=unavailable rtcActive=\(rtc.isActive) rtcAudioEnabled=\(rtc.isAudioEnabled) rtcManualAudio=\(rtc.useManualAudio)")
   }
 
   private func setupAudioSessionObservers() {

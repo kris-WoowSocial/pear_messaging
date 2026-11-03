@@ -1,11 +1,72 @@
 import 'dart:io';
 
 import 'package:flutter/widgets.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pear_messaging/features/call/call_controller.dart';
+import 'package:pear_messaging/core/services/webrtc_call_service.dart';
 
 void main() {
   group('iOS video call fixes', () {
+    test('recording configuration is applied only at iOS connect before routing', () {
+      final source = File('lib/core/services/webrtc_call_service.dart').readAsStringSync();
+      final connected = source.substring(
+        source.indexOf('case RTCPeerConnectionState.RTCPeerConnectionStateConnected:'),
+        source.indexOf('case RTCPeerConnectionState.RTCPeerConnectionStateDisconnected:'),
+      );
+      expect(connected, contains('if (Platform.isIOS)'));
+      expect(connected, contains('await Helper.setAppleAudioIOMode('));
+      expect(connected, contains('AppleAudioIOMode.localAndRemote'));
+      expect(connected, contains('preferSpeakerOutput: false'));
+      final configure = connected.indexOf('await Helper.setAppleAudioIOMode(');
+      for (final operation in [
+        "onCallStateChange?.call('connected')",
+        '_startDurationTimer()',
+        '_startStatsLogger()',
+      ]) {
+        expect(connected.indexOf(operation), allOf(greaterThanOrEqualTo(0), lessThan(configure)));
+      }
+      expect(connected, contains('revision != connectionStateRevision'));
+      expect(connected, contains('!identical(_peerConnection, connection)'));
+      expect(connected.indexOf('await Helper.setAppleAudioIOMode('),
+          lessThan(connected.indexOf('_configureAudioSession(')));
+      expect('Helper.setAppleAudioIOMode('.allMatches(source).length, 1);
+      expect(source.substring(source.indexOf('Future<void> _endCall()')),
+          isNot(contains('Helper.setAppleAudioIOMode(')));
+    });
+
+    testWidgets('second call starts its duration timer after completed cleanup', (tester) async {
+      const channel = MethodChannel('FlutterWebRTC.Method');
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        channel, (call) async => null,
+      );
+      final service = WebRTCCallService();
+      var completed = 0;
+      service.onCallEnded = (_) => completed++;
+      try {
+        service.startDurationTimerForTesting();
+        await tester.pump(const Duration(seconds: 2));
+        expect(service.getCallDuration(), '00:02');
+        service.endCall();
+        await tester.pump();
+        expect(completed, 1);
+        expect(service.getCallDuration(), '00:00');
+        await tester.pump(const Duration(seconds: 2));
+        expect(service.getCallDuration(), '00:00');
+        service.startDurationTimerForTesting();
+        await tester.pump(const Duration(seconds: 1));
+        expect(service.getCallDuration(), '00:01');
+        service.endCall();
+        await tester.pump();
+        expect(completed, 2);
+      } finally {
+        service.endCall();
+        await tester.pump();
+        service.onCallEnded = null;
+        tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(channel, null);
+      }
+    });
+
     test('camera pause lifecycle rule: paused always pauses; inactive only on hold', () {
       expect(
         CallController.shouldPauseCameraForLifecycle(
