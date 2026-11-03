@@ -127,6 +127,42 @@ jobs:
             --build-number=${{ env.VERSION_CODE }} \
             --export-options-plist=ios/ExportOptions.plist
 
+      # Crashlytics symbolication: flutter build ipa leaves dSYMs in the
+      # xcarchive. Always list them + UUIDs (evidence in the run log); upload
+      # to Crashlytics. Both steps are non-fatal — a missing dSYM dir or a
+      # Firebase upload failure must never block a release.
+      - name: Enumerate dSYMs from the archive
+        continue-on-error: true
+        run: |
+          DSYM_DIR="build/ios/archive/Runner.xcarchive/dSYMs"
+          if [ ! -d "$DSYM_DIR" ] || [ -z "$(ls -A "$DSYM_DIR" 2>/dev/null)" ]; then
+            echo "::warning::No dSYMs in $DSYM_DIR — Crashlytics crashes for this build will be unsymbolicated"
+            exit 1
+          fi
+          for d in "$DSYM_DIR"/*.dSYM; do
+            echo "dSYM: $d"
+            dwarfdump --uuid "$d"
+          done
+
+      - name: Upload dSYMs to Crashlytics
+        continue-on-error: true
+        run: |
+          DSYM_DIR="build/ios/archive/Runner.xcarchive/dSYMs"
+          if [ ! -d "$DSYM_DIR" ]; then
+            echo "::warning::Skipping dSYM upload — $DSYM_DIR missing"
+            exit 0
+          fi
+          if [ ! -x "ios/Pods/FirebaseCrashlytics/upload-symbols" ]; then
+            echo "::warning::upload-symbols binary missing — CocoaPods may not have resolved FirebaseCrashlytics"
+            exit 0
+          fi
+          cd build/ios/archive/Runner.xcarchive && zip -qr "$RUNNER_TEMP/dsyms.zip" dSYMs && cd -
+          ios/Pods/FirebaseCrashlytics/upload-symbols \
+            -gsp ios/Runner/GoogleService-Info.plist \
+            -p ios \
+            "$RUNNER_TEMP/dsyms.zip" \
+          || echo "::warning::dSYM upload to Crashlytics failed — crashes for this build may be unsymbolicated"
+
       - name: Upload to App Store Connect
         env:
           APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
