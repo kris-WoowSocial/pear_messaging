@@ -5,6 +5,7 @@ import UserNotifications
 import PushKit
 import CallKit
 import AVFoundation
+import WebRTC
 import flutter_callkit_incoming
 import CommonCrypto
 
@@ -656,14 +657,21 @@ import CommonCrypto
 
   func didActivateAudioSession(_ audioSession: AVAudioSession) {
     print("📱 CallKit: didActivateAudioSession")
+    logCallAudioState("callkit_activate_before_forward")
+    RTCAudioSession.sharedInstance().audioSessionDidActivate(audioSession)
+    logCallAudioState("callkit_activate_after_forward")
   }
 
   func didDeactivateAudioSession(_ audioSession: AVAudioSession) {
     print("📱 CallKit: didDeactivateAudioSession")
+    logCallAudioState("callkit_deactivate_before_forward")
+    RTCAudioSession.sharedInstance().audioSessionDidDeactivate(audioSession)
+    logCallAudioState("callkit_deactivate_after_forward")
   }
 
   func onAccept(_ call: Call, _ action: CXAnswerCallAction) {
     print("📱 CallKit: onAccept")
+    logCallAudioState("native_answer")
     persistPendingAcceptedCall(call: call)
     notifyFlutterOfCallAccept(call: call)
     respondToCall(call: call, action: "accept")
@@ -825,6 +833,26 @@ import CommonCrypto
     }
   }
 
+  private func logCallAudioState(_ event: String) {
+    guard Thread.isMainThread else {
+      DispatchQueue.main.async { [weak self] in self?.logCallAudioState(event) }
+      return
+    }
+    let session = AVAudioSession.sharedInstance()
+    let rtc = RTCAudioSession.sharedInstance()
+    let app = UIApplication.shared
+    let appState: String
+    switch app.applicationState {
+    case .active: appState = "active"
+    case .inactive: appState = "inactive"
+    case .background: appState = "background"
+    @unknown default: appState = "unknown"
+    }
+    let inputs = session.currentRoute.inputs.map { $0.portType.rawValue }.joined(separator: ",")
+    let outputs = session.currentRoute.outputs.map { $0.portType.rawValue }.joined(separator: ",")
+    NSLog("%@", "VantAudio event=\(event) app=\(appState) protectedDataAvailable=\(app.isProtectedDataAvailable) category=\(session.category.rawValue) mode=\(session.mode.rawValue) inputs=\(inputs) outputs=\(outputs) avActive=unavailable rtcActive=\(rtc.isActive) rtcAudioEnabled=\(rtc.isAudioEnabled) rtcManualAudio=\(rtc.useManualAudio)")
+  }
+
   private func setupAudioSessionObservers() {
     guard !audioSessionObserversRegistered else { return }
     audioSessionObserversRegistered = true
@@ -850,12 +878,14 @@ import CommonCrypto
 
     switch type {
     case .began:
+      logCallAudioState("interruption_begin")
       print("🔊 Audio session interruption began (inCall=\(isInCall))")
       if isInCall {
         interruptedWhileInCall = true
         notifyFlutterCallLifecycle("call_held")
       }
     case .ended:
+      logCallAudioState("interruption_end")
       guard isInCall else { return }
       notifyFlutterCallLifecycle("call_unheld")
       defer { interruptedWhileInCall = false }
