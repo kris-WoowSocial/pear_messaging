@@ -549,7 +549,7 @@ class WebRTCCallService {
           _connectionLostWatchdog?.cancel();
           _connectionLostWatchdog = null;
           onCallStateChange?.call('connected');
-          if (_durationTimer == null) _startDurationTimer();
+          _startDurationTimer();
           _startStatsLogger();
           if (Platform.isAndroid) CallForegroundService().start();
           // Apply audio configuration once. For video calls the speaker default
@@ -823,6 +823,9 @@ class WebRTCCallService {
     await _configureAudioSession(speakerOn: speakerOn);
     debugPrint('📞 Speaker set to: $speakerOn');
   }
+
+  @visibleForTesting
+  void startDurationTimerForTesting() => _startDurationTimer();
 
   /// Start call duration timer
   void _startDurationTimer() {

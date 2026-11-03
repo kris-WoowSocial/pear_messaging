@@ -1,8 +1,10 @@
 import 'dart:io';
 
 import 'package:flutter/widgets.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pear_messaging/features/call/call_controller.dart';
+import 'package:pear_messaging/core/services/webrtc_call_service.dart';
 
 void main() {
   group('iOS video call fixes', () {
@@ -19,7 +21,7 @@ void main() {
       final configure = connected.indexOf('await Helper.setAppleAudioIOMode(');
       for (final operation in [
         "onCallStateChange?.call('connected')",
-        'if (_durationTimer == null) _startDurationTimer()',
+        '_startDurationTimer()',
         '_startStatsLogger()',
       ]) {
         expect(connected.indexOf(operation), allOf(greaterThanOrEqualTo(0), lessThan(configure)));
@@ -31,6 +33,38 @@ void main() {
       expect('Helper.setAppleAudioIOMode('.allMatches(source).length, 1);
       expect(source.substring(source.indexOf('Future<void> _endCall()')),
           isNot(contains('Helper.setAppleAudioIOMode(')));
+    });
+
+    testWidgets('second call starts its duration timer after completed cleanup', (tester) async {
+      const channel = MethodChannel('FlutterWebRTC.Method');
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        channel, (call) async => null,
+      );
+      final service = WebRTCCallService();
+      var completed = 0;
+      service.onCallEnded = (_) => completed++;
+      try {
+        service.startDurationTimerForTesting();
+        await tester.pump(const Duration(seconds: 2));
+        expect(service.getCallDuration(), '00:02');
+        service.endCall();
+        await tester.pump();
+        expect(completed, 1);
+        expect(service.getCallDuration(), '00:00');
+        await tester.pump(const Duration(seconds: 2));
+        expect(service.getCallDuration(), '00:00');
+        service.startDurationTimerForTesting();
+        await tester.pump(const Duration(seconds: 1));
+        expect(service.getCallDuration(), '00:01');
+        service.endCall();
+        await tester.pump();
+        expect(completed, 2);
+      } finally {
+        service.endCall();
+        await tester.pump();
+        service.onCallEnded = null;
+        tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(channel, null);
+      }
     });
 
     test('camera pause lifecycle rule: paused always pauses; inactive only on hold', () {
