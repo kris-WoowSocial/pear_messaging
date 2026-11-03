@@ -475,12 +475,30 @@ import CommonCrypto
     // Caller cancelled — dismiss the CallKit UI if it's showing (works even when app is killed)
     if pushType == "call_cancelled" {
       let callId = payload.dictionaryPayload["callId"] as? String ?? ""
-      print("📱 PushKit: call_cancelled received for callId=\(callId), ending CallKit call")
-      if !callId.isEmpty, let uuid = uuidV5(from: callId) {
-        let endData = flutter_callkit_incoming.Data(id: uuid.uuidString, nameCaller: "", handle: "", type: 0)
-        SwiftFlutterCallkitIncomingPlugin.sharedInstance?.endCall(endData)
+      print("📱 PushKit: call_cancelled received for callId=\(callId), reporting placeholder + ending CallKit call")
+      // iOS requires EVERY VoIP push to produce a reportNewIncomingCall. The
+      // real call's CallKit UUID may already exist (a ringing call), and a
+      // second report with the same UUID can fail without satisfying the
+      // push contract — so report a throwaway call under a FRESH UUID, then
+      // end it immediately. The real call's record is ended separately.
+      // completion() runs only after the report callback.
+      let placeholderId = UUID().uuidString
+      let placeholderData = flutter_callkit_incoming.Data(id: placeholderId, nameCaller: "", handle: "", type: 0)
+      placeholderData.extra = ["callId": placeholderId] as NSDictionary
+      SwiftFlutterCallkitIncomingPlugin.sharedInstance?.showCallkitIncoming(placeholderData, fromPushKit: true) { [weak self] in
+        // End the real call's CallKit record (silenced: no decline/end
+        // events reach the server or Dart for it).
+        if !callId.isEmpty, let uuid = self?.uuidV5(from: callId) {
+          self?.markCallKitEndSilenced(serverCallId: callId)
+          let endData = flutter_callkit_incoming.Data(id: uuid.uuidString, nameCaller: "", handle: "", type: 0)
+          SwiftFlutterCallkitIncomingPlugin.sharedInstance?.endCall(endData)
+        }
+        // End the throwaway report so nothing lingers in CallKit.
+        self?.markCallKitEndSilenced(serverCallId: placeholderId)
+        let endPlaceholder = flutter_callkit_incoming.Data(id: placeholderId, nameCaller: "", handle: "", type: 0)
+        SwiftFlutterCallkitIncomingPlugin.sharedInstance?.endCall(endPlaceholder)
+        completion()
       }
-      completion()
       return
     }
 

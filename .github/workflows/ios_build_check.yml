@@ -57,6 +57,9 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pods-
 
+      - name: PushKit report contract check
+        run: python3 scripts/check_pushkit_report.py
+
       - name: Run analyzer (errors only)
         run: flutter analyze --no-fatal-infos --no-fatal-warnings
 
