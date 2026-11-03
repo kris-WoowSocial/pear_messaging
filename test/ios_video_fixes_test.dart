@@ -16,6 +16,16 @@ void main() {
       expect(connected, contains('await Helper.setAppleAudioIOMode('));
       expect(connected, contains('AppleAudioIOMode.localAndRemote'));
       expect(connected, contains('preferSpeakerOutput: false'));
+      final configure = connected.indexOf('await Helper.setAppleAudioIOMode(');
+      for (final operation in [
+        "onCallStateChange?.call('connected')",
+        'if (_durationTimer == null) _startDurationTimer()',
+        '_startStatsLogger()',
+      ]) {
+        expect(connected.indexOf(operation), allOf(greaterThanOrEqualTo(0), lessThan(configure)));
+      }
+      expect(connected, contains('revision != connectionStateRevision'));
+      expect(connected, contains('!identical(_peerConnection, connection)'));
       expect(connected.indexOf('await Helper.setAppleAudioIOMode('),
           lessThan(connected.indexOf('_configureAudioSession(')));
       expect('Helper.setAppleAudioIOMode('.allMatches(source).length, 1);

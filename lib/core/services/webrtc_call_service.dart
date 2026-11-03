@@ -536,7 +536,11 @@ class WebRTCCallService {
     };
 
     // Handle connection state changes
-    _peerConnection!.onConnectionState = (state) async {
+    final connection = _peerConnection!;
+    var connectionStateRevision = 0;
+    connection.onConnectionState = (state) async {
+      if (!identical(_peerConnection, connection)) return;
+      final revision = ++connectionStateRevision;
       debugPrint('📞 Connection state: $state');
 
       switch (state) {
@@ -545,6 +549,9 @@ class WebRTCCallService {
           _connectionLostWatchdog?.cancel();
           _connectionLostWatchdog = null;
           onCallStateChange?.call('connected');
+          if (_durationTimer == null) _startDurationTimer();
+          _startStatsLogger();
+          if (Platform.isAndroid) CallForegroundService().start();
           // Apply audio configuration once. For video calls the speaker default
           // prefers an already-connected Bluetooth/wired headset instead of
           // forcing the speaker route.
@@ -559,13 +566,14 @@ class WebRTCCallService {
               debugPrint('Failed to configure iOS call audio: $e');
             }
           }
+          if (!identical(_peerConnection, connection) ||
+              revision != connectionStateRevision) {
+            return;
+          }
           _configureAudioSession(
             speakerOn: _isSpeakerOn,
             preferBluetooth: _isVideoCall,
           );
-          _startDurationTimer();
-          _startStatsLogger();
-          if (Platform.isAndroid) CallForegroundService().start();
           break;
         case RTCPeerConnectionState.RTCPeerConnectionStateDisconnected:
           debugPrint(
