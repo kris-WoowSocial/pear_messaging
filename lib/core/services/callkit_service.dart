@@ -73,6 +73,11 @@ class CallKitService {
 
   // Track which calls are currently managed by CallKit to avoid ending non-existent calls
   static final Set<String> _activeCallKitCalls = {};
+
+  /// Test-only: whether a CallKit uuid is currently tracked as active.
+  @visibleForTesting
+  static bool debugIsCallKitTracked(String uuid) =>
+      _activeCallKitCalls.contains(uuid.toLowerCase());
   // UUIDs with an in-flight FlutterCallkitIncoming.endCall request. Guards
   // against the decline-event path and a manual reject/end racing into a
   // second CXEndCallAction for the same call.
@@ -572,6 +577,13 @@ class CallKitService {
         break;
 
       case Event.actionCallDecline:
+        // Drop tracking before the silenced-consume break: a silenced end
+        // (placeholder report / ghost end) must not leak the uuid into
+        // _activeCallKitCalls, where it would stale-guard a later call that
+        // reuses the same deterministic CallKit uuid.
+        if (eventUuid != null) {
+          _activeCallKitCalls.remove(eventUuid);
+        }
         if (await _consumeSilencedCallKitEvent(_extractCallId(event.body))) {
           debugPrint(
             '📞 CallKitService: silenced ghost decline — foreground push reported for compliance, caller keeps ringing',
@@ -600,6 +612,9 @@ class CallKitService {
         break;
 
       case Event.actionCallEnded:
+        if (eventUuid != null) {
+          _activeCallKitCalls.remove(eventUuid);
+        }
         if (await _consumeSilencedCallKitEvent(_extractCallId(event.body))) {
           debugPrint(
             '📞 CallKitService: silenced ghost end — no caller-facing signal, Flutter screen untouched',

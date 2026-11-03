@@ -78,6 +78,46 @@ void main() {
     expect(gate.suppress(null), isFalse);
   });
 
+  test('silenced placeholder end removes the uuid from active tracking', () async {
+    final service = CallKitService();
+    // Placeholder report lands as actionCallIncoming -> uuid tracked.
+    await service.replayPluginEvent(CallEvent({
+      'id': 'PLACEHOLDER-UUID',
+      'extra': {'callId': 'placeholder-id'},
+    }, Event.actionCallIncoming));
+    expect(CallKitService.debugIsCallKitTracked('placeholder-uuid'), isTrue);
+    // AppDelegate marked it silenced via flutter.silenced_call_ids.
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('silenced_call_ids', 'placeholder-id');
+    final forwarded = <CallKitEvent>[];
+    final subscription = service.eventStream.listen(forwarded.add);
+    addTearDown(subscription.cancel);
+    await service.replayPluginEvent(CallEvent({
+      'id': 'PLACEHOLDER-UUID',
+      'extra': {'callId': 'placeholder-id'},
+    }, Event.actionCallEnded));
+    await Future<void>.delayed(Duration.zero);
+    expect(forwarded, isEmpty);
+    expect(CallKitService.debugIsCallKitTracked('placeholder-uuid'), isFalse);
+  });
+
+  test('silenced ghost decline removes the uuid from active tracking', () async {
+    final service = CallKitService();
+    await service.replayPluginEvent(CallEvent({
+      'id': 'GHOST-UUID',
+      'extra': {'callId': 'ghost-call'},
+    }, Event.actionCallIncoming));
+    expect(CallKitService.debugIsCallKitTracked('ghost-uuid'), isTrue);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('silenced_call_ids', 'ghost-call');
+    await service.replayPluginEvent(CallEvent({
+      'id': 'GHOST-UUID',
+      'extra': {'callId': 'ghost-call'},
+    }, Event.actionCallDecline));
+    await Future<void>.delayed(Duration.zero);
+    expect(CallKitService.debugIsCallKitTracked('ghost-uuid'), isFalse);
+  });
+
   test('Flutter end is independent of the native plugin gate', () {
     final gate = CallKitGhostEvents()..arm('ghost');
     final actions = <String>[];
