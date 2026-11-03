@@ -260,7 +260,9 @@ class CallKitService {
       type: isVideo ? 1 : 0, // 0 = audio call, 1 = video call
       textAccept: 'Accept',
       textDecline: 'Decline',
-      duration: 30000, // Ring for 30 seconds
+      // Match the server's 45 s ring timeout so the callee's CallKit UI and
+      // the caller's "no answer" end happen together instead of ~15 s apart.
+      duration: 45000,
       extra: <String, dynamic>{
         'callerId': callerId,
         'callId': callId,
@@ -622,6 +624,19 @@ class CallKitService {
         final uuid = event.body['id'] as String?;
         if (uuid != null) {
           _activeCallKitCalls.remove(uuid.toLowerCase());
+        }
+        // The plugin posts its own missed-call notification natively here —
+        // mark it so the server's missed_call push doesn't post a second one.
+        final timeoutCallId = _extractCallId(event.body);
+        if (timeoutCallId != null && timeoutCallId.isNotEmpty) {
+          unawaited(
+            SharedPreferences.getInstance().then(
+              (p) => p.setInt(
+                'missed_call_notified_$timeoutCallId',
+                DateTime.now().millisecondsSinceEpoch,
+              ),
+            ),
+          );
         }
         _eventController.add(
           CallKitEvent(type: CallKitEventType.timeout, callId: _extractCallId(event.body)),

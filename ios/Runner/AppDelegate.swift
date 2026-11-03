@@ -525,6 +525,9 @@ import CommonCrypto
     // Build CallKit data (shared by the foreground ghost report and the
     // normal lock-screen report below).
     let callData = flutter_callkit_incoming.Data(id: callKitId, nameCaller: nameCaller, handle: handle, type: isVideo ? 1 : 0)
+    // Match the server's 45 s ring timeout so the CallKit ring and the
+    // caller's "no answer" end happen together (plugin default is 30 s).
+    callData.duration = 45000
     var extra = payload.dictionaryPayload
     extra["callId"] = serverCallId
     // Carry the resolved display name through so the post-accept path shows
