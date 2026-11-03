@@ -536,7 +536,7 @@ class WebRTCCallService {
     };
 
     // Handle connection state changes
-    _peerConnection!.onConnectionState = (state) {
+    _peerConnection!.onConnectionState = (state) async {
       debugPrint('📞 Connection state: $state');
 
       switch (state) {
@@ -548,6 +548,17 @@ class WebRTCCallService {
           // Apply audio configuration once. For video calls the speaker default
           // prefers an already-connected Bluetooth/wired headset instead of
           // forcing the speaker route.
+          if (Platform.isIOS) {
+            try {
+              await Helper.setAppleAudioIOMode(
+                AppleAudioIOMode.localAndRemote,
+                preferSpeakerOutput: false,
+              );
+              debugPrint('iOS call audio configured for local and remote media');
+            } catch (e) {
+              debugPrint('Failed to configure iOS call audio: $e');
+            }
+          }
           _configureAudioSession(
             speakerOn: _isSpeakerOn,
             preferBluetooth: _isVideoCall,

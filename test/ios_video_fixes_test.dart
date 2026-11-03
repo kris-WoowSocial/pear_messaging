@@ -6,6 +6,23 @@ import 'package:pear_messaging/features/call/call_controller.dart';
 
 void main() {
   group('iOS video call fixes', () {
+    test('recording configuration is applied only at iOS connect before routing', () {
+      final source = File('lib/core/services/webrtc_call_service.dart').readAsStringSync();
+      final connected = source.substring(
+        source.indexOf('case RTCPeerConnectionState.RTCPeerConnectionStateConnected:'),
+        source.indexOf('case RTCPeerConnectionState.RTCPeerConnectionStateDisconnected:'),
+      );
+      expect(connected, contains('if (Platform.isIOS)'));
+      expect(connected, contains('await Helper.setAppleAudioIOMode('));
+      expect(connected, contains('AppleAudioIOMode.localAndRemote'));
+      expect(connected, contains('preferSpeakerOutput: false'));
+      expect(connected.indexOf('await Helper.setAppleAudioIOMode('),
+          lessThan(connected.indexOf('_configureAudioSession(')));
+      expect('Helper.setAppleAudioIOMode('.allMatches(source).length, 1);
+      expect(source.substring(source.indexOf('Future<void> _endCall()')),
+          isNot(contains('Helper.setAppleAudioIOMode(')));
+    });
+
     test('camera pause lifecycle rule: paused always pauses; inactive only on hold', () {
       expect(
         CallController.shouldPauseCameraForLifecycle(
