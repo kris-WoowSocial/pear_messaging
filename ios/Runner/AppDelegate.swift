@@ -760,6 +760,10 @@ import os.log
   private var ghostEndAfterReport = [String: String]()
 
   private func endGhostCallKitForCall(_ callId: String, reason: String, completion: @escaping (String) -> Void) {
+    if ["decline", "terminated", "timeout"].contains(reason), !foregroundGhostCallIds.contains(callId) {
+      completion("none")
+      return
+    }
     guard !callId.isEmpty, !nativeAnsweredCallIds.contains(callId),
           let uuid = uuidV5(from: callId),
           let plugin = SwiftFlutterCallkitIncomingPlugin.sharedInstance else {

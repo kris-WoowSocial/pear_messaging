@@ -80,6 +80,37 @@ void main() {
         lessThan(helper.indexOf('self.markCallKitEndSilenced(serverCallId: callId)')));
   });
 
+  test('non-foreground ghost end reasons bail out before any marker', () {
+    final source = File('ios/Runner/AppDelegate.swift').readAsStringSync();
+    final helper = source.substring(
+      source.indexOf('  private func endGhostCallKitForCall('),
+      source.indexOf('  private func clearGhostEndMarkers('),
+    );
+    const guardLine =
+        'if ["decline", "terminated", "timeout"].contains(reason), !foregroundGhostCallIds.contains(callId) {';
+    expect(helper, contains(guardLine));
+    final guardIndex = helper.indexOf(guardLine);
+    expect(
+        guardIndex,
+        lessThan(helper.indexOf(
+            'guard !callId.isEmpty, !nativeAnsweredCallIds.contains(callId),')));
+    expect(guardIndex,
+        lessThan(helper.indexOf('ghostEndSubmittedCallIds.contains(callId)')));
+    expect(guardIndex,
+        lessThan(helper.indexOf('ghostReportPendingCallIds.contains(callId)')));
+    expect(guardIndex,
+        lessThan(helper.indexOf('invokeMethod("armGhostCallKitEnd"')));
+    expect(
+        helper.substring(guardIndex, helper.indexOf('return', guardIndex)),
+        contains('completion("none")'));
+    final noAck = source.substring(
+      source.indexOf(
+          '} else {\n          print("📱 PushKit: no Flutter-screen ack'),
+    );
+    expect(noAck.substring(0, noAck.indexOf('}\n      }')),
+        isNot(contains('foregroundGhostCallIds.remove')));
+  });
+
   test('respondToCall clears ghost markers before silencing events', () {
     final source = File('ios/Runner/AppDelegate.swift').readAsStringSync();
     final section = source.substring(
