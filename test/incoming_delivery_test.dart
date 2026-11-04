@@ -124,7 +124,7 @@ void main() {
       expect(fn, contains('showCallkitIncoming(callData, fromPushKit: true)'));
       expect(
         fn.indexOf('showCallkitIncoming'),
-        lessThan(fn.indexOf('endCall(endData)')),
+        lessThan(fn.indexOf('endGhostCallKitForCall(serverCallId')),
       );
       // The ghost end is gated on a Dart ack: the Flutter incoming screen
       // must confirm it is showing this callId, with a ~1 s deadline.
@@ -134,8 +134,15 @@ void main() {
       // The silence marker and endCall live inside the ack-confirmed branch —
       // they may not run before the ack is evaluated.
       final ackBranch = section(fn, 'if confirmed {', '} else {');
-      expect(ackBranch, contains('markCallKitEndSilenced'));
-      expect(ackBranch, contains('endCall(endData)'));
+      expect(ackBranch, contains('endGhostCallKitForCall(serverCallId, reason: "handshake")'));
+      final helper = section(
+        source('ios/Runner/AppDelegate.swift'),
+        'private func endGhostCallKitForCall(',
+        'private var ghostEndUuids',
+      );
+      expect(helper, contains('markCallKitEndSilenced'));
+      expect(helper, contains('plugin.endCall(endData)'));
+      expect(helper.indexOf('markCallKitEndSilenced'), lessThan(helper.indexOf('plugin.endCall(endData)')));
       // No-ack path: CallKit UI stays, nothing is ended, nothing is sent.
       final noAck = section(fn, '} else {', '}\n      if let controller');
       expect(noAck, isNot(contains('endCall')));

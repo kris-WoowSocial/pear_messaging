@@ -31,6 +31,15 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
     super.initState();
     _setupAnimation();
     _callStateWorker = ever(_controller.callState, _onCallStateChanged);
+    if (Platform.isIOS) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || ModalRoute.of(context)?.isCurrent != true) return;
+        final callId = (Get.arguments as Map?)?['callId'] as String?;
+        if (callId != null) {
+          CallKitService().endGhostCallKitForCall(callId, reason: 'late');
+        }
+      });
+    }
   }
 
   void _onCallStateChanged(CallState state) {
@@ -262,6 +271,11 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
     try {
       final controller = Get.find<CallController>();
       final ringtoneService = RingtoneService();
+      if (Platform.isIOS && callId != null) {
+        final status = await CallKitService().endGhostCallKitForCall(callId, reason: 'accept');
+        await ringtoneService.stopRingtone();
+        if (status == 'native_answered') return;
+      }
       final hasDirectOffer = (sdpOffer != null && sdpOffer.isNotEmpty) ||
           callData['crypto'] is Map;
       final videoUiEnabled = isVideo &&

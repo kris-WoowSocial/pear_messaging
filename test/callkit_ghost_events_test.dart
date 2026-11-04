@@ -1,3 +1,6 @@
+import 'dart:io';
+
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pear_messaging/core/services/callkit_ghost_events.dart';
 import 'package:pear_messaging/core/services/callkit_service.dart';
@@ -7,6 +10,149 @@ import 'package:shared_preferences/shared_preferences.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   setUp(() => SharedPreferences.setMockInitialValues({}));
+
+  test('ghost reconciliation does not invoke native code outside iOS', () async {
+    if (Platform.isIOS) return;
+    const channel = MethodChannel('com.pear.messaging/call');
+    var calls = 0;
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (_) async { calls++; return 'ended'; });
+    addTearDown(() => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, null));
+    expect(await CallKitService().endGhostCallKitForCall('call', reason: 'accept'), 'none');
+    expect(calls, 0);
+  });
+
+  test('native answer can disarm a pending ghost and forward accept and end', () async {
+    final service = CallKitService();
+    CallKitService.ghostEvents.arm('banner-race');
+    expect(CallKitService.ghostEvents.suppress('BANNER-RACE'), isTrue);
+    CallKitService.ghostEvents.disarm('BANNER-RACE');
+    final forwarded = <CallKitEvent>[];
+    final subscription = service.eventStream.listen(forwarded.add);
+    addTearDown(subscription.cancel);
+    for (final event in [Event.actionCallAccept, Event.actionCallEnded]) {
+      await service.replayPluginEvent(CallEvent({
+        'id': 'banner-race',
+        'extra': {'callId': 'banner-race-call'},
+      }, event));
+    }
+    await Future<void>.delayed(Duration.zero);
+    expect(forwarded.map((event) => event.type), [
+      CallKitEventType.accept,
+      CallKitEventType.end,
+    ]);
+  });
+
+  test('native reconciliation checks answer state again after arming', () {
+    final source = File('ios/Runner/AppDelegate.swift').readAsStringSync();
+    final helper = source.substring(
+      source.indexOf('  private func endGhostCallKitForCall('),
+      source.indexOf('  private var ghostEndUuids'),
+    );
+    expect(helper, contains('foregroundGhostCallIds.contains(callId)'));
+    expect(helper, contains('plugin.activeCalls()'));
+    expect(helper, contains('self.nativeAnsweredCallIds.contains(callId)'));
+    expect(helper, contains('plugin.getAcceptedCall()?.uuid'));
+    expect(helper.indexOf('self.nativeAnsweredCallIds.contains(callId)'),
+        greaterThan(helper.indexOf('.invokeMethod("armGhostCallKitEnd"')));
+    expect(helper.indexOf('self.nativeAnsweredCallIds.contains(callId)'),
+        lessThan(helper.indexOf('plugin.endCall(endData)')));
+    expect(helper, contains('self.latestPushCallKitUuid == uuid'));
+    expect(helper, contains('self.markCallKitEndSilenced(serverCallId: callId)'));
+    expect(helper, contains('ghostEndWaiters'));
+  });
+
+  test('ghost end helper serializes submits and falls back by uuid', () {
+    final source = File('ios/Runner/AppDelegate.swift').readAsStringSync();
+    final helper = source.substring(
+      source.indexOf('  private func endGhostCallKitForCall('),
+      source.indexOf('  private func clearGhostEndMarkers('),
+    );
+    expect(helper, contains('ghostEndSubmittedCallIds.contains(callId)'));
+    expect(helper.indexOf('ghostEndSubmittedCallIds.contains(callId)'),
+        lessThan(helper.indexOf('invokeMethod("armGhostCallKitEnd"')));
+    expect(helper, contains('ghostEndAfterReport[callId] = reason'));
+    expect(helper, contains('CXEndCallAction(call: uuid)'));
+    expect(helper,
+        contains('self.clearGhostEndMarkers(callId: callId, uuid: uuid)'));
+    expect(helper.indexOf('self.nativeAnsweredCallIds.contains(callId)'),
+        lessThan(helper.indexOf('self.markCallKitEndSilenced(serverCallId: callId)')));
+  });
+
+  test('non-foreground ghost end reasons bail out before any marker', () {
+    final source = File('ios/Runner/AppDelegate.swift').readAsStringSync();
+    final helper = source.substring(
+      source.indexOf('  private func endGhostCallKitForCall('),
+      source.indexOf('  private func clearGhostEndMarkers('),
+    );
+    const guardLine =
+        'if ["decline", "terminated", "timeout"].contains(reason), !foregroundGhostCallIds.contains(callId) {';
+    expect(helper, contains(guardLine));
+    final guardIndex = helper.indexOf(guardLine);
+    expect(
+        guardIndex,
+        lessThan(helper.indexOf(
+            'guard !callId.isEmpty, !nativeAnsweredCallIds.contains(callId),')));
+    expect(guardIndex,
+        lessThan(helper.indexOf('ghostEndSubmittedCallIds.contains(callId)')));
+    expect(guardIndex,
+        lessThan(helper.indexOf('ghostReportPendingCallIds.contains(callId)')));
+    expect(guardIndex,
+        lessThan(helper.indexOf('invokeMethod("armGhostCallKitEnd"')));
+    expect(
+        helper.substring(guardIndex, helper.indexOf('return', guardIndex)),
+        contains('completion("none")'));
+    final noAck = source.substring(
+      source.indexOf(
+          '} else {\n          print("📱 PushKit: no Flutter-screen ack'),
+    );
+    expect(noAck.substring(0, noAck.indexOf('}\n      }')),
+        isNot(contains('foregroundGhostCallIds.remove')));
+  });
+
+  test('respondToCall clears ghost markers before silencing events', () {
+    final source = File('ios/Runner/AppDelegate.swift').readAsStringSync();
+    final section = source.substring(
+      source.indexOf('  private func respondToCall('),
+      source.indexOf('consumeSilencedCallEnd(call: call) {'),
+    );
+    expect(section,
+        contains('clearGhostEndMarkers(callId: callId, uuid: call.uuid)'));
+  });
+
+  test('foreground report closure re-ends a pending ghost before completion', () {
+    final source = File('ios/Runner/AppDelegate.swift').readAsStringSync();
+    expect(source,
+        contains('self?.ghostReportPendingCallIds.remove(serverCallId)'));
+    final deferred = source.indexOf(
+        'ghostEndAfterReport.removeValue(forKey: serverCallId)');
+    expect(deferred, greaterThanOrEqualTo(0));
+    expect(deferred, lessThan(source.indexOf('completion()', deferred)));
+  });
+
+  test('Flutter presentation and accept reconcile only on iOS', () {
+    final screen = File('lib/features/call/incoming_call_screen.dart').readAsStringSync();
+    final controller = File('lib/features/call/call_controller.dart').readAsStringSync();
+    expect(screen, contains('if (Platform.isIOS)'));
+    expect(screen, contains('WidgetsBinding.instance.addPostFrameCallback'));
+    expect(screen, contains("reason: 'late'"));
+    expect(screen.indexOf("reason: 'accept'"),
+        lessThan(screen.indexOf('acceptFuture = controller.acceptCall(callData)')));
+    final accept = controller.substring(
+      controller.indexOf('  Future<bool> acceptCall('),
+      controller.indexOf('  /// Reject an incoming call'),
+    );
+    expect(accept, contains('if (Platform.isIOS)'));
+    expect(accept, contains(
+        "await CallKitService().endGhostCallKitForCall(callId, reason: 'accept');"));
+    expect(accept, isNot(contains('native_answered')));
+    expect(screen, contains("if (status == 'native_answered') return;"));
+    expect(accept.indexOf("reason: 'accept'"),
+        lessThan(accept.indexOf('_webrtcService.acceptCall(')));
+    expect(controller, contains("reason: 'decline'"));
+    expect(controller, contains("reason: 'terminated'"));
+  });
 
   test('production plugin handler suppresses the exact owner sequence', () async {
     final service = CallKitService();
