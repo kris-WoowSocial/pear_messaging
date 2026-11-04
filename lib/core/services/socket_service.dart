@@ -10,6 +10,7 @@ import 'call_breadcrumbs.dart';
 import 'callkit_service.dart';
 import 'call_media_helper.dart';
 import 'call_diag.dart';
+import 'call_phase_logger.dart';
 import 'encryption_service.dart';
 import 'feature_flag_service.dart';
 import 'fcm_service.dart';
@@ -28,6 +29,7 @@ class SocketService extends GetxService {
   Timer? _reconnectTimer;
   StreamSubscription<List<ConnectivityResult>>? _connectivitySubscription;
   bool _isConnecting = false; // Prevent duplicate connection attempts
+  bool get isConnecting => _isConnecting;
   bool _isInForeground = true;
   int _reconnectAttempts = 0;
 
@@ -203,6 +205,7 @@ class SocketService extends GetxService {
     _connectWatch
       ..reset()
       ..start();
+    CallPhaseLogger.mark('sock_connect_start');
 
     try {
       connectionStatus.value = 'connecting';
@@ -271,6 +274,7 @@ class SocketService extends GetxService {
         '✅ Socket connected (transport=websocket, '
         '${_connectWatch.elapsedMilliseconds}ms DNS+TLS+WS)',
       );
+      CallPhaseLogger.mark('sock_up');
       isConnected.value = true;
       isRegistered.value = false;
       connectionStatus.value = 'connected';
@@ -371,6 +375,7 @@ class SocketService extends GetxService {
       final deviceId = data is Map ? data['deviceId'] : null;
       if (deviceId == _deviceId) {
         isRegistered.value = true;
+        CallPhaseLogger.mark('registered');
         callDiag(
           '✅ Socket registration confirmed for $_deviceId '
           '(register→registered: ${_registerWatch.elapsedMilliseconds}ms, '
@@ -1942,6 +1947,7 @@ class SocketService extends GetxService {
     _lastResyncAt = now;
 
     _socket?.emit('call_resync', {'callId': callId});
+    CallPhaseLogger.mark('resync_request');
     debugPrint('📞 Call resync requested for $callId');
     logCallBreadcrumb(CallBreadcrumb.resyncRequest);
   }

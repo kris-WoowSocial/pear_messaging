@@ -15,20 +15,25 @@ import 'package:shared_preferences/shared_preferences.dart';
 ///  - ff_video_calling       video call offers/answers
 ///  - ff_pip_android         video-call Picture-in-Picture on Android 26+
 ///  - ff_pip_ios             video-call Picture-in-Picture on iOS
+///  - ff_ios_push_wake_reconnect  locked-iPhone socket reconnect during ringing
 ///
 /// A fetch failure NEVER enables anything — defaults stay off.
+/// (ff_ios_push_wake_reconnect is the exception: it ships ON so build testing
+/// can exercise it immediately; Remote Config can force it back off.)
 class FeatureFlagService extends GetxService {
   static const String kVerificationUi = 'ff_verification_ui';
   static const String kEncryptedSignaling = 'ff_encrypted_signaling';
   static const String kVideoCalling = 'ff_video_calling';
   static const String kPipAndroid = 'ff_pip_android';
   static const String kPipIos = 'ff_pip_ios';
+  static const String kIosPushWakeReconnect = 'ff_ios_push_wake_reconnect';
 
   final RxBool verificationUi = false.obs;
   final RxBool encryptedSignaling = false.obs;
   final RxBool videoCalling = false.obs;
   final RxBool pipAndroid = false.obs;
   final RxBool pipIos = false.obs;
+  final RxBool iosPushWakeReconnect = true.obs;
 
   /// Tester escape hatch: debug builds can exercise PiP without waiting for a
   /// Remote Config rollout. Release builds ignore this entirely — the flag
@@ -74,6 +79,7 @@ class FeatureFlagService extends GetxService {
         kVideoCalling: false,
         kPipAndroid: false,
         kPipIos: false,
+        kIosPushWakeReconnect: true,
       });
       // Hydrate the last applied values from disk BEFORE the network fetch so
       // cold-start call flows see real flags immediately — Remote Config only
@@ -120,10 +126,14 @@ class FeatureFlagService extends GetxService {
       pipAndroid.value =
           prefs.getBool('ff_cache_$kPipAndroid') ?? pipAndroid.value;
       pipIos.value = prefs.getBool('ff_cache_$kPipIos') ?? pipIos.value;
+      iosPushWakeReconnect.value =
+          prefs.getBool('ff_cache_$kIosPushWakeReconnect') ??
+              iosPushWakeReconnect.value;
       debugPrint(
         '🎛️ Flags hydrated: verification=${verificationUi.value}, '
         'encrypted=${encryptedSignaling.value}, video=${videoCalling.value}, '
-        'pipAndroid=${pipAndroid.value}, pipIos=${pipIos.value}',
+        'pipAndroid=${pipAndroid.value}, pipIos=${pipIos.value}, '
+        'iosPushWakeReconnect=${iosPushWakeReconnect.value}',
       );
     } catch (e) {
       debugPrint('⚠️ Flag hydration failed, using defaults: $e');
@@ -136,17 +146,21 @@ class FeatureFlagService extends GetxService {
     videoCalling.value = _rc!.getBool(kVideoCalling);
     pipAndroid.value = _rc!.getBool(kPipAndroid);
     pipIos.value = _rc!.getBool(kPipIos);
+    iosPushWakeReconnect.value = _rc!.getBool(kIosPushWakeReconnect);
     SharedPreferences.getInstance().then((prefs) {
       prefs.setBool('ff_cache_$kVerificationUi', verificationUi.value);
       prefs.setBool('ff_cache_$kEncryptedSignaling', encryptedSignaling.value);
       prefs.setBool('ff_cache_$kVideoCalling', videoCalling.value);
       prefs.setBool('ff_cache_$kPipAndroid', pipAndroid.value);
       prefs.setBool('ff_cache_$kPipIos', pipIos.value);
+      prefs.setBool(
+          'ff_cache_$kIosPushWakeReconnect', iosPushWakeReconnect.value);
     });
     debugPrint(
       '🎛️ Feature flags: verification=${verificationUi.value}, '
       'encrypted=${encryptedSignaling.value}, video=${videoCalling.value}, '
-      'pipAndroid=${pipAndroid.value}, pipIos=${pipIos.value} '
+      'pipAndroid=${pipAndroid.value}, pipIos=${pipIos.value}, '
+      'iosPushWakeReconnect=${iosPushWakeReconnect.value} '
       '(fetch=${_rc!.lastFetchStatus}, at=${_rc!.lastFetchTime})',
     );
     for (final callback in _onApplyCallbacks) {

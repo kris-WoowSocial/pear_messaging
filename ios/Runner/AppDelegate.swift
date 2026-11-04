@@ -592,6 +592,18 @@ import os.log
       return
     }
 
+    // Locked/killed path only (the foreground block returned above). Tell Dart
+    // to reconnect + register during ringing so the accept path starts with a
+    // live socket. Fire-and-forget: no callback, cannot block or delay the
+    // CallKit report or completion() below.
+    os_log("%{public}@", log: .default, type: .info, "VantPush wake")
+    if let controller = window?.rootViewController as? FlutterViewController {
+      FlutterMethodChannel(
+        name: "com.pear.messaging/call",
+        binaryMessenger: controller.binaryMessenger
+      ).invokeMethod("callPushWake", arguments: ["callId": serverCallId])
+    }
+
     print("📱 PushKit: Showing CallKit UI — callId=\(callKitId) caller=\(nameCaller) isVideo=\(isVideo)")
 
     // Build CallKit data and show native incoming call UI on the lock screen.
@@ -938,6 +950,16 @@ import os.log
             }
           }
         }
+      case "logCallPhase":
+        // Phase names are fixed Dart literals — no call ids, names or
+        // addresses. Only the phase and elapsed milliseconds are logged.
+        if let args = call.arguments as? [String: Any],
+           let phase = args["phase"] as? String {
+          let ms = args["ms"] as? Int ?? -1
+          os_log("%{public}@", log: .default, type: .info,
+                 "VantPhase \(String(phase.prefix(48))) ms=\(ms)")
+        }
+        result(nil)
       case "setInCall":
         if let args = call.arguments as? [String: Any],
            let inCall = args["inCall"] as? Bool {
