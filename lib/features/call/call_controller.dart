@@ -1997,14 +1997,14 @@ class CallController extends GetxController {
           }
         }
         if (call.method == 'callPushWake') {
-          // iOS PushKit wake on the locked path (flag
-          // ff_ios_push_wake_reconnect, default ON): arm the ringing-call
+          // iOS PushKit wake on the locked path: mark the call push-owned
+          // unconditionally (suppression is defence-in-depth and harmless
+          // when the flag keeps resync off), then — behind flag
+          // ff_ios_push_wake_reconnect, default ON — arm the ringing-call
           // marker so the isRegistered hook re-requests the offer while the
           // phone still rings, and reconnect immediately instead of waiting
           // for the answer tap.
-          if (!Platform.isIOS ||
-              (Get.isRegistered<FeatureFlagService>() &&
-                  !Get.find<FeatureFlagService>().iosPushWakeReconnect.value)) {
+          if (!Platform.isIOS) {
             return null;
           }
           final pushCallId = (call.arguments as Map?)?['callId'] as String?;
@@ -2018,25 +2018,40 @@ class CallController extends GetxController {
           // 'late'-end the live record, regardless of the lifecycle state the
           // woken engine reports.
           _nativePushCallIds.add(pushCallId);
-          // Arm the marker only while registration is still pending — the
-          // isRegistered hook fires on the transition and re-requests the
-          // offer. On an already-registered socket the socket-delivered
-          // incoming_call has the offer, so the marker has no effect.
-          if (!_socketService.isRegistered.value) {
-            _ringingCallId = pushCallId;
-            _socketService.callUrgency = true;
-            unawaited(
-              SharedPreferences.getInstance().then(
-                (prefs) => prefs.setString('ringing_call_id', pushCallId),
-              ),
-            );
+          // Read the last-applied flag straight from the SharedPreferences
+          // cache: FeatureFlagService hydration runs in non-critical startup
+          // (after runApp), so on a PushKit cold-start wake the service can
+          // still hold the default ON. Only an explicit cached `false`
+          // blocks the reconnect and marker arming — a missing key means ON.
+          bool flagCacheOff;
+          try {
+            final prefs = await SharedPreferences.getInstance();
+            flagCacheOff =
+                prefs.getBool('ff_cache_ff_ios_push_wake_reconnect') == false;
+          } catch (_) {
+            flagCacheOff = false;
           }
-          // Reconnect only when the socket is actually down — never tear
-          // down a healthy socket that is connected or already connecting
-          // (e.g. socket-delivered ringing inside the suspend window).
-          if (!_socketService.isConnected.value &&
-              !_socketService.isConnecting) {
-            _socketService.forceReconnect();
+          if (!flagCacheOff) {
+            // Arm the marker only while registration is still pending — the
+            // isRegistered hook fires on the transition and re-requests the
+            // offer. On an already-registered socket the socket-delivered
+            // incoming_call has the offer, so the marker has no effect.
+            if (!_socketService.isRegistered.value) {
+              _ringingCallId = pushCallId;
+              _socketService.callUrgency = true;
+              unawaited(
+                SharedPreferences.getInstance().then(
+                  (prefs) => prefs.setString('ringing_call_id', pushCallId),
+                ),
+              );
+            }
+            // Reconnect only when the socket is actually down — never tear
+            // down a healthy socket that is connected or already connecting
+            // (e.g. socket-delivered ringing inside the suspend window).
+            if (!_socketService.isConnected.value &&
+                !_socketService.isConnecting) {
+              _socketService.forceReconnect();
+            }
           }
         }
         return null;
@@ -4756,13 +4771,18 @@ class CallController extends GetxController {
 
     // A PushKit-reported call rings on its native CallKit record — showing the
     // Flutter copy here would let the screen's initState 'late' reconcile end
-    // the live record and silently kill the call UI.
+    // the live record and silently kill the call UI. The Dart set covers the
+    // delivered callPushWake; the native pull covers cold starts where the
+    // wake call raced past handler registration. The pull is fail-open with a
+    // ~300 ms bound so the foreground path never stalls.
     if (suppressIncomingUiForPushCall(
-      callId: incomingCallId,
-      isIos: Platform.isIOS,
-      pushOwnedCallIds: _nativePushCallIds,
-      lifecycleState: WidgetsBinding.instance.lifecycleState,
-    )) {
+          callId: incomingCallId,
+          isIos: Platform.isIOS,
+          pushOwnedCallIds: _nativePushCallIds,
+          lifecycleState: WidgetsBinding.instance.lifecycleState,
+        ) ||
+        (Platform.isIOS &&
+            await CallKitService().isPushKitCallOwned(incomingCallId))) {
       debugPrint('📞 Push-owned CallKit call — native owns call UI');
       return;
     }
