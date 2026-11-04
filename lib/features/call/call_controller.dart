@@ -2753,8 +2753,7 @@ class CallController extends GetxController {
     try {
       final callId = callData['callId'] as String;
       if (Platform.isIOS) {
-        final status = await CallKitService().endGhostCallKitForCall(callId, reason: 'accept');
-        if (status == 'native_answered') return true;
+        await CallKitService().endGhostCallKitForCall(callId, reason: 'accept');
       }
       // Cancel incoming call notification (stops vibration/sound from notification)
       // Run without await to avoid blocking call acceptance if notification fails

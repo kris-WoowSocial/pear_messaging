@@ -541,6 +541,7 @@ import os.log
 
     if isAppForeground {
       foregroundGhostCallIds.insert(serverCallId)
+      ghostReportPendingCallIds.insert(serverCallId)
       let handshakeStartedAt = ProcessInfo.processInfo.systemUptime
       os_log("%{public}@", log: .default, type: .info, "VantGhost created")
       // Apple's VoIP contract: EVERY incoming_call push must be reported to
@@ -555,7 +556,11 @@ import os.log
       // another screen in the way), the CallKit UI STAYS so the user can
       // still answer — and no decline/end is ever sent to the caller.
       print("📱 PushKit: foreground — reported to CallKit, awaiting Flutter-screen ack (callId=\(serverCallId))")
-      SwiftFlutterCallkitIncomingPlugin.sharedInstance?.showCallkitIncoming(callData, fromPushKit: true) {
+      SwiftFlutterCallkitIncomingPlugin.sharedInstance?.showCallkitIncoming(callData, fromPushKit: true) { [weak self] in
+        self?.ghostReportPendingCallIds.remove(serverCallId)
+        if let reason = self?.ghostEndAfterReport.removeValue(forKey: serverCallId) {
+          self?.endGhostCallKitForCall(serverCallId, reason: reason) { _ in }
+        }
         completion()
       }
       let decision = GhostEndDecision()
@@ -701,6 +706,9 @@ import os.log
     print("📱 CallKit: onTimeOut")
     if let callId = call.data.extra["callId"] as? String {
       foregroundGhostCallIds.remove(callId)
+      if ghostEndUuids.contains(call.uuid) {
+        clearGhostEndMarkers(callId: callId, uuid: call.uuid)
+      }
     }
   }
 
@@ -747,6 +755,9 @@ import os.log
   private var foregroundGhostCallIds = Set<String>()
   private var nativeAnsweredCallIds = Set<String>()
   private var ghostEndWaiters = [String: [(String) -> Void]]()
+  private var ghostEndSubmittedCallIds = Set<String>()
+  private var ghostReportPendingCallIds = Set<String>()
+  private var ghostEndAfterReport = [String: String]()
 
   private func endGhostCallKitForCall(_ callId: String, reason: String, completion: @escaping (String) -> Void) {
     guard !callId.isEmpty, !nativeAnsweredCallIds.contains(callId),
@@ -755,9 +766,19 @@ import os.log
       completion(nativeAnsweredCallIds.contains(callId) ? "native_answered" : "none")
       return
     }
+    if ghostEndSubmittedCallIds.contains(callId) {
+      completion("ended")
+      return
+    }
+    if ghostReportPendingCallIds.contains(callId) {
+      ghostEndAfterReport[callId] = reason
+      completion("pending")
+      return
+    }
+    let record = plugin.activeCalls().first(where: { ($0["id"] as? String)?.lowercased() == uuid.uuidString.lowercased() })
     guard foregroundGhostCallIds.contains(callId) || reason != "handshake",
-          let record = plugin.activeCalls().first(where: { ($0["id"] as? String)?.lowercased() == uuid.uuidString.lowercased() }),
-          (record["accepted"] as? Bool) != true,
+          record != nil || foregroundGhostCallIds.contains(callId),
+          (record?["accepted"] as? Bool) != true,
           plugin.getAcceptedCall()?.uuid.lowercased() != uuid.uuidString.lowercased() else {
       completion("none")
       return
@@ -774,27 +795,57 @@ import os.log
     FlutterMethodChannel(name: "com.pear.messaging/call", binaryMessenger: controller.binaryMessenger)
       .invokeMethod("armGhostCallKitEnd", arguments: ["uuid": uuid.uuidString]) { [weak self] armed in
         guard let self = self else { return }
-        var status = "none"
+        let finish: (String) -> Void = { status in
+          if status != "ended" {
+            self.callStateChannel?.invokeMethod("disarmGhostCallKitEnd", arguments: ["uuid": uuid.uuidString])
+          }
+          let waiters = self.ghostEndWaiters.removeValue(forKey: callId) ?? []
+          waiters.forEach { $0(status) }
+        }
         if self.nativeAnsweredCallIds.contains(callId) ||
             plugin.getAcceptedCall()?.uuid.lowercased() == uuid.uuidString.lowercased() {
-          status = "native_answered"
-        } else if (armed as? Bool) == true, self.latestPushCallKitUuid == uuid,
-                  plugin.activeCalls().contains(where: { ($0["id"] as? String)?.lowercased() == uuid.uuidString.lowercased() && ($0["accepted"] as? Bool) != true }) {
-          self.markCallKitEndSilenced(serverCallId: callId)
-          self.ghostEndUuids.insert(uuid)
+          finish("native_answered")
+          return
+        }
+        let current = plugin.activeCalls().first(where: { ($0["id"] as? String)?.lowercased() == uuid.uuidString.lowercased() })
+        guard (armed as? Bool) == true, (current?["accepted"] as? Bool) != true,
+              current != nil || self.foregroundGhostCallIds.contains(callId) else {
+          finish("none")
+          return
+        }
+        self.markCallKitEndSilenced(serverCallId: callId)
+        self.ghostEndUuids.insert(uuid)
+        self.ghostEndSubmittedCallIds.insert(callId)
+        self.foregroundGhostCallIds.remove(callId)
+        if current != nil, self.latestPushCallKitUuid == uuid {
           let endData = flutter_callkit_incoming.Data(id: uuid.uuidString, nameCaller: "", handle: "", type: 0)
           endData.extra = ["callId": callId] as NSDictionary
           plugin.endCall(endData)
-          self.foregroundGhostCallIds.remove(callId)
-          status = "ended"
           os_log("%{public}@", log: .default, type: .info, "VantGhost reconcile_ended reason=\(reason)")
+          finish("ended")
+          return
         }
-        if status != "ended" {
-          self.callStateChannel?.invokeMethod("disarmGhostCallKitEnd", arguments: ["uuid": uuid.uuidString])
+        self.orphanCallController.request(CXTransaction(action: CXEndCallAction(call: uuid))) { error in
+          DispatchQueue.main.async {
+            if error != nil {
+              self.clearGhostEndMarkers(callId: callId, uuid: uuid)
+              finish("none")
+            } else {
+              os_log("%{public}@", log: .default, type: .info, "VantGhost reconcile_ended reason=\(reason) by=uuid")
+              finish("ended")
+            }
+          }
         }
-        let waiters = self.ghostEndWaiters.removeValue(forKey: callId) ?? []
-        waiters.forEach { $0(status) }
       }
+  }
+
+  private func clearGhostEndMarkers(callId: String, uuid: UUID) {
+    ghostEndUuids.remove(uuid)
+    ghostEndSubmittedCallIds.remove(callId)
+    silencedCallKitIds.remove(callId)
+    let existing = UserDefaults.standard.string(forKey: "flutter.silenced_call_ids") ?? ""
+    let ids = existing.split(separator: ",").map(String.init).filter { !$0.isEmpty && $0 != callId }
+    UserDefaults.standard.set(ids.joined(separator: ","), forKey: "flutter.silenced_call_ids")
   }
 
   private var ghostEndUuids = Set<UUID>()
@@ -803,6 +854,11 @@ import os.log
 
   private func respondToCall(call: Call, action: String) {
     if ghostEndUuids.contains(call.uuid) {
+      if let callId = call.data.extra["callId"] as? String {
+        clearGhostEndMarkers(callId: callId, uuid: call.uuid)
+      } else {
+        ghostEndUuids.remove(call.uuid)
+      }
       print("📱 CallKit: silenced ghost event — no server \(action)")
       return
     }

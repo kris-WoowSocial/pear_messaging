@@ -63,6 +63,43 @@ void main() {
     expect(helper, contains('ghostEndWaiters'));
   });
 
+  test('ghost end helper serializes submits and falls back by uuid', () {
+    final source = File('ios/Runner/AppDelegate.swift').readAsStringSync();
+    final helper = source.substring(
+      source.indexOf('  private func endGhostCallKitForCall('),
+      source.indexOf('  private func clearGhostEndMarkers('),
+    );
+    expect(helper, contains('ghostEndSubmittedCallIds.contains(callId)'));
+    expect(helper.indexOf('ghostEndSubmittedCallIds.contains(callId)'),
+        lessThan(helper.indexOf('invokeMethod("armGhostCallKitEnd"')));
+    expect(helper, contains('ghostEndAfterReport[callId] = reason'));
+    expect(helper, contains('CXEndCallAction(call: uuid)'));
+    expect(helper,
+        contains('self.clearGhostEndMarkers(callId: callId, uuid: uuid)'));
+    expect(helper.indexOf('self.nativeAnsweredCallIds.contains(callId)'),
+        lessThan(helper.indexOf('self.markCallKitEndSilenced(serverCallId: callId)')));
+  });
+
+  test('respondToCall clears ghost markers before silencing events', () {
+    final source = File('ios/Runner/AppDelegate.swift').readAsStringSync();
+    final section = source.substring(
+      source.indexOf('  private func respondToCall('),
+      source.indexOf('consumeSilencedCallEnd(call: call) {'),
+    );
+    expect(section,
+        contains('clearGhostEndMarkers(callId: callId, uuid: call.uuid)'));
+  });
+
+  test('foreground report closure re-ends a pending ghost before completion', () {
+    final source = File('ios/Runner/AppDelegate.swift').readAsStringSync();
+    expect(source,
+        contains('self?.ghostReportPendingCallIds.remove(serverCallId)'));
+    final deferred = source.indexOf(
+        'ghostEndAfterReport.removeValue(forKey: serverCallId)');
+    expect(deferred, greaterThanOrEqualTo(0));
+    expect(deferred, lessThan(source.indexOf('completion()', deferred)));
+  });
+
   test('Flutter presentation and accept reconcile only on iOS', () {
     final screen = File('lib/features/call/incoming_call_screen.dart').readAsStringSync();
     final controller = File('lib/features/call/call_controller.dart').readAsStringSync();
@@ -76,6 +113,10 @@ void main() {
       controller.indexOf('  /// Reject an incoming call'),
     );
     expect(accept, contains('if (Platform.isIOS)'));
+    expect(accept, contains(
+        "await CallKitService().endGhostCallKitForCall(callId, reason: 'accept');"));
+    expect(accept, isNot(contains('native_answered')));
+    expect(screen, contains("if (status == 'native_answered') return;"));
     expect(accept.indexOf("reason: 'accept'"),
         lessThan(accept.indexOf('_webrtcService.acceptCall(')));
     expect(controller, contains("reason: 'decline'"));
