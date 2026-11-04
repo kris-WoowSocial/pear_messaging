@@ -35,7 +35,9 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted || ModalRoute.of(context)?.isCurrent != true) return;
         final callId = (Get.arguments as Map?)?['callId'] as String?;
-        if (callId != null) {
+        // Never 'late'-end a PushKit-owned call — its CallKit record is the
+        // real call UI, not a foreground ghost.
+        if (callId != null && !_controller.isPushOwnedCallId(callId)) {
           CallKitService().endGhostCallKitForCall(callId, reason: 'late');
         }
       });

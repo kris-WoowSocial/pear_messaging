@@ -458,6 +458,13 @@ class CallController extends GetxController {
   /// the offer via call_resync while the phone still rings.
   String? _ringingCallId;
 
+  /// iOS callIds whose CallKit record was reported by the native PushKit
+  /// (locked/killed) path. The native record owns the call UI while it rings
+  /// — the Flutter incoming screen must never appear for these ids, or its
+  /// initState 'late' reconcile would end the live CallKit record. Populated
+  /// by callPushWake; cleared on every terminal/accept path for that call.
+  final Set<String> _nativePushCallIds = {};
+
   /// Read the ringing-call marker written natively when a pre-warm engine was
   /// started for an incoming call. No-op when absent (normal app launches).
   Future<void> _loadRingingCallMarker() async {
@@ -1168,6 +1175,7 @@ class CallController extends GetxController {
   Future<void> _handleNativeDecline(Map<String, dynamic> data) async {
     final callId = data['call_id'] as String?;
     if (callId == null || callId.isEmpty) return;
+    if (Platform.isIOS) _nativePushCallIds.remove(callId);
 
     // Same dedup semantics as _handleNativeAnswer: only skip when this call is
     // already over. Decline is idempotent — retrying after a failed first
@@ -1910,6 +1918,10 @@ class CallController extends GetxController {
             // App was launched/killed and service woke it up to show full-screen call UI
             // We don't have SDP yet; show the incoming call screen and wait for socket resync
             if (callId != null && callId.isNotEmpty) {
+              // Never for a PushKit-owned call — CallKit owns its UI.
+              if (Platform.isIOS && _nativePushCallIds.contains(callId)) {
+                return null;
+              }
               debugPrint(
                 '📞 Showing incoming call screen from native service launch',
               );
@@ -2001,6 +2013,11 @@ class CallController extends GetxController {
           }
           CallPhaseLogger.start();
           CallPhaseLogger.mark('push_wake');
+          // The native CallKit record owns this call's UI — remember it so a
+          // resync'd incoming_call can never show the Flutter screen or
+          // 'late'-end the live record, regardless of the lifecycle state the
+          // woken engine reports.
+          _nativePushCallIds.add(pushCallId);
           // Arm the marker only while registration is still pending — the
           // isRegistered hook fires on the transition and re-requests the
           // offer. On an already-registered socket the socket-delivered
@@ -2131,9 +2148,12 @@ class CallController extends GetxController {
             _latestIncomingCallData = null;
             rejectCall(callData);
           } else if (action.action == 'tap') {
-            // User tapped notification body — open IncomingCallScreen
+            // User tapped notification body — open IncomingCallScreen.
+            // Never for a PushKit-owned call — CallKit owns its UI.
             debugPrint('📞 Notification tap: opening incoming call screen');
-            Get.toNamed('/call/incoming', arguments: callData);
+            if (!(Platform.isIOS && _nativePushCallIds.contains(callId))) {
+              Get.toNamed('/call/incoming', arguments: callData);
+            }
           }
         }
       });
@@ -2379,6 +2399,7 @@ class CallController extends GetxController {
       debugPrint('📞 Ignoring CallKit decline with unresolvable id');
       return;
     }
+    if (Platform.isIOS) _nativePushCallIds.remove(callId);
     if (_isRecentlyEnded(callId)) {
       debugPrint('📞 Ignoring CallKit decline for already-ended $callId');
       return;
@@ -2444,6 +2465,7 @@ class CallController extends GetxController {
       debugPrint('📞 Ignoring CallKit end with unresolvable id');
       return;
     }
+    if (Platform.isIOS) _nativePushCallIds.remove(callId);
     if (_isRecentlyEnded(callId)) {
       debugPrint('📞 Ignoring CallKit end for already-ended $callId');
       return;
@@ -2470,6 +2492,7 @@ class CallController extends GetxController {
       debugPrint('📞 Ignoring CallKit timeout for $callId');
       return;
     }
+    if (Platform.isIOS) _nativePushCallIds.remove(callId);
     final ringingId = _latestIncomingCallData?['callId'] as String?;
     final isOurRingingCall =
         callId == ringingId || callId == currentCallId.value;
@@ -2797,6 +2820,7 @@ class CallController extends GetxController {
     try {
       final callId = callData['callId'] as String;
       if (Platform.isIOS) {
+        _nativePushCallIds.remove(callId);
         await CallKitService().endGhostCallKitForCall(callId, reason: 'accept');
       }
       // Cancel incoming call notification (stops vibration/sound from notification)
@@ -3469,14 +3493,17 @@ class CallController extends GetxController {
     // A cancel/end for the still-ringing call clears the push-wake marker even
     // when the early return below would otherwise skip cleanup (e.g. another
     // call id is current). iOS only — Android owns ringing_call_id natively.
-    if (Platform.isIOS && callId != null && callId == _ringingCallId) {
-      _ringingCallId = null;
-      unawaited(
-        SharedPreferences.getInstance().then(
-          (prefs) => prefs.remove('ringing_call_id'),
-        ),
-      );
-      _socketService.callUrgency = false;
+    if (Platform.isIOS && callId != null) {
+      _nativePushCallIds.remove(callId);
+      if (callId == _ringingCallId) {
+        _ringingCallId = null;
+        unawaited(
+          SharedPreferences.getInstance().then(
+            (prefs) => prefs.remove('ringing_call_id'),
+          ),
+        );
+        _socketService.callUrgency = false;
+      }
     }
 
     // Only process if this is the current call (ignore if we have a different active call)
@@ -4076,6 +4103,13 @@ class CallController extends GetxController {
     final data = _latestIncomingCallData;
     if (data == null) return;
     final callId = data['callId'] as String?;
+    // A PushKit-owned call rings on its native CallKit record — keep the
+    // cached offer for the fast accept path and never let resume-time
+    // staleness end that record. iOS-only via the helper's isIos gate; the
+    // set is never populated on Android.
+    if (isPushOwnedCallId(callId)) {
+      return;
+    }
     if (!isIncomingRingExpired(
       receivedAtMs: data['receivedAtMs'] as int?,
       nowMs: DateTime.now().millisecondsSinceEpoch,
@@ -4360,13 +4394,16 @@ class CallController extends GetxController {
     // iOS only: Android's Kotlin FCM service owns ringing_call_id — clearing
     // it here could delete a newer call's marker. Keyed on the ended call's
     // id so a reset from a previous call can't clear a newly-armed marker.
-    if (Platform.isIOS && _ringingCallId == callId) {
-      _ringingCallId = null;
-      unawaited(
-        SharedPreferences.getInstance().then(
-          (prefs) => prefs.remove('ringing_call_id'),
-        ),
-      );
+    if (Platform.isIOS) {
+      _nativePushCallIds.remove(callId);
+      if (_ringingCallId == callId) {
+        _ringingCallId = null;
+        unawaited(
+          SharedPreferences.getInstance().then(
+            (prefs) => prefs.remove('ringing_call_id'),
+          ),
+        );
+      }
     }
     CallPhaseLogger.stop();
     _stopDurationUpdateTimer();
@@ -4717,6 +4754,19 @@ class CallController extends GetxController {
     // arrives shortly after (server sends both socket + FCM in parallel)
     FCMService.setLastShownCallId(incomingCallId);
 
+    // A PushKit-reported call rings on its native CallKit record — showing the
+    // Flutter copy here would let the screen's initState 'late' reconcile end
+    // the live record and silently kill the call UI.
+    if (suppressIncomingUiForPushCall(
+      callId: incomingCallId,
+      isIos: Platform.isIOS,
+      pushOwnedCallIds: _nativePushCallIds,
+      lifecycleState: WidgetsBinding.instance.lifecycleState,
+    )) {
+      debugPrint('📞 Push-owned CallKit call — native owns call UI');
+      return;
+    }
+
     final screenLocked = await _isScreenLocked();
     final appInBackground = await _isAppInBackground();
 
@@ -4750,6 +4800,26 @@ class CallController extends GetxController {
     return state != AppLifecycleState.resumed &&
         state != AppLifecycleState.inactive;
   }
+
+  /// iOS PushKit-owned incoming call: the locked/killed push path already
+  /// reported a real CallKit record that owns the call UI, so the Flutter
+  /// incoming screen must be suppressed no matter which lifecycle state the
+  /// woken engine reports. [lifecycleState] is accepted only to make that
+  /// irrelevance explicit and unit-testable.
+  static bool suppressIncomingUiForPushCall({
+    required String? callId,
+    required bool isIos,
+    required Set<String> pushOwnedCallIds,
+    AppLifecycleState? lifecycleState,
+  }) {
+    return isIos && callId != null && pushOwnedCallIds.contains(callId);
+  }
+
+  bool isPushOwnedCallId(String? callId) => suppressIncomingUiForPushCall(
+        callId: callId,
+        isIos: Platform.isIOS,
+        pushOwnedCallIds: _nativePushCallIds,
+      );
 
   /// Returns true if the app is in the background (not in the resumed state)
   Future<bool> _isAppInBackground() async {
@@ -4873,6 +4943,7 @@ class CallController extends GetxController {
     try {
       final callId = data['callId'] as String;
       final callerId = data['callerId'] as String;
+      if (Platform.isIOS) _nativePushCallIds.remove(callId);
       if (_acceptInFlightCallId == callId || isInCall) {
         debugPrint('📞 Accept already in progress for $callId — skipping dup');
         return;

@@ -1,5 +1,7 @@
 import 'dart:io';
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:pear_messaging/features/call/call_controller.dart';
 
 /// Source-structure checks for the iOS locked-wake socket reconnect
 /// (ff_ios_push_wake_reconnect) and the release-visible phase logging.
@@ -79,8 +81,9 @@ void main() {
     final reset = src.substring(src.indexOf('  void _resetCallState() {'));
     // iOS-gated and keyed on the ended call's id — Android's Kotlin service
     // owns ringing_call_id and a stale reset must not clear a newer marker.
-    expect(reset,
-        contains('if (Platform.isIOS && _ringingCallId == callId)'));
+    expect(reset, contains('if (Platform.isIOS) {'));
+    expect(reset, contains('_nativePushCallIds.remove(callId)'));
+    expect(reset, contains('if (_ringingCallId == callId)'));
     expect(reset, contains("prefs.remove('ringing_call_id')"));
     expect(reset, contains('CallPhaseLogger.stop()'));
   });
@@ -90,8 +93,9 @@ void main() {
     final terminated = src.substring(
       src.indexOf('  void _handleCallTerminated('),
     );
-    expect(terminated,
-        contains('Platform.isIOS && callId != null && callId == _ringingCallId'));
+    expect(terminated, contains('Platform.isIOS && callId != null'));
+    expect(terminated, contains('_nativePushCallIds.remove(callId)'));
+    expect(terminated, contains('callId == _ringingCallId'));
     expect(terminated, contains('_socketService.callUrgency = false'));
   });
 
@@ -143,5 +147,164 @@ void main() {
     }
     expect(rtc, contains('r\'\\btyp\\s+(\\w+)\''));
     expect(rtc, contains("'pair_\${local}_\$remote'"));
+  });
+
+  test('suppressIncomingUiForPushCall: push-owned suppresses at ANY lifecycle', () {
+    const owned = {'call-1'};
+    for (final state in [
+      AppLifecycleState.inactive,
+      AppLifecycleState.resumed,
+      AppLifecycleState.paused,
+      AppLifecycleState.detached,
+      null,
+    ]) {
+      expect(
+        CallController.suppressIncomingUiForPushCall(
+          callId: 'call-1',
+          isIos: true,
+          pushOwnedCallIds: owned,
+          lifecycleState: state,
+        ),
+        isTrue,
+        reason: 'push-owned call must suppress at lifecycle $state',
+      );
+    }
+  });
+
+  test('suppressIncomingUiForPushCall: false for non-owned/non-iOS/null', () {
+    const owned = {'call-1'};
+    for (final state in [
+      AppLifecycleState.resumed,
+      AppLifecycleState.inactive,
+      null,
+    ]) {
+      expect(
+        CallController.suppressIncomingUiForPushCall(
+          callId: 'call-2',
+          isIos: true,
+          pushOwnedCallIds: owned,
+          lifecycleState: state,
+        ),
+        isFalse,
+        reason: 'non-push-owned call must not suppress at lifecycle $state',
+      );
+      expect(
+        CallController.suppressIncomingUiForPushCall(
+          callId: 'call-1',
+          isIos: false,
+          pushOwnedCallIds: owned,
+          lifecycleState: state,
+        ),
+        isFalse,
+        reason: 'Android must never suppress at lifecycle $state',
+      );
+      expect(
+        CallController.suppressIncomingUiForPushCall(
+          callId: null,
+          isIos: true,
+          pushOwnedCallIds: owned,
+          lifecycleState: state,
+        ),
+        isFalse,
+        reason: 'null callId must never suppress at lifecycle $state',
+      );
+    }
+  });
+
+  test('callPushWake arms the push-owned set unconditionally', () {
+    final handler = controller().substring(
+      controller().indexOf("call.method == 'callPushWake'"),
+    );
+    // Armed for every push that passes the iOS/flag/!isInCall checks — NOT
+    // gated on registration — so flag-off keeps 214 behaviour.
+    expect(handler, contains('_nativePushCallIds.add(pushCallId)'));
+    expect(
+      handler.indexOf('_nativePushCallIds.add(pushCallId)'),
+      lessThan(handler.indexOf('!_socketService.isRegistered.value')),
+    );
+    expect(
+      handler.indexOf('_nativePushCallIds.add(pushCallId)'),
+      greaterThan(handler.indexOf('pushCallId.isEmpty || isInCall')),
+    );
+  });
+
+  test('incoming_call gate consults the push-owned set before showing UI', () {
+    final src = controller();
+    final fn = src.substring(src.indexOf('_handleIncomingCall(Map'));
+    expect(fn, contains('suppressIncomingUiForPushCall('));
+    expect(
+      fn.indexOf('suppressIncomingUiForPushCall('),
+      lessThan(fn.indexOf("Get.toNamed('/call/incoming'")),
+    );
+    expect(
+      fn.indexOf('suppressIncomingUiForPushCall('),
+      lessThan(fn.indexOf('_ringtoneService.playIncomingRingtone()')),
+    );
+  });
+
+  test('incoming screen never late-ends a push-owned call', () {
+    final screen = File('lib/features/call/incoming_call_screen.dart')
+        .readAsStringSync();
+    final init = screen.substring(
+      screen.indexOf('void initState()'),
+      screen.indexOf('void _onCallStateChanged'),
+    );
+    expect(init, contains('isPushOwnedCallId(callId)'));
+    expect(
+      init.indexOf('isPushOwnedCallId(callId)'),
+      lessThan(init.indexOf("endGhostCallKitForCall(callId, reason: 'late')")),
+    );
+  });
+
+  test('every terminal and accept path clears the push-owned entry', () {
+    String body(String marker, [String? end]) {
+      final src = controller();
+      final start = src.indexOf(marker);
+      return end == null ? src.substring(start) : src.substring(
+        start,
+        src.indexOf(end, start + marker.length),
+      );
+    }
+
+    for (final marker in [
+      '  void _resetCallState() {',
+      '  void _handleCallTerminated(',
+      '  void _handleCallKitDecline(',
+      '  void _handleCallKitEnd(',
+      '  void _handleCallKitTimeout(',
+      '  Future<void> _handleNativeDecline(',
+      '  Future<bool> acceptCall(',
+      '  Future<void> _acceptIncomingCallResync(',
+    ]) {
+      expect(
+        body(marker, '\n  }'),
+        contains('_nativePushCallIds.remove(callId)'),
+        reason: 'missing push-owned cleanup in $marker',
+      );
+    }
+    // All cleanup is iOS-gated — Android behaviour is byte-for-byte unchanged.
+    expect(body('  void _handleCallKitDecline(', '\n  }'),
+        contains('if (Platform.isIOS) _nativePushCallIds.remove(callId)'));
+    expect(body('  void _handleCallKitEnd(', '\n  }'),
+        contains('if (Platform.isIOS) _nativePushCallIds.remove(callId)'));
+    expect(body('  void _handleCallKitTimeout(', '\n  }'),
+        contains('if (Platform.isIOS) _nativePushCallIds.remove(callId)'));
+    expect(body('  Future<void> _handleNativeDecline(', '\n  }'),
+        contains('if (Platform.isIOS) _nativePushCallIds.remove(callId)'));
+  });
+
+  test('resume-time staleness never expires a push-owned call', () {
+    final src = controller();
+    final fn = src.substring(
+      src.indexOf('  void _expireStaleIncomingCall()'),
+      src.indexOf('  void _handleCallEnded('),
+    );
+    // iOS gating lives inside isPushOwnedCallId — the shared expiry body
+    // stays platform-free so Android behaves identically.
+    expect(fn, contains('isPushOwnedCallId(callId)'));
+    expect(
+      fn.indexOf('isPushOwnedCallId(callId)'),
+      lessThan(fn.indexOf('isIncomingRingExpired(')),
+    );
   });
 }
