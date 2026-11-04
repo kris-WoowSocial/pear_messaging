@@ -428,6 +428,20 @@ class CallKitService {
     }
   }
 
+  Future<String> endGhostCallKitForCall(String callId, {String reason = 'late'}) async {
+    if (!Platform.isIOS || callId.isEmpty) return 'none';
+    try {
+      return await const MethodChannel('com.pear.messaging/call')
+          .invokeMethod<String>('endGhostCallKitForCall', {
+        'callId': callId,
+        'reason': reason,
+      }) ?? 'none';
+    } catch (e) {
+      debugPrint('CallKit ghost reconciliation failed: $e');
+      return 'none';
+    }
+  }
+
   Future<void> endCall(String callId) async {
     if (Platform.isIOS) {
       await reconcileNativeCalls(completedCallId: callId);
@@ -644,6 +658,9 @@ class CallKitService {
         // mark it so the server's missed_call push doesn't post a second one.
         final timeoutCallId = _extractCallId(event.body);
         if (timeoutCallId != null && timeoutCallId.isNotEmpty) {
+          if (Platform.isIOS) {
+            await endGhostCallKitForCall(timeoutCallId, reason: 'timeout');
+          }
           unawaited(
             SharedPreferences.getInstance().then(
               (p) => p.setInt(

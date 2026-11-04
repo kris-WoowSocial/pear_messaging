@@ -1061,6 +1061,7 @@ class CallController extends GetxController {
     final fromNative = data['from_native'] == 'true';
 
     if (callId == null || callId.isEmpty) return;
+    if (Platform.isIOS) unawaited(_ringtoneService.stopRingtone());
 
     // Prevent duplicate handling from both the pending-intent path and the
     // CALL_CHANNEL onCallAction path firing on cold start — but only treat it
@@ -1859,6 +1860,11 @@ class CallController extends GetxController {
     try {
       // Listen for call actions from native Android receiver/service
       _callChannel.setMethodCallHandler((call) async {
+        if (call.method == 'disarmGhostCallKitEnd') {
+          final uuid = (call.arguments as Map?)?['uuid'] as String?;
+          if (uuid != null) CallKitService.ghostEvents.disarm(uuid);
+          return true;
+        }
         if (call.method == 'armGhostCallKitEnd') {
           final args = call.arguments as Map?;
           final uuid = args?['uuid'] as String?;
@@ -2746,6 +2752,10 @@ class CallController extends GetxController {
   Future<bool> acceptCall(Map<String, dynamic> callData) async {
     try {
       final callId = callData['callId'] as String;
+      if (Platform.isIOS) {
+        final status = await CallKitService().endGhostCallKitForCall(callId, reason: 'accept');
+        if (status == 'native_answered') return true;
+      }
       // Cancel incoming call notification (stops vibration/sound from notification)
       // Run without await to avoid blocking call acceptance if notification fails
       NotificationService().cancelNotification(callId.hashCode).catchError((e) {
@@ -2879,6 +2889,9 @@ class CallController extends GetxController {
   /// Reject an incoming call
   void rejectCall(Map<String, dynamic> callData) {
     final callId = callData['callId'] as String;
+    if (Platform.isIOS) {
+      unawaited(CallKitService().endGhostCallKitForCall(callId, reason: 'decline'));
+    }
     final callerId = callData['callerId'] as String;
 
     // Cancel incoming call notification
@@ -3405,6 +3418,9 @@ class CallController extends GetxController {
   void _handleCallTerminated(Map<String, dynamic> data) {
     final callId = data['callId'] as String?;
     debugPrint('📞 Call terminated: $data');
+    if (Platform.isIOS && callId != null) {
+      unawaited(CallKitService().endGhostCallKitForCall(callId, reason: 'terminated'));
+    }
     unawaited(CallKitService().reconcileNativeCalls(completedCallId: callId));
 
     // Only process if this is the current call (ignore if we have a different active call)

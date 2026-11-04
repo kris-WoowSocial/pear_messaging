@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pear_messaging/core/services/callkit_ghost_events.dart';
 import 'package:pear_messaging/core/services/callkit_service.dart';
@@ -7,6 +9,65 @@ import 'package:shared_preferences/shared_preferences.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   setUp(() => SharedPreferences.setMockInitialValues({}));
+
+  test('native answer can disarm a pending ghost and forward accept and end', () async {
+    final service = CallKitService();
+    CallKitService.ghostEvents.arm('banner-race');
+    expect(CallKitService.ghostEvents.suppress('BANNER-RACE'), isTrue);
+    CallKitService.ghostEvents.disarm('BANNER-RACE');
+    final forwarded = <CallKitEvent>[];
+    final subscription = service.eventStream.listen(forwarded.add);
+    addTearDown(subscription.cancel);
+    for (final event in [Event.actionCallAccept, Event.actionCallEnded]) {
+      await service.replayPluginEvent(CallEvent({
+        'id': 'banner-race',
+        'extra': {'callId': 'banner-race-call'},
+      }, event));
+    }
+    await Future<void>.delayed(Duration.zero);
+    expect(forwarded.map((event) => event.type), [
+      CallKitEventType.accept,
+      CallKitEventType.end,
+    ]);
+  });
+
+  test('native reconciliation checks answer state again after arming', () {
+    final source = File('ios/Runner/AppDelegate.swift').readAsStringSync();
+    final helper = source.substring(
+      source.indexOf('  private func endGhostCallKitForCall('),
+      source.indexOf('  private var ghostEndUuids'),
+    );
+    expect(helper, contains('foregroundGhostCallIds.contains(callId)'));
+    expect(helper, contains('plugin.activeCalls()'));
+    expect(helper, contains('self.nativeAnsweredCallIds.contains(callId)'));
+    expect(helper, contains('plugin.getAcceptedCall()?.uuid'));
+    expect(helper.indexOf('self.nativeAnsweredCallIds.contains(callId)'),
+        greaterThan(helper.indexOf('.invokeMethod("armGhostCallKitEnd"')));
+    expect(helper.indexOf('self.nativeAnsweredCallIds.contains(callId)'),
+        lessThan(helper.indexOf('plugin.endCall(endData)')));
+    expect(helper, contains('self.latestPushCallKitUuid == uuid'));
+    expect(helper, contains('self.markCallKitEndSilenced(serverCallId: callId)'));
+    expect(helper, contains('ghostEndWaiters'));
+  });
+
+  test('Flutter presentation and accept reconcile only on iOS', () {
+    final screen = File('lib/features/call/incoming_call_screen.dart').readAsStringSync();
+    final controller = File('lib/features/call/call_controller.dart').readAsStringSync();
+    expect(screen, contains('if (Platform.isIOS)'));
+    expect(screen, contains('WidgetsBinding.instance.addPostFrameCallback'));
+    expect(screen, contains("reason: 'late'"));
+    expect(screen.indexOf("reason: 'accept'"),
+        lessThan(screen.indexOf('acceptFuture = controller.acceptCall(callData)')));
+    final accept = controller.substring(
+      controller.indexOf('  Future<bool> acceptCall('),
+      controller.indexOf('  /// Reject an incoming call'),
+    );
+    expect(accept, contains('if (Platform.isIOS)'));
+    expect(accept.indexOf("reason: 'accept'"),
+        lessThan(accept.indexOf('_webrtcService.acceptCall(')));
+    expect(controller, contains("reason: 'decline'"));
+    expect(controller, contains("reason: 'terminated'"));
+  });
 
   test('production plugin handler suppresses the exact owner sequence', () async {
     final service = CallKitService();

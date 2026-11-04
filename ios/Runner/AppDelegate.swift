@@ -749,7 +749,7 @@ import os.log
       completion(nativeAnsweredCallIds.contains(callId) ? "native_answered" : "none")
       return
     }
-    guard foregroundGhostCallIds.contains(callId),
+    guard foregroundGhostCallIds.contains(callId) || reason != "handshake",
           let record = plugin.activeCalls().first(where: { ($0["id"] as? String)?.lowercased() == uuid.uuidString.lowercased() }),
           (record["accepted"] as? Bool) != true,
           plugin.getAcceptedCall()?.uuid.lowercased() != uuid.uuidString.lowercased() else {
@@ -782,6 +782,9 @@ import os.log
           self.foregroundGhostCallIds.remove(callId)
           status = "ended"
           os_log("%{public}@", log: .default, type: .info, "VantGhost reconcile_ended reason=\(reason)")
+        }
+        if status != "ended" {
+          self.callStateChannel?.invokeMethod("disarmGhostCallKitEnd", arguments: ["uuid": uuid.uuidString])
         }
         let waiters = self.ghostEndWaiters.removeValue(forKey: callId) ?? []
         waiters.forEach { $0(status) }
@@ -848,7 +851,8 @@ import os.log
           result("none")
           return
         }
-        let reason = args["reason"] as? String ?? "late"
+        let requestedReason = args["reason"] as? String ?? "late"
+        let reason = ["late", "accept", "decline", "terminated", "timeout"].contains(requestedReason) ? requestedReason : "late"
         owner.endGhostCallKitForCall(callId, reason: reason) { status in result(status) }
       case "endOrphanedCallKitCall":
         guard let args = call.arguments as? [String: Any],
