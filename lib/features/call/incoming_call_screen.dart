@@ -32,12 +32,19 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
     _setupAnimation();
     _callStateWorker = ever(_controller.callState, _onCallStateChanged);
     if (Platform.isIOS) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
+      WidgetsBinding.instance.addPostFrameCallback((_) async {
         if (!mounted || ModalRoute.of(context)?.isCurrent != true) return;
         final callId = (Get.arguments as Map?)?['callId'] as String?;
-        if (callId != null) {
-          CallKitService().endGhostCallKitForCall(callId, reason: 'late');
+        // Never 'late'-end a PushKit-owned call — its CallKit record is the
+        // real call UI, not a foreground ghost. Ask native too: on cold start
+        // callPushWake may have raced past Dart handler registration.
+        if (callId == null) return;
+        if (_controller.isPushOwnedCallId(callId) ||
+            await CallKitService().isPushKitCallOwned(callId)) {
+          return;
         }
+        if (!mounted || ModalRoute.of(context)?.isCurrent != true) return;
+        CallKitService().endGhostCallKitForCall(callId, reason: 'late');
       });
     }
   }

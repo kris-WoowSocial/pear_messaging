@@ -477,6 +477,7 @@ import os.log
     // Caller cancelled — dismiss the CallKit UI if it's showing (works even when app is killed)
     if pushType == "call_cancelled" {
       let callId = payload.dictionaryPayload["callId"] as? String ?? ""
+      pushKitOwnedCallIds.remove(callId)
       print("📱 PushKit: call_cancelled received for callId=\(callId), reporting placeholder + ending CallKit call")
       // iOS requires EVERY VoIP push to produce a reportNewIncomingCall. The
       // real call's CallKit UUID may already exist (a ringing call), and a
@@ -606,6 +607,14 @@ import os.log
 
     print("📱 PushKit: Showing CallKit UI — callId=\(callKitId) caller=\(nameCaller) isVideo=\(isVideo)")
 
+    // Locked/killed branch only (the foreground block returned above): mark
+    // native ownership BEFORE the CallKit report so Dart's isPushKitCallOwned
+    // pull sees it even if the query lands mid-report. A resync'd incoming_call
+    // must never show the Flutter screen or 'late'-end this record.
+    if !serverCallId.isEmpty {
+      pushKitOwnedCallIds.insert(serverCallId)
+    }
+
     // Build CallKit data and show native incoming call UI on the lock screen.
     // CRITICAL: iOS 13+ requires reportNewIncomingCall within this method's call stack.
     // fromPushKit: true satisfies that requirement.
@@ -699,6 +708,7 @@ import os.log
     print("📱 CallKit: onDecline")
     if let callId = call.data.extra["callId"] as? String {
       foregroundGhostCallIds.remove(callId)
+      pushKitOwnedCallIds.remove(callId)
     }
     respondToCall(call: call, action: "reject")
     action.fulfill()
@@ -709,6 +719,7 @@ import os.log
     if let callId = call.data.extra["callId"] as? String {
       nativeAnsweredCallIds.remove(callId)
       foregroundGhostCallIds.remove(callId)
+      pushKitOwnedCallIds.remove(callId)
     }
     respondToCall(call: call, action: "end")
     action.fulfill()
@@ -718,6 +729,7 @@ import os.log
     print("📱 CallKit: onTimeOut")
     if let callId = call.data.extra["callId"] as? String {
       foregroundGhostCallIds.remove(callId)
+      pushKitOwnedCallIds.remove(callId)
       if ghostEndUuids.contains(call.uuid) {
         clearGhostEndMarkers(callId: callId, uuid: call.uuid)
       }
@@ -765,6 +777,14 @@ import os.log
 
   private var latestPushCallKitUuid: UUID?
   private var foregroundGhostCallIds = Set<String>()
+  /// Server callIds reported to CallKit from the locked/killed PushKit branch
+  /// (inserted before the report; the foreground ghost branch never inserts —
+  /// those records stay ghost-owned so 'late'/'handshake' ends keep working).
+  /// Dart pulls this via isPushKitCallOwned, which covers cold starts where
+  /// callPushWake raced past Dart handler registration. NOT cleared on
+  /// onAccept: a duplicate incoming_call arriving right after the answer must
+  /// stay suppressed until the call ends.
+  private var pushKitOwnedCallIds = Set<String>()
   private var nativeAnsweredCallIds = Set<String>()
   private var ghostEndWaiters = [String: [(String) -> Void]]()
   private var ghostEndSubmittedCallIds = Set<String>()
@@ -932,6 +952,17 @@ import os.log
         let requestedReason = args["reason"] as? String ?? "late"
         let reason = ["late", "accept", "decline", "terminated", "timeout"].contains(requestedReason) ? requestedReason : "late"
         owner.endGhostCallKitForCall(callId, reason: reason) { status in result(status) }
+      case "isPushKitCallOwned":
+        // Pull-based ownership query: true only when the locked/killed
+        // PushKit branch reported this call to CallKit. Handlers run on the
+        // main thread, so the Set read needs no synchronisation.
+        guard let args = call.arguments as? [String: Any],
+              let callId = args["callId"] as? String, !callId.isEmpty,
+              let owner = self else {
+          result(false)
+          return
+        }
+        result(owner.pushKitOwnedCallIds.contains(callId))
       case "endOrphanedCallKitCall":
         guard let args = call.arguments as? [String: Any],
               let rawUuid = args["uuid"] as? String,

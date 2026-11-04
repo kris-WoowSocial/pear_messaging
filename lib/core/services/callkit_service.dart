@@ -442,6 +442,23 @@ class CallKitService {
     }
   }
 
+  /// Ask native whether the locked/killed PushKit branch reported a CallKit
+  /// record for [callId]. The Dart-side push-owned set is only armed when
+  /// `callPushWake` actually lands, so this pull covers cold starts where the
+  /// wake call raced past handler registration. Fails open (false) on error
+  /// or timeout so the incoming-call path never stalls.
+  Future<bool> isPushKitCallOwned(String callId) async {
+    if (!Platform.isIOS || callId.isEmpty) return false;
+    try {
+      final owned = await const MethodChannel('com.pear.messaging/call')
+          .invokeMethod<bool>('isPushKitCallOwned', {'callId': callId})
+          .timeout(const Duration(milliseconds: 300), onTimeout: () => false);
+      return owned ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
   Future<void> endCall(String callId) async {
     if (Platform.isIOS) {
       await reconcileNativeCalls(completedCallId: callId);
