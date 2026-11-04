@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pear_messaging/core/services/callkit_ghost_events.dart';
 import 'package:pear_messaging/core/services/callkit_service.dart';
@@ -9,6 +10,18 @@ import 'package:shared_preferences/shared_preferences.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   setUp(() => SharedPreferences.setMockInitialValues({}));
+
+  test('ghost reconciliation does not invoke native code outside iOS', () async {
+    if (Platform.isIOS) return;
+    const channel = MethodChannel('com.pear.messaging/call');
+    var calls = 0;
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (_) async { calls++; return 'ended'; });
+    addTearDown(() => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, null));
+    expect(await CallKitService().endGhostCallKitForCall('call', reason: 'accept'), 'none');
+    expect(calls, 0);
+  });
 
   test('native answer can disarm a pending ghost and forward accept and end', () async {
     final service = CallKitService();

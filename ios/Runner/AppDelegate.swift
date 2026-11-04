@@ -680,6 +680,9 @@ import os.log
 
   func onDecline(_ call: Call, _ action: CXEndCallAction) {
     print("📱 CallKit: onDecline")
+    if let callId = call.data.extra["callId"] as? String {
+      foregroundGhostCallIds.remove(callId)
+    }
     respondToCall(call: call, action: "reject")
     action.fulfill()
   }
@@ -696,6 +699,9 @@ import os.log
 
   func onTimeOut(_ call: Call) {
     print("📱 CallKit: onTimeOut")
+    if let callId = call.data.extra["callId"] as? String {
+      foregroundGhostCallIds.remove(callId)
+    }
   }
 
   private func notifyFlutterOfCallAccept(call: Call) {
