@@ -7,6 +7,7 @@ import 'call_diag.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'call_foreground_service.dart';
 import 'call_media_helper.dart';
+import 'call_phase_logger.dart';
 
 /// WebRTC Call Service - Manages peer-to-peer audio calls with E2EE
 class WebRTCCallService {
@@ -506,6 +507,12 @@ class WebRTCCallService {
         '📞 ICE candidate generated: ${candidate.candidate}, sdpMid: ${candidate.sdpMid}, sdpMLineIndex: ${candidate.sdpMLineIndex}',
       );
       if (candidate.candidate != null && candidate.candidate!.isNotEmpty) {
+        // Log only the candidate type (host/srflx/relay/prflx) — never the
+        // address embedded in the candidate string.
+        final candType = RegExp(r'\btyp\s+(\w+)')
+            .firstMatch(candidate.candidate!)
+            ?.group(1);
+        if (candType != null) CallPhaseLogger.markOnce('cand_$candType');
         onIceCandidate?.call(
           candidate.candidate!,
           candidate.sdpMid,
@@ -524,11 +531,23 @@ class WebRTCCallService {
     // Handle ICE gathering state changes
     _peerConnection!.onIceGatheringState = (state) {
       debugPrint('📞 ICE gathering state: $state');
+      if (state == RTCIceGatheringState.RTCIceGatheringStateGathering) {
+        CallPhaseLogger.mark('ice_gather_start');
+      } else if (state == RTCIceGatheringState.RTCIceGatheringStateComplete) {
+        CallPhaseLogger.mark('ice_gather_complete');
+      }
     };
 
     // Handle ICE connection state changes
     _peerConnection!.onIceConnectionState = (state) {
       debugPrint('📞 ICE connection state: $state');
+      if (state == RTCIceConnectionState.RTCIceConnectionStateChecking) {
+        CallPhaseLogger.mark('ice_connecting');
+      } else if (state ==
+              RTCIceConnectionState.RTCIceConnectionStateConnected ||
+          state == RTCIceConnectionState.RTCIceConnectionStateCompleted) {
+        CallPhaseLogger.mark('ice_connected');
+      }
       if (state == RTCIceConnectionState.RTCIceConnectionStateDisconnected ||
           state == RTCIceConnectionState.RTCIceConnectionStateFailed) {
         onIceRestartNeeded?.call(state.toString());
@@ -546,6 +565,8 @@ class WebRTCCallService {
       switch (state) {
         case RTCPeerConnectionState.RTCPeerConnectionStateConnected:
           debugPrint('📞 WebRTC CONNECTED - starting timer and audio');
+          CallPhaseLogger.mark('connected');
+          unawaited(_logSelectedIcePair());
           _connectionLostWatchdog?.cancel();
           _connectionLostWatchdog = null;
           onCallStateChange?.call('connected');
@@ -988,6 +1009,40 @@ class WebRTCCallService {
       debugPrint('⚠️ stopRingingAndSetAudioMode not available, using fallback');
       await _forceAudioDevice();
     }
+  }
+
+  /// Report the selected ICE candidate-pair types (host/srflx/relay only —
+  /// never addresses) to the release-visible phase log.
+  Future<void> _logSelectedIcePair() async {
+    try {
+      final reports = await _peerConnection?.getStats();
+      if (reports == null) return;
+      String? pairId;
+      final pairValues = <String, Map<dynamic, dynamic>>{};
+      final candTypes = <String, String>{};
+      for (final report in reports) {
+        switch (report.type) {
+          case 'transport':
+            pairId ??= report.values['selectedCandidatePairId'] as String?;
+          case 'candidate-pair':
+            pairValues[report.id] = report.values;
+          case 'local-candidate':
+          case 'remote-candidate':
+            candTypes[report.id] =
+                report.values['candidateType'] as String? ?? 'unknown';
+        }
+      }
+      pairId ??= pairValues.entries
+          .where((e) =>
+              e.value['nominated'] == true || e.value['state'] == 'succeeded')
+          .map((e) => e.key)
+          .firstOrNull;
+      final pair = pairId == null ? null : pairValues[pairId];
+      if (pair == null) return;
+      final local = candTypes[pair['localCandidateId']] ?? 'unknown';
+      final remote = candTypes[pair['remoteCandidateId']] ?? 'unknown';
+      CallPhaseLogger.mark('pair_${local}_$remote');
+    } catch (_) {}
   }
 
   /// Request microphone permission

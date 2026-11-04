@@ -15,6 +15,7 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 import '../../core/services/call_breadcrumbs.dart';
 import '../../core/services/caller_name_resolver.dart';
 import '../../core/services/call_media_helper.dart';
+import '../../core/services/call_phase_logger.dart';
 import '../../core/services/call_diag.dart';
 import '../../core/services/call_signaling_crypto.dart';
 import '../../core/constants/network_constants.dart';
@@ -1061,6 +1062,8 @@ class CallController extends GetxController {
     final fromNative = data['from_native'] == 'true';
 
     if (callId == null || callId.isEmpty) return;
+    CallPhaseLogger.startIfInactive();
+    CallPhaseLogger.mark('answer_tap');
     if (Platform.isIOS) unawaited(_ringtoneService.stopRingtone());
 
     // Prevent duplicate handling from both the pending-intent path and the
@@ -1981,6 +1984,45 @@ class CallController extends GetxController {
             endCall();
           }
         }
+        if (call.method == 'callPushWake') {
+          // iOS PushKit wake on the locked path (flag
+          // ff_ios_push_wake_reconnect, default ON): arm the ringing-call
+          // marker so the isRegistered hook re-requests the offer while the
+          // phone still rings, and reconnect immediately instead of waiting
+          // for the answer tap.
+          if (!Platform.isIOS ||
+              (Get.isRegistered<FeatureFlagService>() &&
+                  !Get.find<FeatureFlagService>().iosPushWakeReconnect.value)) {
+            return null;
+          }
+          final pushCallId = (call.arguments as Map?)?['callId'] as String?;
+          if (pushCallId == null || pushCallId.isEmpty || isInCall) {
+            return null;
+          }
+          CallPhaseLogger.start();
+          CallPhaseLogger.mark('push_wake');
+          // Arm the marker only while registration is still pending — the
+          // isRegistered hook fires on the transition and re-requests the
+          // offer. On an already-registered socket the socket-delivered
+          // incoming_call has the offer, so the marker has no effect.
+          if (!_socketService.isRegistered.value) {
+            _ringingCallId = pushCallId;
+            _socketService.callUrgency = true;
+            unawaited(
+              SharedPreferences.getInstance().then(
+                (prefs) => prefs.setString('ringing_call_id', pushCallId),
+              ),
+            );
+          }
+          // Reconnect only when the socket is actually down — never tear
+          // down a healthy socket that is connected or already connecting
+          // (e.g. socket-delivered ringing inside the suspend window).
+          if (!_socketService.isConnected.value &&
+              !_socketService.isConnecting) {
+            _socketService.forceReconnect();
+          }
+        }
+        return null;
       });
 
       NotificationService().onAction.listen((action) async {
@@ -2107,6 +2149,8 @@ class CallController extends GetxController {
     Map<String, dynamic>? extra,
   ) async {
     if (callId == null || callId.isEmpty) return;
+    CallPhaseLogger.startIfInactive();
+    CallPhaseLogger.mark('answer_tap');
     if (_lastHandledNativeCallId == callId) {
       debugPrint(
           '📞 CallKit accept for $callId already handled, skipping duplicate');
@@ -3422,6 +3466,19 @@ class CallController extends GetxController {
     }
     unawaited(CallKitService().reconcileNativeCalls(completedCallId: callId));
 
+    // A cancel/end for the still-ringing call clears the push-wake marker even
+    // when the early return below would otherwise skip cleanup (e.g. another
+    // call id is current). iOS only — Android owns ringing_call_id natively.
+    if (Platform.isIOS && callId != null && callId == _ringingCallId) {
+      _ringingCallId = null;
+      unawaited(
+        SharedPreferences.getInstance().then(
+          (prefs) => prefs.remove('ringing_call_id'),
+        ),
+      );
+      _socketService.callUrgency = false;
+    }
+
     // Only process if this is the current call (ignore if we have a different active call)
     if (callId != null &&
         currentCallId.value.isNotEmpty &&
@@ -3755,6 +3812,7 @@ class CallController extends GetxController {
             'sdpAnswerEnc': encrypted,
           },
         );
+        CallPhaseLogger.mark('answer_sent');
         debugPrint('📞 Encrypted SDP answer sent');
         unawaited(_flushPendingIceCandidates());
       } catch (e) {
@@ -3769,6 +3827,7 @@ class CallController extends GetxController {
       callerId: remoteDeviceId.value,
       sdpAnswer: sdp,
     );
+    CallPhaseLogger.mark('answer_sent');
     debugPrint('📞 SDP answer sent to socket');
   }
 
@@ -4298,6 +4357,18 @@ class CallController extends GetxController {
     _iceServersPrefetched = false;
     _acceptInFlightCallId = null;
     _socketService.callUrgency = false;
+    // iOS only: Android's Kotlin FCM service owns ringing_call_id — clearing
+    // it here could delete a newer call's marker. Keyed on the ended call's
+    // id so a reset from a previous call can't clear a newly-armed marker.
+    if (Platform.isIOS && _ringingCallId == callId) {
+      _ringingCallId = null;
+      unawaited(
+        SharedPreferences.getInstance().then(
+          (prefs) => prefs.remove('ringing_call_id'),
+        ),
+      );
+    }
+    CallPhaseLogger.stop();
     _stopDurationUpdateTimer();
     _stopProximitySensor();
     _setCallScreenVisible(false);
@@ -4499,6 +4570,9 @@ class CallController extends GetxController {
       debugPrint('❌ Incoming call received with no callId, ignoring');
       return;
     }
+    CallPhaseLogger.mark(
+      incomingCallId == _ringingCallId ? 'resync_received' : 'incoming_call',
+    );
 
     // Re-check full-screen intent while a call notification is being posted.
     // If it is denied the full-screen UI will be suppressed — flag it so the
