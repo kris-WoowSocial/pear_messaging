@@ -66,27 +66,95 @@ void main() {
     });
   });
 
-  group('useLegacyRingbackPath (pure selector)', () {
-    test('missing cache (default) → new path', () {
+  group('useLegacyRingbackPath (pure selector, real cached values)', () {
+    // The cache stores the flag VALUE: true = flag ON. Legacy must be chosen
+    // only for an explicit cached false; true or missing means new path.
+    test('cached ON (true) → new path', () {
       expect(
-        RingtoneService.useLegacyRingbackPath(cachedFlagOff: null),
+        RingtoneService.useLegacyRingbackPath(cachedFlagValue: true),
         isFalse,
       );
     });
 
-    test('cached true → new path', () {
+    test('explicit cached OFF (false) → legacy path', () {
       expect(
-        RingtoneService.useLegacyRingbackPath(cachedFlagOff: false),
-        isFalse,
-      );
-    });
-
-    test('explicit cached false → legacy path', () {
-      expect(
-        RingtoneService.useLegacyRingbackPath(cachedFlagOff: true),
+        RingtoneService.useLegacyRingbackPath(cachedFlagValue: false),
         isTrue,
       );
     });
+
+    test('missing cache (null) → new path', () {
+      expect(
+        RingtoneService.useLegacyRingbackPath(cachedFlagValue: null),
+        isFalse,
+      );
+    });
+  });
+
+  group('call-site wiring (regression for the inverted-flag bug)', () {
+    test('call site passes the raw cached value, not an inverted one', () {
+      // The cache read must go in unmodified — the selector decides.
+      expect(
+        ringtoneSrc.contains(
+          'cachedFlagValue: prefs.getBool(\'ff_cache_ff_call_ringback\')',
+        ),
+        isTrue,
+      );
+      // And the selector's contract: legacy iff the value is explicitly false.
+      expect(
+        ringtoneSrc.contains('return cachedFlagValue == false;'),
+        isTrue,
+      );
+      // No stale "off"-polarity parameter may remain anywhere in the file.
+      expect(ringtoneSrc.contains('cachedFlagOff'), isFalse);
+    });
+  });
+
+  group('every declared+runtime-loaded asset is bundled', () {
+    // Assets the app declares under flutter: assets: and loads at runtime.
+    // An ignored/untracked asset is absent from CI checkouts and fails with
+    // "Unable to load asset" in release builds — ringback.wav and logo.jpeg
+    // were both silently missing from build 219 for exactly this reason.
+    for (final asset in <String, String>{
+      'assets/audio/ringback.wav': 'assets/audio/',
+      'assets/icons/logo.jpeg': 'assets/icons/',
+    }.entries) {
+      test('${asset.key}: exists, tracked, not ignored, pubspec-declared',
+          () {
+        // Exists on disk.
+        expect(
+          File(asset.key).existsSync(),
+          isTrue,
+          reason: '${asset.key} missing from the working tree',
+        );
+        // Covered by a directory entry under flutter: assets:.
+        final pubspec = File('pubspec.yaml').readAsStringSync();
+        expect(pubspec.contains('- ${asset.value}'), isTrue);
+        // Git-tracked.
+        final ls = Process.runSync(
+          'git',
+          ['ls-files', asset.key],
+          workingDirectory: Directory.current.path,
+        );
+        expect(
+          (ls.stdout as String).trim(),
+          asset.key,
+          reason: '${asset.key} is not tracked by git',
+        );
+        // And no ignore rule may match it — the media-file blanket rules
+        // (*.wav, *.jpeg, *.png, …) regressed this once per asset class.
+        final ignored = Process.runSync(
+          'git',
+          ['check-ignore', asset.key],
+          workingDirectory: Directory.current.path,
+        );
+        expect(
+          ignored.exitCode,
+          isNot(0),
+          reason: '${asset.key} must not be matched by any gitignore rule',
+        );
+      });
+    }
   });
 
   group('shouldStopOutgoingRingback (pure direction guard)', () {

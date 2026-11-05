@@ -89,8 +89,9 @@ class RingtoneService {
 
   /// Pure selector for ff_call_ringback: only an explicit cached `false`
   /// chooses the legacy implementation; a missing key means the new path.
-  static bool useLegacyRingbackPath({required bool? cachedFlagOff}) {
-    return cachedFlagOff == true;
+  /// [cachedFlagValue] is the raw ff_cache_ value — true means flag ON.
+  static bool useLegacyRingbackPath({required bool? cachedFlagValue}) {
+    return cachedFlagValue == false;
   }
 
   /// Play outgoing ringback tone (looping) — heard by caller through earpiece
@@ -107,7 +108,7 @@ class RingtoneService {
     try {
       final prefs = await SharedPreferences.getInstance();
       legacyPath = useLegacyRingbackPath(
-        cachedFlagOff: prefs.getBool('ff_cache_ff_call_ringback'),
+        cachedFlagValue: prefs.getBool('ff_cache_ff_call_ringback'),
       );
     } catch (_) {
       legacyPath = false;
