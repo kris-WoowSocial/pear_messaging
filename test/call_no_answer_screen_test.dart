@@ -202,28 +202,52 @@ void main() {
       );
     });
 
-    test('startCall clears a stale marker', () {
+    test('startCall does NOT clear the marker mid-flight', () {
+      // Clearing inside startCall would let a failed redial's reset fire the
+      // screens' close-on-ended worker with a null marker and pop the route
+      // before callAgain can react — the marker clears only on success.
       final body = _section(
         controllerSrc,
         'Future<bool> startCall',
         '/// Call back a missed call',
       );
-      expect(body.contains('noAnswerUi.value = null'), isTrue);
+      expect(body.contains('noAnswerUi.value = null'), isFalse);
     });
 
-    test('_handleIncomingCall clears the marker', () {
+    test('_handleIncomingCall clears the marker before any early return', () {
       final start = controllerSrc.indexOf('Future<void> _handleIncomingCall');
       expect(start, greaterThan(-1));
-      final window = controllerSrc.substring(start, start + 1500);
-      expect(window.contains('noAnswerUi.value = null'), isTrue);
+      final window = controllerSrc.substring(start, start + 2500);
+      final clearAt = window.indexOf('noAnswerUi.value = null');
+      expect(clearAt, greaterThan(-1));
+      // The clear must precede ALL early-return paths (video/crypto rejects,
+      // duplicate-call ignore, pending-auto-accept, push-owned flows) so even
+      // a suppressed/native-owned incoming call retires the marker and the
+      // dead /call/ route is cleaned by the normal dismissal path.
+      expect(
+        window.indexOf('CallPhaseLogger.mark('),
+        greaterThan(clearAt),
+      );
+      expect(window.indexOf('rejectCall('), greaterThan(clearAt));
+      expect(
+        window.indexOf('_acceptIncomingCallResync'),
+        greaterThan(clearAt),
+      );
     });
 
-    test('_resetCallState retires only a stale (different-call) marker', () {
+    test(
+        '_resetCallState retires a stale marker only when BOTH ids are '
+        'non-empty and different', () {
       final body = _section(
         controllerSrc,
         'void _resetCallState()',
         'Future<void> _setCallScreenVisible',
       );
+      expect(
+        body.contains('noAnswerUi.value!.callId.isNotEmpty'),
+        isTrue,
+      );
+      expect(body.contains('callId.isNotEmpty'), isTrue);
       expect(
         body.contains('noAnswerUi.value!.callId != callId'),
         isTrue,
@@ -244,16 +268,54 @@ void main() {
     test('callAgain redials same peer and call type via startCall', () {
       final body = _section(
         controllerSrc,
-        'void callAgainFromNoAnswer()',
+        'Future<void> callAgainFromNoAnswer() async',
         'void dismissNoAnswerScreen()',
       );
       expect(
-        body.contains('startCall(info.peerId, isVideo: info.isVideo)'),
+        body.contains('await startCall(info.peerId, isVideo: info.isVideo)'),
         isTrue,
       );
       // Same membership gate as the chat call buttons — no weaker copy.
       expect(body.contains('canMakeCalls'), isTrue);
       expect(body.contains('AppRoutes.stripeSubscription'), isTrue);
+    });
+
+    test('callAgain keeps the marker during the attempt and clears on success',
+        () {
+      final body = _section(
+        controllerSrc,
+        'Future<void> callAgainFromNoAnswer() async',
+        'void dismissNoAnswerScreen()',
+      );
+      // No marker clear may precede the awaited startCall — a null marker
+      // when a failed redial emits `ended` would pop the route mid-flight.
+      final awaitAt = body.indexOf('await startCall(');
+      final clearAt = body.indexOf('noAnswerUi.value = null');
+      expect(awaitAt, greaterThan(-1));
+      expect(clearAt, greaterThan(awaitAt));
+      expect(body.contains('if (started)'), isTrue);
+    });
+
+    test('callAgain restores the marker if startCall returns false', () {
+      final body = _section(
+        controllerSrc,
+        'Future<void> callAgainFromNoAnswer() async',
+        'void dismissNoAnswerScreen()',
+      );
+      expect(body.contains('} else {'), isTrue);
+      expect(body.contains('noAnswerUi.value ??= info;'), isTrue);
+    });
+
+    test('callAgain restores the marker if startCall throws', () {
+      final body = _section(
+        controllerSrc,
+        'Future<void> callAgainFromNoAnswer() async',
+        'void dismissNoAnswerScreen()',
+      );
+      // A thrown startCall must be caught — never strand the user.
+      expect(body.contains('try {'), isTrue);
+      expect(body.contains('} catch (e) {'), isTrue);
+      expect(body.contains('var started = false;'), isTrue);
     });
 
     test('dismiss clears the marker and uses the guarded /call/ pop', () {

@@ -2582,8 +2582,6 @@ class CallController extends GetxController {
       // callState is left at `ended` after the previous call — advance it to
       // dialing now or the screen flashes "Call ended" before Connecting.
       callState.value = CallState.dialing;
-      // A fresh outgoing call always retires a stale no-answer marker.
-      noAnswerUi.value = null;
       _startDialWatchdog(calleeDeviceId, wantsVideo);
       remoteDeviceId.value = calleeDeviceId;
       remoteAvatarUrl.value = '';
@@ -3116,7 +3114,14 @@ class CallController extends GetxController {
   /// screen precondition — mic/camera permission, peer capabilities,
   /// encrypted/identity setup, connectivity — lives inside startCall).
   /// The membership gate is the same one the chat call buttons run.
-  void callAgainFromNoAnswer() {
+  ///
+  /// The marker STAYS SET during the attempt: if startCall fails it runs
+  /// _resetCallState, and a null marker at that moment would let the
+  /// screens' close-on-ended worker pop the route — stranding the user.
+  /// On success the marker is cleared (the fresh call owns the UI); on
+  /// failure it is still in place, so the panel keeps offering Call
+  /// again/Cancel.
+  Future<void> callAgainFromNoAnswer() async {
     final info = noAnswerUi.value;
     if (info == null || info.peerId.isEmpty) return;
     if (Get.isRegistered<MembershipService>() &&
@@ -3127,9 +3132,21 @@ class CallController extends GetxController {
       Get.toNamed(AppRoutes.stripeSubscription);
       return;
     }
-    noAnswerUi.value = null;
     debugPrint('📞 Call again: redialing ${info.peerId} video=${info.isVideo}');
-    unawaited(startCall(info.peerId, isVideo: info.isVideo));
+    var started = false;
+    try {
+      started = await startCall(info.peerId, isVideo: info.isVideo);
+    } catch (e) {
+      debugPrint('⚠️ Call again failed: $e');
+    }
+    if (started) {
+      // New call owns the UI — the panel flips back to the calling state.
+      if (noAnswerUi.value == info) noAnswerUi.value = null;
+    } else {
+      // If anything cleared the marker mid-flight, restore it so the user
+      // is never left on a dead "Call ended" screen.
+      noAnswerUi.value ??= info;
+    }
   }
 
   /// "Cancel"/back on the caller no-answer screen: clear the marker and
@@ -4497,7 +4514,11 @@ class CallController extends GetxController {
     final callId = currentCallId.value;
     // A reset for a DIFFERENT call retires a stale no-answer marker; the
     // reset for the no-answer call itself keeps it (the screen lives on).
-    if (noAnswerUi.value != null && noAnswerUi.value!.callId != callId) {
+    // An empty id on either side proves nothing — keep the marker.
+    if (noAnswerUi.value != null &&
+        noAnswerUi.value!.callId.isNotEmpty &&
+        callId.isNotEmpty &&
+        noAnswerUi.value!.callId != callId) {
       noAnswerUi.value = null;
     }
     // Error/abort exits can leave a looping caller ringback — stop it, keyed
