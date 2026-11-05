@@ -963,6 +963,22 @@ import os.log
           return
         }
         result(owner.pushKitOwnedCallIds.contains(callId))
+      case "describeAudioSession":
+        // Read-only probe for caller-ringback diagnostics: reports the
+        // shared session's state (category/mode/options/route/other-audio)
+        // so Dart can log it before and after activation. Never mutates
+        // the session.
+        let session = AVAudioSession.sharedInstance()
+        let route = session.currentRoute
+        result([
+          "category": session.category.rawValue,
+          "mode": session.mode.rawValue,
+          "options": Int(session.categoryOptions.rawValue),
+          "inputs": route.inputs.map { "\($0.portType.rawValue):\($0.portName)" },
+          "outputs": route.outputs.map { "\($0.portType.rawValue):\($0.portName)" },
+          "otherAudioPlaying": session.isOtherAudioPlaying,
+          "outputVolume": session.outputVolume,
+        ])
       case "endOrphanedCallKitCall":
         guard let args = call.arguments as? [String: Any],
               let rawUuid = args["uuid"] as? String,

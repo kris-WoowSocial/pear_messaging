@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_ringtone_player/flutter_ringtone_player.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:audio_session/audio_session.dart' as audio_session;
 import 'call_phase_logger.dart';
 
 /// Ringtone Service - Manages call ringtone playback
@@ -17,6 +18,19 @@ class RingtoneService {
   static const MethodChannel _audioChannel = MethodChannel(
     'com.pear.messaging/audio',
   );
+  static const MethodChannel _callChannel = MethodChannel(
+    'com.pear.messaging/call',
+  );
+
+  // Matches the options flutter_webrtc sets in ensureAudioSessionWithRecording
+  // so audio_session's implicit fallback configure (which fires if this
+  // AudioSession instance was never configured) applies identical values —
+  // never a real category/mode/options change.
+  static final audio_session.AVAudioSessionCategoryOptions
+      _ringbackSessionOptions =
+      audio_session.AVAudioSessionCategoryOptions.allowBluetooth |
+          audio_session.AVAudioSessionCategoryOptions.allowBluetoothA2dp |
+          audio_session.AVAudioSessionCategoryOptions.allowAirPlay;
 
   bool _isPlaying = false;
   AudioPlayer? _ringbackPlayer;
@@ -165,6 +179,21 @@ class RingtoneService {
     }
   }
 
+  /// Release-visible dump of the shared iOS audio session via the read-only
+  /// describeAudioSession channel case. Never mutates anything.
+  Future<void> _logAudioSessionState(String phase) async {
+    try {
+      final desc = await _callChannel.invokeMethod<Map>(
+        'describeAudioSession',
+      );
+      // ignore: avoid_print
+      print('🔔 RingtoneService: session[$phase]=$desc');
+    } catch (e) {
+      // ignore: avoid_print
+      print('⚠️ RingtoneService: describeAudioSession($phase) failed: $e');
+    }
+  }
+
   /// Start ringback via AudioPlayer routed through earpiece (iOS fallback).
   Future<void> _startRingbackPlayer() async {
     await _ringbackPlayer?.dispose();
@@ -175,6 +204,35 @@ class RingtoneService {
     // empty-options setCategory(.playAndRecord) strips its Bluetooth/speaker
     // options mid-capture (suspected cause of silent caller ringback). The
     // player plays on the session WebRTC configured.
+    //
+    // audioplayers never calls setActive — an inactive session means the
+    // player "plays" silently. Activate it before play(); never deactivate:
+    // the WebRTC ADM owns the session lifecycle and deactivates on teardown.
+    // Failure is logged and the player still attempts to start.
+    try {
+      await _logAudioSessionState('pre');
+      final session = await audio_session.AudioSession.instance;
+      final activated = await session.setActive(
+        true,
+        fallbackConfiguration: audio_session.AudioSessionConfiguration(
+          avAudioSessionCategory:
+              audio_session.AVAudioSessionCategory.playAndRecord,
+          avAudioSessionCategoryOptions: _ringbackSessionOptions,
+          avAudioSessionMode: audio_session.AVAudioSessionMode.voiceChat,
+        ),
+      );
+      // ignore: avoid_print
+      print('🔔 RingtoneService: setActive(true) -> $activated');
+      CallPhaseLogger.mark(
+        activated ? 'ringback_activated' : 'ringback_activate_false',
+      );
+      await _logAudioSessionState('post');
+    } catch (e) {
+      // ignore: avoid_print
+      print('⚠️ RingtoneService: setActive error: $e');
+      CallPhaseLogger.mark('ringback_activate_error');
+    }
+
     await _ringbackPlayer!.setVolume(0.8);
     await _ringbackPlayer!.setReleaseMode(ReleaseMode.loop);
     await _ringbackPlayer!.play(AssetSource('audio/ringback.wav'));

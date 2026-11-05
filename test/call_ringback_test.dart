@@ -188,7 +188,7 @@ void main() {
       final body = _section(
         ringtoneSrc,
         'Future<void> _playOutgoingRingtoneLegacy',
-        'Future<void> _startRingbackPlayer',
+        'Future<void> _logAudioSessionState',
       );
       expect(body.isNotEmpty, isTrue);
       // Android: fire-and-forget invoke, NO result check (today's behaviour)
@@ -315,6 +315,105 @@ void main() {
       expect(body.contains('setVolume(0.8)'), isTrue);
       expect(body.contains('ReleaseMode.loop'), isTrue);
       expect(body.contains("AssetSource('audio/ringback.wav')"), isTrue);
+    });
+  });
+
+  group('Commit C: session activation on the ON path', () {
+    test('setActive(true) runs before play() on the ON path', () {
+      final body = _section(
+        ringtoneSrc,
+        'Future<void> _startRingbackPlayer()',
+        'Future<void> _startRingbackPlayerLegacy',
+      );
+      expect(body.contains('AudioSession.instance'), isTrue);
+      expect(body.contains('setActive('), isTrue);
+      // Activation strictly before the player starts
+      final activateAt = body.indexOf('setActive(');
+      final playAt = body.indexOf("play(AssetSource('audio/ringback.wav'))");
+      expect(activateAt, greaterThanOrEqualTo(0));
+      expect(playAt, greaterThan(activateAt));
+      // Diagnostics: session dump before and after activation
+      expect(body.contains("_logAudioSessionState('pre')"), isTrue);
+      expect(body.contains("_logAudioSessionState('post')"), isTrue);
+      expect(ringtoneSrc.contains("'describeAudioSession'"), isTrue);
+      // The whole activation is inside try/catch — a failure must fall
+      // through to play() rather than abort the ringback attempt
+      expect(body.contains('} catch (e) {'), isTrue);
+    });
+
+    test('never deactivates the session and never calls configure()', () {
+      expect(ringtoneSrc.contains('setActive(false'), isFalse);
+      expect(ringtoneSrc.contains('.configure('), isFalse);
+      // No setAudioContext call anywhere in the new player either
+      final body = _section(
+        ringtoneSrc,
+        'Future<void> _startRingbackPlayer()',
+        'Future<void> _startRingbackPlayerLegacy',
+      );
+      expect(body.contains('_ringbackPlayer!.setAudioContext'), isFalse);
+    });
+
+    test('activation failure cannot escape the try/catch or stop the call',
+        () {
+      final body = _section(
+        ringtoneSrc,
+        'Future<void> _startRingbackPlayer()',
+        'Future<void> _startRingbackPlayerLegacy',
+      );
+      // catch block exists before setVolume — the player attempt follows it
+      final catchAt = body.indexOf('} catch (e) {');
+      final volumeAt = body.indexOf('setVolume(0.8)');
+      expect(catchAt, greaterThanOrEqualTo(0));
+      expect(volumeAt, greaterThan(catchAt));
+    });
+
+    test('fallback config mirrors WebRTC session values (no real change)', () {
+      final body = _section(
+        ringtoneSrc,
+        'Future<void> _startRingbackPlayer()',
+        'Future<void> _startRingbackPlayerLegacy',
+      );
+      expect(body.contains('fallbackConfiguration'), isTrue);
+      expect(body.contains('playAndRecord'), isTrue);
+      expect(body.contains('voiceChat'), isTrue);
+      expect(body.contains('_ringbackSessionOptions'), isTrue);
+      // The shared options constant mirrors ensureAudioSessionWithRecording
+      expect(ringtoneSrc.contains('allowBluetooth'), isTrue);
+      expect(ringtoneSrc.contains('allowBluetoothA2dp'), isTrue);
+      expect(ringtoneSrc.contains('allowAirPlay'), isTrue);
+    });
+
+    test('legacy OFF path has no activation or diagnostics', () {
+      final body = _section(
+        ringtoneSrc,
+        'Future<void> _playOutgoingRingtoneLegacy',
+        '/// Release-visible dump',
+      );
+      expect(body.contains('AudioSession'), isFalse);
+      expect(body.contains('setActive'), isFalse);
+      expect(body.contains('describeAudioSession'), isFalse);
+    });
+
+    test('native describeAudioSession case exists and is read-only', () {
+      final appDelegate = _read(
+        '$root/ios/Runner/AppDelegate.swift',
+      );
+      final body = _section(
+        appDelegate,
+        'case "describeAudioSession"',
+        'case "endOrphanedCallKitCall"',
+      );
+      expect(body.isNotEmpty, isTrue);
+      expect(body.contains('session.category.rawValue'), isTrue);
+      expect(body.contains('session.mode.rawValue'), isTrue);
+      expect(body.contains('currentRoute'), isTrue);
+      expect(body.contains('isOtherAudioPlaying'), isTrue);
+      expect(body.contains('result('), isTrue);
+      // Read-only: no mutating calls inside the case
+      expect(body.contains('setActive'), isFalse);
+      expect(body.contains('setCategory'), isFalse);
+      expect(body.contains('setMode'), isFalse);
+      expect(body.contains('overrideOutputAudioPort'), isFalse);
     });
   });
 
