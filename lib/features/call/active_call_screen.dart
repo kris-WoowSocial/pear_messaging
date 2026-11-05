@@ -26,6 +26,9 @@ class _ActiveCallScreenState extends State<ActiveCallScreen> {
 
   void _onCallStateChanged(CallState state) {
     if (state == CallState.ended || state == CallState.idle) {
+      // The caller no-answer screen intentionally stays up after end —
+      // this screen can render it when a video call fell back to audio UI.
+      if (_controller.noAnswerUi.value != null) return;
       _closeCallRoute();
     }
   }

@@ -17,11 +17,13 @@ import 'package:shared_preferences/shared_preferences.dart';
 ///  - ff_pip_ios             video-call Picture-in-Picture on iOS
 ///  - ff_ios_push_wake_reconnect  locked-iPhone socket reconnect during ringing
 ///  - ff_call_ringback        caller-side dialing/ringback tone
+///  - ff_call_no_answer_screen  WhatsApp-style caller no-answer screen
 ///
 /// A fetch failure NEVER enables anything — defaults stay off.
-/// (ff_ios_push_wake_reconnect and ff_call_ringback are the exceptions: they
-/// ship ON so build testing can exercise them immediately; Remote Config can
-/// force them back off.)
+/// (ff_ios_push_wake_reconnect, ff_call_ringback and
+/// ff_call_no_answer_screen are the exceptions: they ship ON so build
+/// testing can exercise them immediately; Remote Config can force them
+/// back off.)
 class FeatureFlagService extends GetxService {
   static const String kVerificationUi = 'ff_verification_ui';
   static const String kEncryptedSignaling = 'ff_encrypted_signaling';
@@ -30,6 +32,7 @@ class FeatureFlagService extends GetxService {
   static const String kPipIos = 'ff_pip_ios';
   static const String kIosPushWakeReconnect = 'ff_ios_push_wake_reconnect';
   static const String kCallRingback = 'ff_call_ringback';
+  static const String kCallNoAnswerScreen = 'ff_call_no_answer_screen';
 
   final RxBool verificationUi = false.obs;
   final RxBool encryptedSignaling = false.obs;
@@ -38,6 +41,7 @@ class FeatureFlagService extends GetxService {
   final RxBool pipIos = false.obs;
   final RxBool iosPushWakeReconnect = true.obs;
   final RxBool callRingback = true.obs;
+  final RxBool callNoAnswerScreen = true.obs;
 
   /// Tester escape hatch: debug builds can exercise PiP without waiting for a
   /// Remote Config rollout. Release builds ignore this entirely — the flag
@@ -85,6 +89,7 @@ class FeatureFlagService extends GetxService {
         kPipIos: false,
         kIosPushWakeReconnect: true,
         kCallRingback: true,
+        kCallNoAnswerScreen: true,
       });
       // Hydrate the last applied values from disk BEFORE the network fetch so
       // cold-start call flows see real flags immediately — Remote Config only
@@ -136,6 +141,9 @@ class FeatureFlagService extends GetxService {
               iosPushWakeReconnect.value;
       callRingback.value =
           prefs.getBool('ff_cache_$kCallRingback') ?? callRingback.value;
+      callNoAnswerScreen.value =
+          prefs.getBool('ff_cache_$kCallNoAnswerScreen') ??
+              callNoAnswerScreen.value;
       debugPrint(
         '🎛️ Flags hydrated: verification=${verificationUi.value}, '
         'encrypted=${encryptedSignaling.value}, video=${videoCalling.value}, '
@@ -155,6 +163,7 @@ class FeatureFlagService extends GetxService {
     pipIos.value = _rc!.getBool(kPipIos);
     iosPushWakeReconnect.value = _rc!.getBool(kIosPushWakeReconnect);
     callRingback.value = _rc!.getBool(kCallRingback);
+    callNoAnswerScreen.value = _rc!.getBool(kCallNoAnswerScreen);
     SharedPreferences.getInstance().then((prefs) {
       prefs.setBool('ff_cache_$kVerificationUi', verificationUi.value);
       prefs.setBool('ff_cache_$kEncryptedSignaling', encryptedSignaling.value);
@@ -164,6 +173,8 @@ class FeatureFlagService extends GetxService {
       prefs.setBool(
           'ff_cache_$kIosPushWakeReconnect', iosPushWakeReconnect.value);
       prefs.setBool('ff_cache_$kCallRingback', callRingback.value);
+      prefs.setBool(
+          'ff_cache_$kCallNoAnswerScreen', callNoAnswerScreen.value);
     });
     debugPrint(
       '🎛️ Feature flags: verification=${verificationUi.value}, '

@@ -25,6 +25,9 @@ class _OutgoingCallScreenState extends State<OutgoingCallScreen> {
 
   void _onCallStateChanged(CallState state) {
     if (state == CallState.ended || state == CallState.idle) {
+      // The caller no-answer screen intentionally stays up after end
+      // (ff_call_no_answer_screen) — Cancel/back dismisses it.
+      if (_controller.noAnswerUi.value != null) return;
       _closeCallRoute();
     }
   }
@@ -62,6 +65,10 @@ class _OutgoingCallScreenState extends State<OutgoingCallScreen> {
         // Intercept the Android back button and minimize the call instead of
         // leaving the app — the call keeps running behind the CallBanner.
         if (didPop) return;
+        if (_controller.noAnswerUi.value != null) {
+          _controller.dismissNoAnswerScreen();
+          return;
+        }
         controller.minimizeCallScreen(context);
       },
       child: Scaffold(
@@ -110,7 +117,9 @@ class _OutgoingCallScreenState extends State<OutgoingCallScreen> {
                       // Call status
                       Obx(
                         () => Text(
-                          _getCallStatusText(controller.callState.value),
+                          controller.noAnswerUi.value != null
+                              ? 'No answer'
+                              : _getCallStatusText(controller.callState.value),
                           style: const TextStyle(
                             color: Colors.white70,
                             fontSize: 16,
@@ -135,7 +144,22 @@ class _OutgoingCallScreenState extends State<OutgoingCallScreen> {
                     horizontal: 32,
                     vertical: 24,
                   ),
-                  child: Column(
+                  child: Obx(
+                    () => controller.noAnswerUi.value != null
+                        ? _buildNoAnswerControls(controller)
+                        : _buildCallControls(controller),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildCallControls(CallController controller) {
+    return Column(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
                       // Minimize button - keeps the call running behind the
@@ -174,13 +198,34 @@ class _OutgoingCallScreenState extends State<OutgoingCallScreen> {
                       // Third row: End call
                       _buildEndCallButton(controller),
                     ],
-                  ),
-                ),
-              ),
-            ],
-          ),
+    );
+  }
+
+  /// Caller no-answer controls (ff_call_no_answer_screen): the call is
+  /// already fully ended — Call again redials through startCall, Cancel
+  /// pops back to where the call was started from.
+  Widget _buildNoAnswerControls(CallController controller) {
+    return Column(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+          children: [
+            _buildControlButton(
+              icon: Icons.close,
+              label: 'Cancel',
+              isActive: false,
+              onTap: controller.dismissNoAnswerScreen,
+            ),
+            _buildControlButton(
+              icon: Icons.call,
+              label: 'Call again',
+              isActive: true,
+              onTap: controller.callAgainFromNoAnswer,
+            ),
+          ],
         ),
-      ),
+      ],
     );
   }
 
