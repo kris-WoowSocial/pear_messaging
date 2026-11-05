@@ -104,13 +104,20 @@ class RingtoneService {
     // cache is read directly — FeatureFlagService hydration runs after
     // runApp, too late on cold start.
     bool legacyPath;
+    // ff_call_native_ringback (default OFF): diagnostic escape hatch — play
+    // via a native AVAudioPlayer in Runner with its own os_log lines,
+    // bypassing the audioplayers plugin entirely. iOS only.
+    bool nativeIosPath;
     try {
       final prefs = await SharedPreferences.getInstance();
       legacyPath = useLegacyRingbackPath(
         cachedFlagOff: prefs.getBool('ff_cache_ff_call_ringback'),
       );
+      nativeIosPath =
+          prefs.getBool('ff_cache_ff_call_native_ringback') ?? false;
     } catch (_) {
       legacyPath = false;
+      nativeIosPath = false;
     }
     if (legacyPath) {
       await _playOutgoingRingtoneLegacy();
@@ -132,6 +139,14 @@ class RingtoneService {
         final ok = await _audioChannel.invokeMethod<bool>('playRingback');
         if (ok == false) {
           throw StateError('native playRingback reported failure');
+        }
+      } else if (nativeIosPath) {
+        // iOS native diagnostic path (ff_call_native_ringback): AVAudioPlayer
+        // in Runner — emits VantRingback os_log lines.
+        final ok =
+            await _callChannel.invokeMethod<bool>('playNativeRingback');
+        if (ok != true) {
+          throw StateError('native playNativeRingback reported failure');
         }
       } else {
         // iOS: use AudioPlayer with ringback.wav through the call audio session
@@ -321,6 +336,16 @@ class RingtoneService {
         debugPrint('⚠️ RingtoneService: Could not stop native ringback: $e');
       }
     }
+    if (Platform.isIOS) {
+      // Always invoked — a no-op unless the ff_call_native_ringback
+      // AVAudioPlayer is playing; keeps stops correct across flag flips.
+      try {
+        await _callChannel
+            .invokeMethod('stopNativeRingback', {'reason': reason});
+      } catch (e) {
+        debugPrint('⚠️ RingtoneService: Could not stop native ringback: $e');
+      }
+    }
 
     await _ringbackPlayer?.stop();
     await _ringbackPlayer?.dispose();
@@ -347,6 +372,15 @@ class RingtoneService {
       try {
         await _audioChannel
             .invokeMethod('stopRingback', {'reason': reason});
+      } catch (e) {
+        debugPrint('⚠️ RingtoneService: Could not stop native ringback: $e');
+      }
+    }
+    // Stop the native iOS ringback player (no-op unless it is playing).
+    if (Platform.isIOS) {
+      try {
+        await _callChannel
+            .invokeMethod('stopNativeRingback', {'reason': reason});
       } catch (e) {
         debugPrint('⚠️ RingtoneService: Could not stop native ringback: $e');
       }

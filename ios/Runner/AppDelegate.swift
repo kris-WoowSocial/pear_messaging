@@ -28,6 +28,10 @@ import os.log
   // re-activate a dead call's session — red mic bar / bad next call).
   private var interruptedWhileInCall = false
   private var lastCallEndedAt: Date?
+  // ff_call_native_ringback diagnostic player — bypasses the audioplayers
+  // plugin; owned entirely by the playNativeRingback/stopNativeRingback
+  // channel cases near describeAudioSession.
+  private var vantRingbackPlayer: AVAudioPlayer?
 
   override func application(
     _ application: UIApplication,
@@ -979,6 +983,10 @@ import os.log
           "otherAudioPlaying": session.isOtherAudioPlaying,
           "outputVolume": session.outputVolume,
         ])
+      case "playNativeRingback":
+        self?.playNativeRingback(result: result)
+      case "stopNativeRingback":
+        self?.stopNativeRingback(call: call, result: result)
       case "endOrphanedCallKitCall":
         guard let args = call.arguments as? [String: Any],
               let rawUuid = args["uuid"] as? String,
@@ -1139,5 +1147,74 @@ import os.log
         print("⚠️ Failed to re-activate audio session after route change: \(error)")
       }
     }
+  }
+
+  // MARK: - Native caller ringback (ff_call_native_ringback)
+  //
+  // Diagnostic path for the silent-caller-ringback investigation: a plain
+  // AVAudioPlayer owned by this delegate, bypassing the audioplayers plugin.
+  // Every step emits a VantRingback os_log line (release-visible). Only the
+  // session is activated — category/mode/options stay owned by WebRTC's
+  // RTCAudioSession, and the session is never deactivated here.
+
+  private func playNativeRingback(result: @escaping FlutterResult) {
+    let session = AVAudioSession.sharedInstance()
+    let outputs = session.currentRoute.outputs
+      .map { "\($0.portType.rawValue):\($0.portName)" }.joined(separator: ",")
+    os_log("%{public}@", log: .default, type: .info,
+           "VantRingback start category=\(session.category.rawValue) mode=\(session.mode.rawValue) outputs=\(outputs) volume=\(session.outputVolume)")
+    do {
+      try session.setActive(true)
+    } catch {
+      // Logged, not fatal — the player is still attempted so the log shows
+      // exactly which step loses the tone.
+      os_log("%{public}@", log: .default, type: .info,
+             "VantRingback setActive error=\(error.localizedDescription)")
+    }
+    guard let registrar = registrar(forPlugin: "VantRingback") else {
+      os_log("%{public}@", log: .default, type: .info, "VantRingback registrar_missing")
+      result(false)
+      return
+    }
+    let key = registrar.lookupKey(forAsset: "assets/audio/ringback.wav")
+    var path = Bundle.main.path(forResource: key, ofType: nil)
+    if path == nil {
+      // flutter_assets lives inside Frameworks/App.framework on iOS; try the
+      // direct filesystem location too (lookupKey layout differs by engine).
+      let direct = (Bundle.main.privateFrameworksPath ?? "")
+        + "/App.framework/flutter_assets/assets/audio/ringback.wav"
+      if FileManager.default.fileExists(atPath: direct) { path = direct }
+    }
+    guard let assetPath = path else {
+      os_log("%{public}@", log: .default, type: .info,
+             "VantRingback asset_missing key=\(key)")
+      result(false)
+      return
+    }
+    do {
+      let player = try AVAudioPlayer(contentsOf: URL(fileURLWithPath: assetPath))
+      player.numberOfLoops = -1
+      player.volume = 0.8
+      player.prepareToPlay()
+      let ok = player.play()
+      vantRingbackPlayer = player
+      os_log("%{public}@", log: .default, type: .info,
+             "VantRingback play ok=\(ok) dur=\(player.duration) playing=\(player.isPlaying)")
+      result(ok)
+    } catch {
+      os_log("%{public}@", log: .default, type: .info,
+             "VantRingback create error=\(error.localizedDescription)")
+      result(false)
+    }
+  }
+
+  private func stopNativeRingback(call: FlutterMethodCall, result: @escaping FlutterResult) {
+    let reason = (call.arguments as? [String: Any])?["reason"] as? String ?? "unknown"
+    let wasPlaying = vantRingbackPlayer?.isPlaying ?? false
+    vantRingbackPlayer?.stop()
+    vantRingbackPlayer = nil
+    os_log("%{public}@", log: .default, type: .info,
+           "VantRingback stop reason=\(reason) wasPlaying=\(wasPlaying)")
+    result(nil)
   }
 }

@@ -33,6 +33,7 @@ class FeatureFlagService extends GetxService {
   static const String kIosPushWakeReconnect = 'ff_ios_push_wake_reconnect';
   static const String kCallRingback = 'ff_call_ringback';
   static const String kCallNoAnswerScreen = 'ff_call_no_answer_screen';
+  static const String kCallNativeRingback = 'ff_call_native_ringback';
 
   final RxBool verificationUi = false.obs;
   final RxBool encryptedSignaling = false.obs;
@@ -42,6 +43,7 @@ class FeatureFlagService extends GetxService {
   final RxBool iosPushWakeReconnect = true.obs;
   final RxBool callRingback = true.obs;
   final RxBool callNoAnswerScreen = true.obs;
+  final RxBool callNativeRingback = false.obs;
 
   /// Tester escape hatch: debug builds can exercise PiP without waiting for a
   /// Remote Config rollout. Release builds ignore this entirely — the flag
@@ -90,6 +92,7 @@ class FeatureFlagService extends GetxService {
         kIosPushWakeReconnect: true,
         kCallRingback: true,
         kCallNoAnswerScreen: true,
+        kCallNativeRingback: false,
       });
       // Hydrate the last applied values from disk BEFORE the network fetch so
       // cold-start call flows see real flags immediately — Remote Config only
@@ -144,6 +147,9 @@ class FeatureFlagService extends GetxService {
       callNoAnswerScreen.value =
           prefs.getBool('ff_cache_$kCallNoAnswerScreen') ??
               callNoAnswerScreen.value;
+      callNativeRingback.value =
+          prefs.getBool('ff_cache_$kCallNativeRingback') ??
+              callNativeRingback.value;
       debugPrint(
         '🎛️ Flags hydrated: verification=${verificationUi.value}, '
         'encrypted=${encryptedSignaling.value}, video=${videoCalling.value}, '
@@ -164,6 +170,7 @@ class FeatureFlagService extends GetxService {
     iosPushWakeReconnect.value = _rc!.getBool(kIosPushWakeReconnect);
     callRingback.value = _rc!.getBool(kCallRingback);
     callNoAnswerScreen.value = _rc!.getBool(kCallNoAnswerScreen);
+    callNativeRingback.value = _rc!.getBool(kCallNativeRingback);
     SharedPreferences.getInstance().then((prefs) {
       prefs.setBool('ff_cache_$kVerificationUi', verificationUi.value);
       prefs.setBool('ff_cache_$kEncryptedSignaling', encryptedSignaling.value);
@@ -175,6 +182,8 @@ class FeatureFlagService extends GetxService {
       prefs.setBool('ff_cache_$kCallRingback', callRingback.value);
       prefs.setBool(
           'ff_cache_$kCallNoAnswerScreen', callNoAnswerScreen.value);
+      prefs.setBool(
+          'ff_cache_$kCallNativeRingback', callNativeRingback.value);
     });
     debugPrint(
       '🎛️ Feature flags: verification=${verificationUi.value}, '

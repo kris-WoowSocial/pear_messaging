@@ -242,12 +242,22 @@ void main() {
       expect(source, contains('self?.interruptedWhileInCall = false'));
 
       // Every setActive(true) re-activation must pass through the guard.
-      final setActiveCalls =
-          'setActive(true)'.allMatches(source).map((m) => m.start).toList();
+      // The ff_call_native_ringback diagnostic player is the one deliberate
+      // exception: its setActive is the diagnostic itself (ringback plays
+      // while the call may still be dialing and isInCall unsynced), so the
+      // guard check only covers the source before its MARK section.
+      final guardedEnd = source.indexOf('MARK: - Native caller ringback');
+      final guardedSource = guardedEnd > 0
+          ? source.substring(0, guardedEnd)
+          : source;
+      final setActiveCalls = 'setActive(true)'
+          .allMatches(guardedSource)
+          .map((m) => m.start)
+          .toList();
       expect(setActiveCalls.length, greaterThanOrEqualTo(2),
           reason: 'expected interruption + route-change re-activation sites');
       for (final idx in setActiveCalls) {
-        final context = source.substring(
+        final context = guardedSource.substring(
           idx - 500 < 0 ? 0 : idx - 500,
           idx,
         );
