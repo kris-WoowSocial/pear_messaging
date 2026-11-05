@@ -33,7 +33,7 @@ void main() {
       expect(
         controller,
         contains(
-          "case 'connected':\n        _cancelDialWatchdog();\n        _ringtoneService.stopRingtone();",
+          "case 'connected':\n        _cancelDialWatchdog();\n        _ringtoneService.stopRingtone(reason: 'connected');",
         ),
       );
       final occurrences =

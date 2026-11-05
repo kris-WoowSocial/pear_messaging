@@ -209,7 +209,7 @@ void main() {
       final body = method(code, 'void _handleCallKitTimeout');
       expect(body, contains('isInCall'));
       expect(body, contains('_resetCallState()'));
-      expect(body, contains('_ringtoneService.stopRingtone()'));
+      expect(body, contains('_ringtoneService.stopRingtone(reason: '));
     });
   });
 }

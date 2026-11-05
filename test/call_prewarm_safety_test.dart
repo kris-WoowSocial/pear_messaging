@@ -147,7 +147,7 @@ void main() {
         '/// Reset call state when we know the call has already ended',
       );
       expect(body, contains('_stopNativeIncomingCall()'));
-      expect(body, contains('_ringtoneService.stopRingtone()'));
+      expect(body, contains('_ringtoneService.stopRingtone(reason: '));
       expect(body, contains('_webrtcService.endCall()'));
       expect(body, contains('_resetCallState()'));
     });
@@ -158,7 +158,7 @@ void main() {
         'void resetCallStateForRemoteEnd()',
         '/// End the current call',
       );
-      expect(body, contains('_ringtoneService.stopRingtone()'));
+      expect(body, contains('_ringtoneService.stopRingtone(reason: '));
       expect(body, contains('_webrtcService.endCall()'));
       expect(body, contains('_resetCallState()'));
       // Must NOT emit call_terminated back to the server.
@@ -185,7 +185,7 @@ void main() {
       );
       expect(body, contains('_webrtcService.endCall()'));
       expect(body, contains('_resetCallState()'));
-      expect(body, contains('_ringtoneService.stopRingtone()'));
+      expect(body, contains('_ringtoneService.stopRingtone(reason: '));
     });
 
     test('_resetCallState disposes crypto, accept-in-flight and urgency', () {

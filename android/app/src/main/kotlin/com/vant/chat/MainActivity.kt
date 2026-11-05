@@ -245,11 +245,10 @@ class MainActivity : FlutterFragmentActivity() {
                     result.success(null)
                 }
                 "playRingback" -> {
-                    playRingback()
-                    result.success(null)
+                    result.success(playRingback())
                 }
                 "stopRingback" -> {
-                    stopRingback()
+                    stopRingback(call.argument<String>("reason"))
                     result.success(null)
                 }
                 else -> {
@@ -1103,9 +1102,9 @@ class MainActivity : FlutterFragmentActivity() {
         return true
     }
 
-    private fun playRingback() {
+    private fun playRingback(): Boolean {
         stopRingback()
-        try {
+        return try {
             val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
             if (audioManager.mode != AudioManager.MODE_IN_COMMUNICATION) {
                 audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
@@ -1127,12 +1126,14 @@ class MainActivity : FlutterFragmentActivity() {
             ringbackRunnable = runnable
             handler.post(runnable)
             println("Ringback started via ToneGenerator on STREAM_VOICE_CALL")
+            true
         } catch (e: Exception) {
             println("Error starting ringback: $e")
+            false
         }
     }
 
-    private fun stopRingback() {
+    private fun stopRingback(reason: String? = null) {
         try {
             ringbackRunnable?.let { ringbackHandler?.removeCallbacks(it) }
             ringbackHandler = null
@@ -1140,7 +1141,7 @@ class MainActivity : FlutterFragmentActivity() {
             toneGenerator?.stopTone()
             toneGenerator?.release()
             toneGenerator = null
-            println("Ringback stopped")
+            println("Ringback stopped (reason=${reason ?: "unspecified"})")
         } catch (e: Exception) {
             println("Error stopping ringback: $e")
         }

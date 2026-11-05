@@ -47,7 +47,7 @@ class AppTheme {
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
         fillColor: AppColors.surface,
-        hintStyle: TextStyle(color: AppColors.textSecondary.withOpacity(0.7)),
+        hintStyle: TextStyle(color: AppColors.textSecondary.withValues(alpha: 0.7)),
         contentPadding: const EdgeInsets.symmetric(
           horizontal: AppSizes.paddingM,
           vertical: AppSizes.paddingM,
@@ -119,7 +119,7 @@ class AppTheme {
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
         fillColor: AppColors.surfaceDark,
-        hintStyle: TextStyle(color: AppColors.textSecondary.withOpacity(0.7)),
+        hintStyle: TextStyle(color: AppColors.textSecondary.withValues(alpha: 0.7)),
         contentPadding: const EdgeInsets.symmetric(
           horizontal: AppSizes.paddingM,
           vertical: AppSizes.paddingM,

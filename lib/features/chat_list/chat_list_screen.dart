@@ -307,7 +307,7 @@ class ChatListScreen extends GetView<ChatListController> {
                 );
               }
 
-              print(
+              debugPrint(
                 '🔍 DEBUG: Building chat list - Requests: ${controller.pendingConnectionRequests.length}, Chats: ${controller.filteredChats.length}',
               );
 
@@ -319,7 +319,7 @@ class ChatListScreen extends GetView<ChatListController> {
                   if (index < controller.pendingConnectionRequests.length) {
                     // Show connection request item
                     final request = controller.pendingConnectionRequests[index];
-                    print(
+                    debugPrint(
                       '🔍 DEBUG: Rendering connection request item - ID: ${request.id}, Sender: ${request.senderDeviceId}',
                     );
                     return ConnectionRequestItem(request: request);
