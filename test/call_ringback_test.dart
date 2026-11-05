@@ -194,8 +194,8 @@ void main() {
       // Android: fire-and-forget invoke, NO result check (today's behaviour)
       expect(body.contains("invokeMethod('playRingback')"), isTrue);
       expect(body.contains('invokeMethod<bool>'), isFalse);
-      // iOS: same player entry point as before the flag existed
-      expect(body.contains('await _startRingbackPlayer();'), isTrue);
+      // iOS: the verbatim legacy player (with setAudioContext)
+      expect(body.contains('await _startRingbackPlayerLegacy();'), isTrue);
       // No new machinery may leak into the legacy path
       expect(body.contains('_playingOutgoing = true'), isFalse);
       expect(body.contains('_outgoingCallId'), isFalse);
@@ -276,6 +276,45 @@ void main() {
         isTrue,
       );
       expect(mainActivitySrc.contains('Ringback stopped (reason='), isTrue);
+    });
+  });
+
+  group('Commit B: split iOS ringback players', () {
+    test('legacy OFF player retains setAudioContext byte-for-byte', () {
+      final body = _section(
+        ringtoneSrc,
+        'Future<void> _startRingbackPlayerLegacy',
+        'Future<void> playOutgoingTone',
+      );
+      expect(body.isNotEmpty, isTrue);
+      expect(
+        body.contains(
+          'setAudioContext(\n'
+          '      AudioContext(\n'
+          '        iOS: AudioContextIOS(\n'
+          '          category: AVAudioSessionCategory.playAndRecord,\n'
+          '          options: {},\n'
+          '        ),\n'
+          '      ),\n'
+          '    )',
+        ),
+        isTrue,
+        reason: 'OFF path must keep setAudioContext(playAndRecord,{})',
+      );
+    });
+
+    test('new ON player has no setAudioContext', () {
+      final body = _section(
+        ringtoneSrc,
+        'Future<void> _startRingbackPlayer()',
+        'Future<void> _startRingbackPlayerLegacy',
+      );
+      expect(body.isNotEmpty, isTrue);
+      expect(body.contains('_ringbackPlayer!.setAudioContext'), isFalse);
+      // Same asset/volume/loop as before — only the session call is gone
+      expect(body.contains('setVolume(0.8)'), isTrue);
+      expect(body.contains('ReleaseMode.loop'), isTrue);
+      expect(body.contains("AssetSource('audio/ringback.wav')"), isTrue);
     });
   });
 

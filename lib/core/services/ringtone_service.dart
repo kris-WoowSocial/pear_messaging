@@ -157,7 +157,7 @@ class RingtoneService {
         await _audioChannel.invokeMethod('playRingback');
       } else {
         // iOS: use AudioPlayer with ringback.wav through the call audio session
-        await _startRingbackPlayer();
+        await _startRingbackPlayerLegacy();
       }
     } catch (e) {
       debugPrint('❌ RingtoneService: Error playing outgoing tone: $e');
@@ -167,6 +167,24 @@ class RingtoneService {
 
   /// Start ringback via AudioPlayer routed through earpiece (iOS fallback).
   Future<void> _startRingbackPlayer() async {
+    await _ringbackPlayer?.dispose();
+    _ringbackPlayer = AudioPlayer();
+
+    // ff_call_ringback ON path: no setAudioContext — the call's
+    // RTCAudioSession already owns the shared AVAudioSession, and the
+    // empty-options setCategory(.playAndRecord) strips its Bluetooth/speaker
+    // options mid-capture (suspected cause of silent caller ringback). The
+    // player plays on the session WebRTC configured.
+    await _ringbackPlayer!.setVolume(0.8);
+    await _ringbackPlayer!.setReleaseMode(ReleaseMode.loop);
+    await _ringbackPlayer!.play(AssetSource('audio/ringback.wav'));
+    debugPrint('🔔 RingtoneService: Ringback player started (iOS)');
+  }
+
+  /// Legacy iOS ringback player — the verbatim pre-flag implementation,
+  /// retained for the ff_call_ringback OFF path so a rollback is
+  /// byte-for-byte today's behaviour.
+  Future<void> _startRingbackPlayerLegacy() async {
     await _ringbackPlayer?.dispose();
     _ringbackPlayer = AudioPlayer();
 
