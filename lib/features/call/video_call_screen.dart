@@ -60,6 +60,9 @@ class _VideoCallScreenState extends State<VideoCallScreen>
 
   void _onCallStateChanged(CallState state) {
     if (state == CallState.ended || state == CallState.idle) {
+      // The caller no-answer screen intentionally stays up after end
+      // (ff_call_no_answer_screen) — Cancel/back dismisses it.
+      if (_controller.noAnswerUi.value != null) return;
       _closeCallRoute();
     }
   }
@@ -127,6 +130,13 @@ class _VideoCallScreenState extends State<VideoCallScreen>
     }
 
     return Obx(() {
+      // Caller no-answer screen (ff_call_no_answer_screen): the call is fully
+      // ended — render the panel only, never an RTCVideoView bound to the
+      // disposed renderers/streams. During a Call-again redial the marker is
+      // kept but callState is dialing, so the normal video UI shows instead.
+      if (_controller.isShowingNoAnswerUi) {
+        return _buildNoAnswerPanel();
+      }
       // The whole activity window becomes the PiP surface on Android — render
       // remote video only: no controls, no local preview, no overlays. The
       // system provides expand/close affordances on top.
@@ -370,6 +380,146 @@ class _VideoCallScreenState extends State<VideoCallScreen>
                 : best,
       );
     });
+  }
+
+  /// Caller no-answer panel (ff_call_no_answer_screen): the call is fully
+  /// ended — no RTCVideoView, no controls, no dead preview. Same layout as
+  /// the outgoing audio screen: avatar, name, "No answer", Call again /
+  /// Cancel. Back dismisses like Cancel.
+  Widget _buildNoAnswerPanel() {
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) {
+        if (didPop) return;
+        _controller.dismissNoAnswerScreen();
+      },
+      child: Scaffold(
+        backgroundColor: Colors.black,
+        body: SafeArea(
+          child: Column(
+            children: [
+              Expanded(
+                child: Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Container(
+                        width: 120,
+                        height: 120,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: Colors.grey[800],
+                          border: Border.all(
+                            color: Colors.white.withValues(alpha: 0.3),
+                            width: 2,
+                          ),
+                        ),
+                        child: const Icon(
+                          Icons.person,
+                          size: 60,
+                          color: Colors.white,
+                        ),
+                      ),
+                      const SizedBox(height: 32),
+                      Obx(
+                        () => Text(
+                          _controller.remoteDisplayLabel,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 28,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      const Text(
+                        'No answer',
+                        style: TextStyle(color: Colors.white70, fontSize: 16),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 32,
+                  vertical: 40,
+                ),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                  children: [
+                    _noAnswerButton(
+                      icon: Icons.close,
+                      label: 'Cancel',
+                      active: false,
+                      onTap: _controller.dismissNoAnswerScreen,
+                    ),
+                    _noAnswerButton(
+                      icon: Icons.call,
+                      label: 'Call again',
+                      active: true,
+                      onTap: _controller.noAnswerRedialInFlight.value
+                          ? null
+                          : _controller.callAgainFromNoAnswer,
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _noAnswerButton({
+    required IconData icon,
+    required String label,
+    required bool active,
+    VoidCallback? onTap,
+  }) {
+    return Column(
+      children: [
+        GestureDetector(
+          onTap: onTap == null
+              ? null
+              : () {
+                  HapticFeedback.lightImpact();
+                  onTap();
+                },
+          child: Opacity(
+            opacity: onTap == null ? 0.4 : 1.0,
+            child: Container(
+            width: 64,
+            height: 64,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: active ? Colors.white : Colors.grey[800],
+              border: Border.all(
+                color:
+                  active ? Colors.white : Colors.white.withValues(alpha: 0.3),
+                width: 2,
+              ),
+            ),
+            child: Icon(
+              icon,
+              size: 28,
+              color: active ? Colors.black : Colors.white,
+            ),
+            ),
+          ),
+        ),
+        const SizedBox(height: 8),
+        Text(
+          label,
+          style: TextStyle(
+            color: active ? Colors.white : Colors.white70,
+            fontSize: 14,
+            fontWeight: FontWeight.w500,
+          ),
+        ),
+      ],
+    );
   }
 
   Widget _buildTopOverlay() {

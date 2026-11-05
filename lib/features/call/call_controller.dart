@@ -35,7 +35,9 @@ import '../../core/services/call_foreground_service.dart';
 import '../../core/services/callkit_service.dart';
 import '../../core/services/peer_ringing_notifier.dart';
 import '../../core/services/fcm_service.dart';
+import '../../core/services/membership_service.dart';
 import '../../core/utils/string_utils.dart';
+import '../../routes/app_routes.dart';
 import '../../storage/models/call_history_entry.dart';
 import 'call_encryption_indicator.dart';
 import 'fsi_prompt_decision.dart';
@@ -51,6 +53,23 @@ enum CallState {
 }
 
 enum _EncryptedCallSetup { legacyAllowed, ready, requiredUnavailable }
+
+/// Caller-side "No answer" affordance state. Kept OUTSIDE CallState so
+/// isInCall/isConnecting and every incoming-call gate still see a fully
+/// ended call — the call screen just stays up offering Call again/Cancel
+/// (ff_call_no_answer_screen). Non-null only between the server
+/// no_answer/timeout terminate and the user's choice or a new call.
+class NoAnswerInfo {
+  final String callId;
+  final String peerId;
+  final bool isVideo;
+
+  const NoAnswerInfo({
+    required this.callId,
+    required this.peerId,
+    required this.isVideo,
+  });
+}
 
 /// User-facing call outcome message with an optional action.
 class FriendlyCallMessage {
@@ -202,6 +221,21 @@ class CallController extends GetxController {
 
   // Reactive state
   final Rx<CallState> callState = CallState.idle.obs;
+  // WhatsApp-style caller no-answer screen state (ff_call_no_answer_screen).
+  // Set only for caller-side no_answer/timeout terminates; cleared on
+  // Call again, Cancel/back, a new outgoing call, and any incoming call.
+  final Rx<NoAnswerInfo?> noAnswerUi = Rx<NoAnswerInfo?>(null);
+  // True while a "Call again" redial is in flight — double-taps are ignored
+  // and the button renders disabled.
+  final RxBool noAnswerRedialInFlight = false.obs;
+  // The no-answer panel is shown only while the marker is set AND the call
+  // is actually over. During a redial the marker is kept (so a failed
+  // attempt can't strand the user) but callState is dialing — screens must
+  // render the normal calling UI, not the no-answer panel.
+  bool get isShowingNoAnswerUi =>
+      noAnswerUi.value != null &&
+      (callState.value == CallState.ended ||
+          callState.value == CallState.idle);
   final RxBool isMuted = false.obs;
   final RxBool isSpeakerOn = false.obs;
   final RxString callDuration = '00:00'.obs;
@@ -3086,6 +3120,78 @@ class CallController extends GetxController {
     _resetCallState();
   }
 
+  /// "Call again" on the caller no-answer screen: redial the same peer with
+  /// the same call type through the normal startCall path (every chat-
+  /// screen precondition — mic/camera permission, peer capabilities,
+  /// encrypted/identity setup, connectivity — lives inside startCall).
+  /// The membership gate is the same one the chat call buttons run.
+  ///
+  /// The marker STAYS SET during the attempt: if startCall fails it runs
+  /// _resetCallState, and a null marker at that moment would let the
+  /// screens' close-on-ended worker pop the route — stranding the user.
+  /// On success the marker is cleared (the fresh call owns the UI); on
+  /// failure it is still in place, so the panel keeps offering Call
+  /// again/Cancel.
+  Future<void> callAgainFromNoAnswer() async {
+    final info = noAnswerUi.value;
+    if (info == null || info.peerId.isEmpty || noAnswerRedialInFlight.value) {
+      return;
+    }
+    if (Get.isRegistered<MembershipService>() &&
+        !Get.find<MembershipService>().canMakeCalls) {
+      // Same behavior as the chat call buttons: send the user to the
+      // subscription screen; keep the no-answer screen so Call again
+      // works after subscribing.
+      Get.toNamed(AppRoutes.stripeSubscription);
+      return;
+    }
+    debugPrint('📞 Call again: redialing ${info.peerId} video=${info.isVideo}');
+    noAnswerRedialInFlight.value = true;
+    var started = false;
+    try {
+      started = await startCall(info.peerId, isVideo: info.isVideo);
+    } catch (e) {
+      debugPrint('⚠️ Call again failed: $e');
+    } finally {
+      noAnswerRedialInFlight.value = false;
+    }
+    if (started) {
+      // Retire only THIS marker: if the fresh call already ended with its
+      // own no_answer and set a new marker (different callId), that live
+      // screen must keep it.
+      if (noAnswerUi.value?.callId == info.callId) noAnswerUi.value = null;
+    } else {
+      // If anything cleared the marker mid-flight, restore it so the user
+      // is never left on a dead "Call ended" screen.
+      noAnswerUi.value ??= info;
+    }
+  }
+
+  /// "Cancel"/back on the caller no-answer screen: clear the marker and
+  /// close the call route exactly like today's end-of-call teardown —
+  /// pop /call/ routes when something is beneath, else land on /chat-list.
+  /// If a redial (or any other call) is already in flight, route through
+  /// endCall() — the same path as the red End button — so a live call is
+  /// never left running behind a dismissed screen.
+  void dismissNoAnswerScreen() {
+    if (noAnswerUi.value == null) return;
+    if (callState.value != CallState.ended &&
+        callState.value != CallState.idle) {
+      noAnswerUi.value = null;
+      endCall();
+      return;
+    }
+    noAnswerUi.value = null;
+    final route = Get.currentRoute;
+    if (!route.startsWith('/call/')) return;
+    final navigator = Get.key.currentState;
+    if (navigator != null && navigator.canPop()) {
+      navigator.popUntil((r) => !(r.settings.name ?? '').startsWith('/call/'));
+    } else {
+      Get.offAllNamed('/chat-list');
+    }
+  }
+
   /// Minimize the call screen so the user can keep using the app while the
   /// call continues. The persistent call banner stays visible at the top and
   /// tapping it returns to the full-screen call UI.
@@ -3560,6 +3666,32 @@ class CallController extends GetxController {
       terminatedBy: data['terminatedBy'] as String?,
     );
 
+    // WhatsApp-style caller no-answer screen (ff_call_no_answer_screen):
+    // capture peer/type before reset clears them, and set the marker BEFORE
+    // _webrtcService.endCall() emits 'ended' so the call screens' close-on-
+    // ended workers see it and stay up. callState still becomes `ended` —
+    // every isInCall/isConnecting consumer is unaffected. Flag OFF (or any
+    // non-qualifying reason/state) keeps today's snackbar-and-pop exactly.
+    final flagOn = !Get.isRegistered<FeatureFlagService>() ||
+        Get.find<FeatureFlagService>().callNoAnswerScreen.value;
+    final showNoAnswer = shouldShowCallerNoAnswer(
+      isCaller: isCaller.value,
+      reason: reason,
+      wasConnected: _wasConnected,
+      callMinimized: isCallMinimized.value,
+      flagOff: !flagOn,
+    );
+    if (showNoAnswer) {
+      noAnswerUi.value = NoAnswerInfo(
+        callId: callId ?? currentCallId.value,
+        peerId: remoteDeviceId.value,
+        isVideo: _videoRequested,
+      );
+      debugPrint(
+        '📞 Caller no-answer screen for ${noAnswerUi.value!.peerId}',
+      );
+    }
+
     _webrtcService.endCall();
 
     // Surface the raw server reason in logs only, never to the user.
@@ -3571,7 +3703,11 @@ class CallController extends GetxController {
             : StringUtils.generateFriendlyName(remoteDeviceId.value))
         : 'The other person';
 
-    _showFriendlyCallMessage(friendlyCallMessage(reason, peerName: peerName));
+    // The screen itself carries the "No answer" message — no duplicate
+    // snackbar when it is presented.
+    if (!showNoAnswer) {
+      _showFriendlyCallMessage(friendlyCallMessage(reason, peerName: peerName));
+    }
 
     // The call screen(s) will close themselves reactively once _resetCallState
     // sets callState to ended/idle. Do not navigate here so a banner or dialog
@@ -3595,6 +3731,8 @@ class CallController extends GetxController {
         return;
       }
       if (_latestIncomingCallData != null) return;
+      // The caller no-answer screen intentionally stays up after end.
+      if (noAnswerUi.value != null) return;
       final route = Get.currentRoute;
       if (!route.startsWith('/call/')) return;
       final navigator = Get.key.currentState;
@@ -4099,6 +4237,24 @@ class CallController extends GetxController {
         hasPendingIncomingCall;
   }
 
+  /// Pure form of the caller no-answer-screen decision (ff_call_no_answer_screen).
+  /// Only the caller's unanswered-outgoing terminal states qualify — a
+  /// connected call, any callee-side state, a minimized (backgrounded) call
+  /// screen, and every other end reason keep today's snackbar-and-pop.
+  static bool shouldShowCallerNoAnswer({
+    required bool isCaller,
+    required String? reason,
+    required bool wasConnected,
+    required bool callMinimized,
+    required bool flagOff,
+  }) {
+    return isCaller &&
+        (reason == 'no_answer' || reason == 'timeout') &&
+        !wasConnected &&
+        !callMinimized &&
+        !flagOff;
+  }
+
   /// Max local age of a pending incoming ring before it is treated as stale.
   /// Matches the server's 45 s ring timeout: an unanswered call older than
   /// this no longer exists server-side, so presenting its UI can only ring a
@@ -4384,6 +4540,15 @@ class CallController extends GetxController {
     _peerRinging.reset();
     _resetCryptoState();
     final callId = currentCallId.value;
+    // A reset for a DIFFERENT call retires a stale no-answer marker; the
+    // reset for the no-answer call itself keeps it (the screen lives on).
+    // An empty id on either side proves nothing — keep the marker.
+    if (noAnswerUi.value != null &&
+        noAnswerUi.value!.callId.isNotEmpty &&
+        callId.isNotEmpty &&
+        noAnswerUi.value!.callId != callId) {
+      noAnswerUi.value = null;
+    }
     // Error/abort exits can leave a looping caller ringback — stop it, keyed
     // on the ended call's id so a stale reset can't silence a newer call's
     // tone or a live incoming ringtone.
@@ -4636,6 +4801,9 @@ class CallController extends GetxController {
       debugPrint('❌ Incoming call received with no callId, ignoring');
       return;
     }
+    // A live incoming call takes over the UI — a stale caller no-answer
+    // screen underneath must retire so its route is cleaned up normally.
+    noAnswerUi.value = null;
     CallPhaseLogger.mark(
       incomingCallId == _ringingCallId ? 'resync_received' : 'incoming_call',
     );
