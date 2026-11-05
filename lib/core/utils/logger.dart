@@ -1,3 +1,5 @@
+import 'package:flutter/foundation.dart';
+
 class Logger {
   static void info(String message, [Map<String, dynamic>? context]) {
     _log('INFO', message, context);
@@ -25,6 +27,6 @@ class Logger {
       buffer.write(' | Context: $context');
     }
     
-    print(buffer.toString());
+    debugPrint(buffer.toString());
   }
 }

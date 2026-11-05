@@ -64,7 +64,7 @@ class _NotificationPermissionScreenState
         _needsBatteryOptimization = !(isIgnoring as bool);
       });
     } catch (e) {
-      print('Error checking battery optimization: $e');
+      debugPrint('Error checking battery optimization: $e');
     }
   }
 
@@ -84,7 +84,7 @@ class _NotificationPermissionScreenState
     }
 
     final status = await Permission.notification.status;
-    print('📱 Notification permission status: $status');
+    debugPrint('📱 Notification permission status: $status');
 
     if (status.isGranted) {
       _proceedToNextScreen();
@@ -104,7 +104,7 @@ class _NotificationPermissionScreenState
 
     try {
       final status = await Permission.notification.request();
-      print('📱 Notification permission result: $status');
+      debugPrint('📱 Notification permission result: $status');
 
       if (status.isGranted) {
         // For Samsung devices, also request battery optimization exemption
@@ -135,7 +135,7 @@ class _NotificationPermissionScreenState
         _proceedToNextScreen();
       }
     } catch (e) {
-      print('Error requesting battery optimization exemption: $e');
+      debugPrint('Error requesting battery optimization exemption: $e');
       // Proceed anyway
       _proceedToNextScreen();
     }

@@ -1,5 +1,6 @@
 import 'dart:typed_data';
 import 'dart:convert';
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import '../services/secure_image_encryption.dart';
 import '../services/image_compression.dart';
@@ -147,7 +148,7 @@ class MediaService {
         results.add(response);
       } catch (e) {
         // Log error but continue with other images
-        print('Failed to upload image ${i + 1}: $e');
+        debugPrint('Failed to upload image ${i + 1}: $e');
       }
     }
 

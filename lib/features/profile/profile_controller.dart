@@ -114,7 +114,7 @@ class ProfileController extends GetxController {
           final chatListController = Get.find<ChatListController>();
           chatListController.loadChats();
         } catch (e) {
-          print(
+          debugPrint(
               '⚠️ ChatListController not found, changes will be visible on restart');
         }
 
@@ -144,7 +144,7 @@ class ProfileController extends GetxController {
       // Share the app
       await branchService.shareApp();
     } catch (e) {
-      print('❌ Error sharing app: $e');
+      debugPrint('❌ Error sharing app: $e');
       Get.snackbar(
         'Share Failed',
         'Unable to share the app. Please try again.',

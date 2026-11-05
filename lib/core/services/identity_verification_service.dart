@@ -2,7 +2,6 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:cryptography/cryptography.dart';
-import 'package:flutter/foundation.dart';
 import 'package:get/get.dart';
 
 import '../utils/safety_code.dart';

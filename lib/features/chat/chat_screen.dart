@@ -1272,8 +1272,8 @@ class ChatScreen extends GetView<ChatController> {
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
         child: Text(
           controller.isGroup
-              ? '🔒 Messages in this group are encrypted in transit and stored encrypted on your device.'
-              : '🔒 Messages are encrypted in transit and stored encrypted on your device.',
+              ? '🔒 Messages and photos in this chat are end- to-end encrypted and peer-to-peer, with no servers in between. Only the people in this chat can read or share them. We are physically incapable of complying with data requests from third parties or government agencies. Our answer to every request is simple: The data does not exist.'
+              : '🔒 Messages and photos in this chat are end- to-end encrypted and peer-to-peer, with no servers in between. Only the people in this chat can read or share them. We are physically incapable of complying with data requests from third parties or government agencies. Our answer to every request is simple: The data does not exist.',
           style: TextStyle(
             fontSize: 12,
             color: Colors.black,
