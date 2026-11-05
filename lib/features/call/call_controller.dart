@@ -225,6 +225,17 @@ class CallController extends GetxController {
   // Set only for caller-side no_answer/timeout terminates; cleared on
   // Call again, Cancel/back, a new outgoing call, and any incoming call.
   final Rx<NoAnswerInfo?> noAnswerUi = Rx<NoAnswerInfo?>(null);
+  // True while a "Call again" redial is in flight — double-taps are ignored
+  // and the button renders disabled.
+  final RxBool noAnswerRedialInFlight = false.obs;
+  // The no-answer panel is shown only while the marker is set AND the call
+  // is actually over. During a redial the marker is kept (so a failed
+  // attempt can't strand the user) but callState is dialing — screens must
+  // render the normal calling UI, not the no-answer panel.
+  bool get isShowingNoAnswerUi =>
+      noAnswerUi.value != null &&
+      (callState.value == CallState.ended ||
+          callState.value == CallState.idle);
   final RxBool isMuted = false.obs;
   final RxBool isSpeakerOn = false.obs;
   final RxString callDuration = '00:00'.obs;
@@ -3123,7 +3134,9 @@ class CallController extends GetxController {
   /// again/Cancel.
   Future<void> callAgainFromNoAnswer() async {
     final info = noAnswerUi.value;
-    if (info == null || info.peerId.isEmpty) return;
+    if (info == null || info.peerId.isEmpty || noAnswerRedialInFlight.value) {
+      return;
+    }
     if (Get.isRegistered<MembershipService>() &&
         !Get.find<MembershipService>().canMakeCalls) {
       // Same behavior as the chat call buttons: send the user to the
@@ -3133,15 +3146,20 @@ class CallController extends GetxController {
       return;
     }
     debugPrint('📞 Call again: redialing ${info.peerId} video=${info.isVideo}');
+    noAnswerRedialInFlight.value = true;
     var started = false;
     try {
       started = await startCall(info.peerId, isVideo: info.isVideo);
     } catch (e) {
       debugPrint('⚠️ Call again failed: $e');
+    } finally {
+      noAnswerRedialInFlight.value = false;
     }
     if (started) {
-      // New call owns the UI — the panel flips back to the calling state.
-      if (noAnswerUi.value == info) noAnswerUi.value = null;
+      // Retire only THIS marker: if the fresh call already ended with its
+      // own no_answer and set a new marker (different callId), that live
+      // screen must keep it.
+      if (noAnswerUi.value?.callId == info.callId) noAnswerUi.value = null;
     } else {
       // If anything cleared the marker mid-flight, restore it so the user
       // is never left on a dead "Call ended" screen.
@@ -3152,7 +3170,17 @@ class CallController extends GetxController {
   /// "Cancel"/back on the caller no-answer screen: clear the marker and
   /// close the call route exactly like today's end-of-call teardown —
   /// pop /call/ routes when something is beneath, else land on /chat-list.
+  /// If a redial (or any other call) is already in flight, route through
+  /// endCall() — the same path as the red End button — so a live call is
+  /// never left running behind a dismissed screen.
   void dismissNoAnswerScreen() {
+    if (noAnswerUi.value == null) return;
+    if (callState.value != CallState.ended &&
+        callState.value != CallState.idle) {
+      noAnswerUi.value = null;
+      endCall();
+      return;
+    }
     noAnswerUi.value = null;
     final route = Get.currentRoute;
     if (!route.startsWith('/call/')) return;

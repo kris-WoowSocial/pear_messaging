@@ -132,8 +132,9 @@ class _VideoCallScreenState extends State<VideoCallScreen>
     return Obx(() {
       // Caller no-answer screen (ff_call_no_answer_screen): the call is fully
       // ended — render the panel only, never an RTCVideoView bound to the
-      // disposed renderers/streams.
-      if (_controller.noAnswerUi.value != null) {
+      // disposed renderers/streams. During a Call-again redial the marker is
+      // kept but callState is dialing, so the normal video UI shows instead.
+      if (_controller.isShowingNoAnswerUi) {
         return _buildNoAnswerPanel();
       }
       // The whole activity window becomes the PiP surface on Android — render
@@ -457,7 +458,9 @@ class _VideoCallScreenState extends State<VideoCallScreen>
                       icon: Icons.call,
                       label: 'Call again',
                       active: true,
-                      onTap: _controller.callAgainFromNoAnswer,
+                      onTap: _controller.noAnswerRedialInFlight.value
+                          ? null
+                          : _controller.callAgainFromNoAnswer,
                     ),
                   ],
                 ),
@@ -473,16 +476,20 @@ class _VideoCallScreenState extends State<VideoCallScreen>
     required IconData icon,
     required String label,
     required bool active,
-    required VoidCallback onTap,
+    VoidCallback? onTap,
   }) {
     return Column(
       children: [
         GestureDetector(
-          onTap: () {
-            HapticFeedback.lightImpact();
-            onTap();
-          },
-          child: Container(
+          onTap: onTap == null
+              ? null
+              : () {
+                  HapticFeedback.lightImpact();
+                  onTap();
+                },
+          child: Opacity(
+            opacity: onTap == null ? 0.4 : 1.0,
+            child: Container(
             width: 64,
             height: 64,
             decoration: BoxDecoration(
@@ -498,6 +505,7 @@ class _VideoCallScreenState extends State<VideoCallScreen>
               icon,
               size: 28,
               color: active ? Colors.black : Colors.white,
+            ),
             ),
           ),
         ),

@@ -409,4 +409,142 @@ void main() {
       expect(body.contains('callState.value = CallState.ended'), isTrue);
     });
   });
+
+  group('redial in-flight UX (marker + callState)', () {
+    test('isShowingNoAnswerUi combines marker AND ended/idle call state', () {
+      // During a redial the marker stays set but callState is dialing — the
+      // panel must NOT render; the normal calling UI must show instead.
+      final getter = _section(
+        controllerSrc,
+        'bool get isShowingNoAnswerUi',
+        'final RxBool isMuted',
+      );
+      expect(getter.contains('noAnswerUi.value != null'), isTrue);
+      expect(getter.contains('CallState.ended'), isTrue);
+      expect(getter.contains('CallState.idle'), isTrue);
+    });
+
+    test('outgoing screen gates status/controls/PopScope on '
+        'isShowingNoAnswerUi — a dialing redial shows Calling...', () {
+      // Everything after the close-worker must use the combined getter; a
+      // bare marker check here would render "No answer" while the new call
+      // is dialing.
+      final body = _section(
+        outgoingSrc,
+        'onPopInvokedWithResult',
+        'Widget _buildEndCallButton',
+      );
+      expect(body.contains('isShowingNoAnswerUi'), isTrue);
+      expect(body.contains('noAnswerUi.value != null'), isFalse);
+      expect(outgoingSrc.contains("'No answer'"), isTrue);
+      expect(outgoingSrc.contains("'Calling...'"), isTrue);
+    });
+
+    test('video screen gates the renderer-free panel on isShowingNoAnswerUi',
+        () {
+      expect(videoSrc.contains('_controller.isShowingNoAnswerUi'), isTrue);
+      // The panel decision must not use a bare marker check.
+      final decision = _section(
+        videoSrc,
+        'return Obx(() {',
+        'return _buildNoAnswerPanel();',
+      );
+      expect(decision.contains('noAnswerUi.value != null'), isFalse);
+    });
+  });
+
+  group('Call again single-flight + marker race', () {
+    test('double-tap guard: second tap returns early, flag resets in finally',
+        () {
+      final body = _section(
+        controllerSrc,
+        'Future<void> callAgainFromNoAnswer() async',
+        'void dismissNoAnswerScreen()',
+      );
+      expect(
+        controllerSrc.contains(
+          'final RxBool noAnswerRedialInFlight = false.obs',
+        ),
+        isTrue,
+      );
+      // Re-entry is rejected BEFORE the membership gate/startCall.
+      final guardAt = body.indexOf('noAnswerRedialInFlight.value');
+      expect(guardAt, greaterThan(-1));
+      expect(guardAt, lessThan(body.indexOf('canMakeCalls')));
+      // Set before the attempt, always reset in finally.
+      final setAt = body.indexOf('noAnswerRedialInFlight.value = true');
+      expect(setAt, greaterThan(-1));
+      expect(setAt, lessThan(body.indexOf('await startCall(')));
+      expect(body.contains('} finally {'), isTrue);
+      expect(
+        body.indexOf('noAnswerRedialInFlight.value = false'),
+        greaterThan(body.indexOf('} finally {')),
+      );
+    });
+
+    test('Call again button is disabled (null onTap) while in flight', () {
+      // Both screens pass a null onTap under noAnswerRedialInFlight — the
+      // button builders render disabled (GestureDetector null + Opacity).
+      for (final src in [outgoingSrc, videoSrc]) {
+        expect(src.contains('noAnswerRedialInFlight.value'), isTrue);
+      }
+      final outgoingBtn = _section(
+        outgoingSrc,
+        "label: 'Call again'",
+        'String _getCallStatusText',
+      );
+      expect(outgoingBtn.contains('? null'), isTrue);
+      final videoBtn = _section(
+        videoSrc,
+        "label: 'Call again'",
+        'Widget _noAnswerButton',
+      );
+      expect(videoBtn.contains('? null'), isTrue);
+      expect(outgoingSrc.contains('VoidCallback? onTap'), isTrue);
+      expect(videoSrc.contains('VoidCallback? onTap'), isTrue);
+      expect(outgoingSrc.contains('opacity: onTap == null'), isTrue);
+      expect(videoSrc.contains('opacity: onTap == null'), isTrue);
+    });
+
+    test('success clear retires only THIS marker by callId', () {
+      // If the fresh call already ended with its own no_answer and set a new
+      // marker (different callId), clearing unconditionally would erase it.
+      final body = _section(
+        controllerSrc,
+        'Future<void> callAgainFromNoAnswer() async',
+        'void dismissNoAnswerScreen()',
+      );
+      expect(
+        body.contains('noAnswerUi.value?.callId == info.callId'),
+        isTrue,
+      );
+      final matchAt = body.indexOf('noAnswerUi.value?.callId == info.callId');
+      expect(
+        body.indexOf('noAnswerUi.value = null', matchAt),
+        greaterThan(matchAt),
+      );
+    });
+
+    test('Cancel during an in-flight call ends it via endCall() — no orphan',
+        () {
+      // Tapping Cancel while a redial (or any call) is in progress must run
+      // the same path as the red End button — never pop the screen and leave
+      // a live call running behind it.
+      final body = _section(
+        controllerSrc,
+        'void dismissNoAnswerScreen()',
+        'void minimizeCallScreen',
+      );
+      final liveGuard = body.indexOf('callState.value != CallState.ended');
+      expect(liveGuard, greaterThan(-1));
+      expect(body.contains('callState.value != CallState.idle'), isTrue);
+      final endCallAt = body.indexOf('endCall();');
+      expect(endCallAt, greaterThan(liveGuard));
+      // The normal route-dismissal path must follow for the ended case.
+      expect(
+        body.indexOf("route.startsWith('/call/')"),
+        greaterThan(endCallAt),
+      );
+    });
+  });
 }

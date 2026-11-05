@@ -65,7 +65,7 @@ class _OutgoingCallScreenState extends State<OutgoingCallScreen> {
         // Intercept the Android back button and minimize the call instead of
         // leaving the app — the call keeps running behind the CallBanner.
         if (didPop) return;
-        if (_controller.noAnswerUi.value != null) {
+        if (_controller.isShowingNoAnswerUi) {
           _controller.dismissNoAnswerScreen();
           return;
         }
@@ -117,7 +117,7 @@ class _OutgoingCallScreenState extends State<OutgoingCallScreen> {
                       // Call status
                       Obx(
                         () => Text(
-                          controller.noAnswerUi.value != null
+                          controller.isShowingNoAnswerUi
                               ? 'No answer'
                               : _getCallStatusText(controller.callState.value),
                           style: const TextStyle(
@@ -145,7 +145,7 @@ class _OutgoingCallScreenState extends State<OutgoingCallScreen> {
                     vertical: 24,
                   ),
                   child: Obx(
-                    () => controller.noAnswerUi.value != null
+                    () => controller.isShowingNoAnswerUi
                         ? _buildNoAnswerControls(controller)
                         : _buildCallControls(controller),
                   ),
@@ -221,7 +221,9 @@ class _OutgoingCallScreenState extends State<OutgoingCallScreen> {
               icon: Icons.call,
               label: 'Call again',
               isActive: true,
-              onTap: controller.callAgainFromNoAnswer,
+              onTap: controller.noAnswerRedialInFlight.value
+                  ? null
+                  : controller.callAgainFromNoAnswer,
             ),
           ],
         ),
@@ -248,16 +250,20 @@ class _OutgoingCallScreenState extends State<OutgoingCallScreen> {
     required IconData icon,
     required String label,
     required bool isActive,
-    required VoidCallback onTap,
+    VoidCallback? onTap,
   }) {
     return Column(
       children: [
         GestureDetector(
-          onTap: () {
-            HapticFeedback.lightImpact();
-            onTap();
-          },
-          child: Container(
+          onTap: onTap == null
+              ? null
+              : () {
+                  HapticFeedback.lightImpact();
+                  onTap();
+                },
+          child: Opacity(
+            opacity: onTap == null ? 0.4 : 1.0,
+            child: Container(
             width: 64,
             height: 64,
             decoration: BoxDecoration(
@@ -272,6 +278,7 @@ class _OutgoingCallScreenState extends State<OutgoingCallScreen> {
               icon,
               size: 28,
               color: isActive ? Colors.black : Colors.white,
+            ),
             ),
           ),
         ),
