@@ -110,43 +110,51 @@ void main() {
     });
   });
 
-  group('ringback.wav asset is bundled', () {
-    test('file exists, is git-tracked and not ignored, pubspec declares dir',
-        () {
-      // Exists on disk.
-      expect(
-        File('assets/audio/ringback.wav').existsSync(),
-        isTrue,
-        reason: 'assets/audio/ringback.wav missing from the working tree',
-      );
-      // Declared via the directory entry under flutter: assets:.
-      final pubspec = File('pubspec.yaml').readAsStringSync();
-      expect(pubspec.contains('- assets/audio/'), isTrue);
-      // Git-tracked — an ignored/untracked asset is absent from CI
-      // checkouts and fails with "Unable to load asset" in release builds.
-      final ls = Process.runSync(
-        'git',
-        ['ls-files', 'assets/audio/ringback.wav'],
-        workingDirectory: Directory.current.path,
-      );
-      expect(
-        (ls.stdout as String).trim(),
-        'assets/audio/ringback.wav',
-        reason: 'ringback.wav is not tracked by git',
-      );
-      // And no ignore rule may match it (the *.wav blanket rule regressed
-      // this once — the !assets/audio/*.wav exception must stay).
-      final ignored = Process.runSync(
-        'git',
-        ['check-ignore', 'assets/audio/ringback.wav'],
-        workingDirectory: Directory.current.path,
-      );
-      expect(
-        ignored.exitCode,
-        isNot(0),
-        reason: 'ringback.wav must not be matched by any gitignore rule',
-      );
-    });
+  group('every declared+runtime-loaded asset is bundled', () {
+    // Assets the app declares under flutter: assets: and loads at runtime.
+    // An ignored/untracked asset is absent from CI checkouts and fails with
+    // "Unable to load asset" in release builds — ringback.wav and logo.jpeg
+    // were both silently missing from build 219 for exactly this reason.
+    for (final asset in <String, String>{
+      'assets/audio/ringback.wav': 'assets/audio/',
+      'assets/icons/logo.jpeg': 'assets/icons/',
+    }.entries) {
+      test('${asset.key}: exists, tracked, not ignored, pubspec-declared',
+          () {
+        // Exists on disk.
+        expect(
+          File(asset.key).existsSync(),
+          isTrue,
+          reason: '${asset.key} missing from the working tree',
+        );
+        // Covered by a directory entry under flutter: assets:.
+        final pubspec = File('pubspec.yaml').readAsStringSync();
+        expect(pubspec.contains('- ${asset.value}'), isTrue);
+        // Git-tracked.
+        final ls = Process.runSync(
+          'git',
+          ['ls-files', asset.key],
+          workingDirectory: Directory.current.path,
+        );
+        expect(
+          (ls.stdout as String).trim(),
+          asset.key,
+          reason: '${asset.key} is not tracked by git',
+        );
+        // And no ignore rule may match it — the media-file blanket rules
+        // (*.wav, *.jpeg, *.png, …) regressed this once per asset class.
+        final ignored = Process.runSync(
+          'git',
+          ['check-ignore', asset.key],
+          workingDirectory: Directory.current.path,
+        );
+        expect(
+          ignored.exitCode,
+          isNot(0),
+          reason: '${asset.key} must not be matched by any gitignore rule',
+        );
+      });
+    }
   });
 
   group('shouldStopOutgoingRingback (pure direction guard)', () {

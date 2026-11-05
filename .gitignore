@@ -243,6 +243,8 @@ fastlane/test_output
 # Bundled Flutter assets must be tracked — the caller ringback tone was
 # silently ignored by *.wav and missing from CI builds (Unable to load asset).
 !assets/audio/*.wav
+# Splash-screen logo is bundled and Image.asset'd — same silent-in-CI class.
+!assets/icons/logo.jpeg
 
 # Keep important files
 !README.md
