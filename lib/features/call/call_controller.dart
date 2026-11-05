@@ -2430,7 +2430,7 @@ class CallController extends GetxController {
     NotificationService().cancelNotification(callId.hashCode);
 
     // Stop ringtone
-    _ringtoneService.stopRingtone();
+    _ringtoneService.stopRingtone(reason: 'rejected');
 
     // If we have the cached incoming call data, use it for a proper rejection.
     final cachedData = _latestIncomingCallData;
@@ -2523,7 +2523,7 @@ class CallController extends GetxController {
       debugPrint('📞 CallKit timeout during active call — cleared ring state only');
       return;
     }
-    _ringtoneService.stopRingtone();
+    _ringtoneService.stopRingtone(reason: 'timeout');
     _resetCallState();
   }
 
@@ -2987,7 +2987,7 @@ class CallController extends GetxController {
     _stopNativeIncomingCall();
 
     // Stop ringtone
-    _ringtoneService.stopRingtone();
+    _ringtoneService.stopRingtone(reason: 'rejected');
 
     if (_socketService.isConnected.value) {
       _socketService.rejectCall(
@@ -3037,7 +3037,7 @@ class CallController extends GetxController {
   /// Reset call state when we know the call has already ended remotely (e.g. FCM
   /// call_cancelled) without sending another terminate event to the server.
   void resetCallStateForRemoteEnd() {
-    _ringtoneService.stopRingtone();
+    _ringtoneService.stopRingtone(reason: 'ended');
     _webrtcService.endCall();
     _resetCallState();
   }
@@ -3045,7 +3045,7 @@ class CallController extends GetxController {
   /// End the current call
   void endCall() {
     // Stop ringtone immediately (covers outgoing beep and incoming ring)
-    _ringtoneService.stopRingtone();
+    _ringtoneService.stopRingtone(reason: 'cancelled');
 
     // If server hasn't assigned a callId yet, mark pending end and clean up locally.
     // The terminate request will be sent once call_initiated arrives.
@@ -3275,7 +3275,7 @@ class CallController extends GetxController {
     // watchdog (this is what killed calls accepted from a cold start) and
     // show "Ringing…"; the server's ring/resync timers govern from here.
     _cancelDialWatchdog();
-    _ringtoneService.stopRingtone();
+    _ringtoneService.stopRingtone(reason: 'connected');
     if (callState.value == CallState.dialing ||
         callState.value == CallState.reaching) {
       callState.value = CallState.ringing;
@@ -3456,7 +3456,7 @@ class CallController extends GetxController {
     debugPrint('📞 Call rejected: $data');
 
     // Stop ringtone
-    _ringtoneService.stopRingtone();
+    _ringtoneService.stopRingtone(reason: 'rejected');
 
     final reason = data['reason'] as String?;
 
@@ -3532,7 +3532,7 @@ class CallController extends GetxController {
     }
 
     // Stop ringtone
-    _ringtoneService.stopRingtone();
+    _ringtoneService.stopRingtone(reason: 'cancelled');
 
     // Cancel incoming call notification if active (prevents stuck notification when caller hangs up)
     if (callId != null && callId.isNotEmpty) {
@@ -3969,8 +3969,16 @@ class CallController extends GetxController {
     switch (state) {
       case 'dialing':
         callState.value = CallState.dialing;
+        CallPhaseLogger.startIfInactive();
+        // ff_call_ringback selects legacy vs new ringback INSIDE the service —
+        // the call site stays exactly today's isCaller gate.
         if (isCaller.value) {
-          _ringtoneService.playOutgoingRingtone();
+          unawaited(
+            _ringtoneService.playOutgoingRingtone(
+              callId:
+                  currentCallId.value.isEmpty ? null : currentCallId.value,
+            ),
+          );
         }
         break;
       case 'ringing':
@@ -3978,7 +3986,7 @@ class CallController extends GetxController {
         break;
       case 'connected':
         _cancelDialWatchdog();
-        _ringtoneService.stopRingtone();
+        _ringtoneService.stopRingtone(reason: 'connected');
         callState.value = CallState.connected;
         isReconnecting.value = false;
         hasPoorConnection.value = false;
@@ -4048,7 +4056,7 @@ class CallController extends GetxController {
           );
           break;
         }
-        _ringtoneService.stopRingtone();
+        _ringtoneService.stopRingtone(reason: 'ended');
         // Fallback log when no server termination event was received.
         _logCallHistory(reason: reason ?? 'ended');
         _stopDurationUpdateTimer();
@@ -4376,6 +4384,12 @@ class CallController extends GetxController {
     _peerRinging.reset();
     _resetCryptoState();
     final callId = currentCallId.value;
+    // Error/abort exits can leave a looping caller ringback — stop it, keyed
+    // on the ended call's id so a stale reset can't silence a newer call's
+    // tone or a live incoming ringtone.
+    unawaited(
+      _ringtoneService.stopOutgoingRingback(callId: callId, reason: 'error'),
+    );
     _markRecentlyEnded(callId);
     unawaited(_teardownAndroidCall(callId));
     unawaited(_setNativeInCall(false));

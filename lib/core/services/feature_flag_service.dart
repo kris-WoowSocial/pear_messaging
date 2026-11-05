@@ -16,10 +16,12 @@ import 'package:shared_preferences/shared_preferences.dart';
 ///  - ff_pip_android         video-call Picture-in-Picture on Android 26+
 ///  - ff_pip_ios             video-call Picture-in-Picture on iOS
 ///  - ff_ios_push_wake_reconnect  locked-iPhone socket reconnect during ringing
+///  - ff_call_ringback        caller-side dialing/ringback tone
 ///
 /// A fetch failure NEVER enables anything — defaults stay off.
-/// (ff_ios_push_wake_reconnect is the exception: it ships ON so build testing
-/// can exercise it immediately; Remote Config can force it back off.)
+/// (ff_ios_push_wake_reconnect and ff_call_ringback are the exceptions: they
+/// ship ON so build testing can exercise them immediately; Remote Config can
+/// force them back off.)
 class FeatureFlagService extends GetxService {
   static const String kVerificationUi = 'ff_verification_ui';
   static const String kEncryptedSignaling = 'ff_encrypted_signaling';
@@ -27,6 +29,7 @@ class FeatureFlagService extends GetxService {
   static const String kPipAndroid = 'ff_pip_android';
   static const String kPipIos = 'ff_pip_ios';
   static const String kIosPushWakeReconnect = 'ff_ios_push_wake_reconnect';
+  static const String kCallRingback = 'ff_call_ringback';
 
   final RxBool verificationUi = false.obs;
   final RxBool encryptedSignaling = false.obs;
@@ -34,6 +37,7 @@ class FeatureFlagService extends GetxService {
   final RxBool pipAndroid = false.obs;
   final RxBool pipIos = false.obs;
   final RxBool iosPushWakeReconnect = true.obs;
+  final RxBool callRingback = true.obs;
 
   /// Tester escape hatch: debug builds can exercise PiP without waiting for a
   /// Remote Config rollout. Release builds ignore this entirely — the flag
@@ -80,6 +84,7 @@ class FeatureFlagService extends GetxService {
         kPipAndroid: false,
         kPipIos: false,
         kIosPushWakeReconnect: true,
+        kCallRingback: true,
       });
       // Hydrate the last applied values from disk BEFORE the network fetch so
       // cold-start call flows see real flags immediately — Remote Config only
@@ -129,6 +134,8 @@ class FeatureFlagService extends GetxService {
       iosPushWakeReconnect.value =
           prefs.getBool('ff_cache_$kIosPushWakeReconnect') ??
               iosPushWakeReconnect.value;
+      callRingback.value =
+          prefs.getBool('ff_cache_$kCallRingback') ?? callRingback.value;
       debugPrint(
         '🎛️ Flags hydrated: verification=${verificationUi.value}, '
         'encrypted=${encryptedSignaling.value}, video=${videoCalling.value}, '
@@ -147,6 +154,7 @@ class FeatureFlagService extends GetxService {
     pipAndroid.value = _rc!.getBool(kPipAndroid);
     pipIos.value = _rc!.getBool(kPipIos);
     iosPushWakeReconnect.value = _rc!.getBool(kIosPushWakeReconnect);
+    callRingback.value = _rc!.getBool(kCallRingback);
     SharedPreferences.getInstance().then((prefs) {
       prefs.setBool('ff_cache_$kVerificationUi', verificationUi.value);
       prefs.setBool('ff_cache_$kEncryptedSignaling', encryptedSignaling.value);
@@ -155,6 +163,7 @@ class FeatureFlagService extends GetxService {
       prefs.setBool('ff_cache_$kPipIos', pipIos.value);
       prefs.setBool(
           'ff_cache_$kIosPushWakeReconnect', iosPushWakeReconnect.value);
+      prefs.setBool('ff_cache_$kCallRingback', callRingback.value);
     });
     debugPrint(
       '🎛️ Feature flags: verification=${verificationUi.value}, '
