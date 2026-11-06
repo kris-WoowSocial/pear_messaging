@@ -1066,6 +1066,13 @@ class WebRTCCallService {
 
   /// Request camera permission only when a video call is starting.
   Future<bool> _requestCameraPermission() async {
+    // Status check first: Permission.camera.request() launches a system
+    // permission activity, which can silently fail/deny when fired while
+    // the app is still coming up behind the keyguard on a cold-start
+    // answer — a denial here silently downgrades the call to audio-only
+    // (remote video still shows, but the local self-view never appears).
+    // An already-granted permission needs no activity at all.
+    if (await Permission.camera.isGranted) return true;
     final status = await Permission.camera.request();
     if (status.isGranted) return true;
     debugPrint(

@@ -799,9 +799,19 @@ class CallController extends GetxController {
     required bool pipEntering,
     required Future<bool> Function() isInPipMode,
     Duration delay = const Duration(milliseconds: 250),
+    AppLifecycleState Function()? currentLifecycle,
   }) async {
     await Future<void>.delayed(delay);
     final inPip = await isInPipMode();
+    // A `resumed` event landing while this deferred decision was in flight
+    // invalidates the stale `paused`: pausing now would cut the camera
+    // *after* the app came back to the foreground and it would stay off
+    // until the next resume (missing self-view on cold-start answers, where
+    // paused/resumed can arrive in quick succession).
+    if (currentLifecycle != null &&
+        currentLifecycle() == AppLifecycleState.resumed) {
+      return false;
+    }
     return shouldPauseCameraOnBackground(
       state,
       nativeCallHeld: nativeCallHeld,
@@ -838,6 +848,7 @@ class CallController extends GetxController {
           state: AppLifecycleState.paused,
           nativeCallHeld: _nativeCallHeld,
           pipEntering: entering || _pipService.pipEntering,
+          currentLifecycle: () => _lastLifecycleState,
           isInPipMode: () async {
             final inPip = await _pipService.isInPipMode();
             if (!inPip) return false;
@@ -3286,6 +3297,12 @@ class CallController extends GetxController {
     if (localVideoStream.value == null) {
       debugPrint('📹 Re-binding missed local video stream (self-view fix)');
       localVideoStream.value = stream;
+      // The reactive value alone never reaches the renderer — srcObject must
+      // be re-bound or a healed tile stays black/empty. Skip audio-only
+      // streams: they have no video track and need no video renderers.
+      if (stream.getVideoTracks().isNotEmpty) {
+        unawaited(ensureVideoRenderers());
+      }
     }
     if (stream.getVideoTracks().isNotEmpty && !isCameraOn.value) {
       isCameraOn.value = _webrtcService.isCameraEnabled;
