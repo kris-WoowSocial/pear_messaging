@@ -158,8 +158,12 @@ import os.log
     print("📱 iOS Background: Received remote notification")
     print("📱 iOS Background: Original notification data: \(userInfo)")
     
-    // Get sender ID to fetch saved username
-    if let senderId = userInfo["senderDeviceId"] as? String {
+    // Get sender ID to fetch saved username — only while the app is NOT
+    // active. When it is .active, willPresent already handles presentation
+    // (and its own corrected repost); posting here too would produce a
+    // second banner for the same push.
+    if application.applicationState != .active,
+       let senderId = userInfo["senderDeviceId"] as? String {
       print("📱 iOS Background: Sender ID: \(senderId)")
       
       // Try to get saved username from the App Group name cache
@@ -181,8 +185,11 @@ import os.log
         content.sound = .default
         content.badge = 1
         
-        // Copy user info for tap handling
-        content.userInfo = userInfo
+        // Copy user info for tap handling — mark it so willPresent never
+        // reposts this corrected notification again (loop guard).
+        var correctedInfo = userInfo
+        correctedInfo["vantCorrected"] = true
+        content.userInfo = correctedInfo
         
         // Schedule the corrected notification
         let identifier = UUID().uuidString
@@ -216,8 +223,13 @@ import os.log
       print("📱 iOS Foreground: Received notification for message \(messageId) from \(senderId)")
     }
     
-    // Check if we need to update the notification title with saved username
-    if let senderId = userInfo["senderDeviceId"] as? String {
+    // Check if we need to update the notification title with saved username.
+    // Skip reposts we created ourselves (vantCorrected): a locally-added
+    // notification re-triggers willPresent while the app is foreground, so an
+    // unmarked repost reposts again — an unbounded loop that floods
+    // Notification Center ("You have N new notifications").
+    if let senderId = userInfo["senderDeviceId"] as? String,
+       (userInfo["vantCorrected"] as? Bool) != true {
       if let savedUsername = savedContactName(for: senderId) {
         print("📱 iOS Foreground: Found saved username: \(savedUsername)")
         
@@ -227,7 +239,9 @@ import os.log
         updatedContent.body = notification.request.content.body
         updatedContent.sound = notification.request.content.sound
         updatedContent.badge = notification.request.content.badge
-        updatedContent.userInfo = userInfo
+        var correctedInfo = userInfo
+        correctedInfo["vantCorrected"] = true
+        updatedContent.userInfo = correctedInfo
         
         // Replace the notification by canceling the old one and showing the new one
         let identifier = notification.request.identifier
@@ -237,10 +251,16 @@ import os.log
         UNUserNotificationCenter.current().add(newRequest) { error in
           if let error = error {
             print("📱 iOS Foreground: Error showing updated notification: \(error)")
+            // Corrected repost failed — still show the original banner.
+            completionHandler([.banner, .sound, .badge])
           } else {
             print("📱 iOS Foreground: Updated notification shown with title: \(savedUsername)")
+            // Suppress the original only now that the corrected repost is
+            // known-good — it presents itself exactly once via willPresent.
+            completionHandler([])
           }
         }
+        return
       } else {
         print("📱 iOS Foreground: No saved username found for sender: \(senderId)")
       }
