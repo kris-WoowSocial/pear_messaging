@@ -16,6 +16,7 @@ import android.media.RingtoneManager
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import android.os.SystemClock
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.util.Log
@@ -288,6 +289,11 @@ class CallForegroundService : Service() {
                 if (ongoingIsVideo && hasCameraPermission) {
                     serviceType = serviceType or ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
                 }
+                Log.d(
+                    TAG,
+                    "startOngoingCall: callId=$ongoingCallId isVideo=$ongoingIsVideo " +
+                        "camGranted=$hasCameraPermission t=${SystemClock.elapsedRealtime()}"
+                )
                 ServiceCompat.startForeground(
                     this,
                     ONGOING_NOTIFICATION_ID,
