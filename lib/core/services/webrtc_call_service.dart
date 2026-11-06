@@ -68,6 +68,15 @@ class WebRTCCallService {
   Function(String reason)? onConnectionFailed;
   Function()? onCameraPermissionDenied;
 
+  /// Invoked on a video accept immediately before the camera opens so the
+  /// caller (CallController) can start the camera-type foreground service.
+  /// On a locked / cold-started Android answer the app can still count as
+  /// backgrounded at getUserMedia time, and background camera capture can
+  /// deliver zero frames (remote video shows, self-view stays empty).
+  /// Awaited; the hook swallows its own errors so a failed service start
+  /// never aborts the accept.
+  Future<void> Function()? onEnsureMediaForegroundService;
+
   // Direct P2P is tried first (STUN). TURN credentials are fetched per call
   // from the registered signaling socket and expire server-side; no shared TURN
   // secret is embedded in the app.
@@ -285,6 +294,18 @@ class WebRTCCallService {
         onCameraPermissionDenied?.call();
       }
 
+      // Start the camera-type foreground service BEFORE the camera opens.
+      // _isVideoCall is only still true here when the camera permission
+      // resolved granted above, so the FGS may carry the camera type.
+      if (_isVideoCall && onEnsureMediaForegroundService != null) {
+        final fgsWatch = Stopwatch()..start();
+        await onEnsureMediaForegroundService!();
+        callDiag(
+          '⏱️ camera-FGS start (pre-getUserMedia): '
+          '${fgsWatch.elapsedMilliseconds}ms',
+        );
+      }
+
       // Create peer connection — reuse the one built during ringing when
       // prepareIncomingCall already applied this exact offer.
       final prepared = _incomingPrepared &&
@@ -329,6 +350,7 @@ class WebRTCCallService {
 
       // Get local audio/video stream. For video calls the camera is captured
       // here and added to the peer connection before createAnswer.
+      callDiag('📹 getUserMedia start: video=$_isVideoCall');
       final mediaWatch = Stopwatch()..start();
       _localStream = await _getUserMedia(video: _isVideoCall);
       callDiag(

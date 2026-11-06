@@ -7,6 +7,7 @@ import android.content.res.Configuration
 import android.graphics.Rect
 import android.net.Uri
 import android.os.Build
+import android.os.SystemClock
 import android.util.Log
 import android.util.Rational
 import android.os.Bundle
@@ -1067,6 +1068,11 @@ class MainActivity : FlutterFragmentActivity() {
     }
 
     private fun startOngoingCallService(callId: String, callerName: String, isVideo: Boolean) {
+        Log.i(
+            "VantCallFG",
+            "dispatch START_ONGOING_CALL callId=$callId isVideo=$isVideo " +
+                "t=${SystemClock.elapsedRealtime()}"
+        )
         val intent = Intent(this, CallForegroundService::class.java).apply {
             action = CallForegroundService.ACTION_START_ONGOING_CALL
             putExtra("call_id", callId)

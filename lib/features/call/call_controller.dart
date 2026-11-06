@@ -263,6 +263,8 @@ class CallController extends GetxController {
   RTCVideoRenderer? _remoteRenderer;
   RTCVideoRenderer? _localRenderer;
   Future<void>? _renderersInitFuture;
+  Timer? _localFirstFrameWatchdog;
+  MediaStream? _watchedLocalStream;
 
   /// Null until [ensureVideoRenderers] completes — screens gate on this.
   RTCVideoRenderer? get remoteRenderer => _remoteRenderer;
@@ -1096,6 +1098,37 @@ class CallController extends GetxController {
     }
   }
 
+  /// Android only: start the ongoing-call foreground service (camera type)
+  /// BEFORE WebRTC opens the camera on a video accept. On a locked /
+  /// cold-started answer the app can still count as backgrounded when
+  /// getUserMedia runs, and background camera capture can deliver zero
+  /// frames — remote video shows while the self-view stays empty. Audio
+  /// calls never reach this (the service hook only fires on video accepts
+  /// after camera permission resolved granted). Failures degrade to the
+  /// previous behavior — the accept must not be aborted.
+  Future<void> _startEarlyVideoCallFgs() async {
+    if (!Platform.isAndroid) return;
+    final sw = Stopwatch()..start();
+    try {
+      await _callChannel.invokeMethod('startOngoingCall', {
+        'callId': currentCallId.value,
+        'callerName': remoteDisplayName.value.isNotEmpty
+            ? remoteDisplayName.value
+            : 'Unknown',
+        // Forced true: the hook only fires on video accepts after camera
+        // permission resolved granted (the native side re-checks CAMERA).
+        'isVideo': true,
+      });
+      debugPrint(
+        '📹 Early camera-type FGS started in ${sw.elapsedMilliseconds}ms '
+        '(callId=${currentCallId.value})',
+      );
+      CallPhaseLogger.mark('camera_fgs_start');
+    } catch (e) {
+      debugPrint('⚠️ Early camera-type FGS start failed: $e');
+    }
+  }
+
   Future<void> _setCallScreenVisible(bool visible) async {
     // Android-only channel: iOS CallKit owns incoming-call UI visibility.
     if (!Platform.isAndroid) return;
@@ -1311,6 +1344,8 @@ class CallController extends GetxController {
       }
       unawaited(ensureVideoRenderers());
     };
+
+    _webrtcService.onEnsureMediaForegroundService = _startEarlyVideoCallFgs;
 
     _webrtcService.onRemoteStream = (stream) {
       remoteVideoStream.value = stream;
@@ -3265,8 +3300,45 @@ class CallController extends GetxController {
     }
     if (_localRenderer != null) {
       _localRenderer!.srcObject = localVideoStream.value;
+      _armLocalFirstFrameWatchdog();
     }
     _logMirrorState('rebindVideoStreams');
+  }
+
+  /// Debug watchdog: logs whether the local renderer's first frame arrives
+  /// within 2 s of srcObject binding. A timeout means the camera is
+  /// delivering zero frames — background camera-FGS restriction,
+  /// permission, or a hardware-open failure — even though the stream
+  /// exists (the self-view tile stays black/empty).
+  void _armLocalFirstFrameWatchdog() {
+    final renderer = _localRenderer;
+    final stream = localVideoStream.value;
+    final hasVideo = stream != null && stream.getVideoTracks().isNotEmpty;
+    if (!hasVideo || renderer == null) {
+      _watchedLocalStream = null;
+      _localFirstFrameWatchdog?.cancel();
+      renderer?.onFirstFrameRendered = null;
+      return;
+    }
+    if (identical(stream, _watchedLocalStream)) return;
+    _watchedLocalStream = stream;
+    _localFirstFrameWatchdog?.cancel();
+    final boundAt = DateTime.now();
+    renderer.onFirstFrameRendered = () {
+      _localFirstFrameWatchdog?.cancel();
+      debugPrint(
+        '📹 Local first frame rendered '
+        '${DateTime.now().difference(boundAt).inMilliseconds}ms after bind',
+      );
+      CallPhaseLogger.mark('local_first_frame');
+    };
+    _localFirstFrameWatchdog = Timer(const Duration(seconds: 2), () {
+      debugPrint(
+        '⚠️ No local video frame 2s after srcObject bind — camera may be '
+        'delivering zero frames (background camera-FGS restriction)',
+      );
+      CallPhaseLogger.mark('local_first_frame_timeout');
+    });
   }
 
   Future<void> _disposeVideoRenderers() async {
@@ -3280,7 +3352,11 @@ class CallController extends GetxController {
       remote.srcObject = null;
       await remote.dispose();
     }
+    _localFirstFrameWatchdog?.cancel();
+    _localFirstFrameWatchdog = null;
+    _watchedLocalStream = null;
     if (local != null) {
+      local.onFirstFrameRendered = null;
       local.srcObject = null;
       await local.dispose();
     }
