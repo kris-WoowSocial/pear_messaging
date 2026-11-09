@@ -20,6 +20,8 @@ class ChatMessageModel {
   final bool? isCompressed;
   final int? audioDuration;
   final String? waveformData;
+  final Map<String, String> reactions;
+  final int? expiresAt;
 
   ChatMessageModel({
     required this.id,
@@ -40,6 +42,8 @@ class ChatMessageModel {
     this.isCompressed,
     this.audioDuration,
     this.waveformData,
+    this.reactions = const {},
+    this.expiresAt,
   });
 
   /// Check if message is an image
@@ -50,6 +54,12 @@ class ChatMessageModel {
 
   /// Check if message is an audio/voice message
   bool get isAudio => type == MessageType.audio;
+
+  /// Check if message is a call log card
+  bool get isCall => type == MessageType.call;
+
+  /// Disappearing message still counting down
+  bool get isExpiring => expiresAt != null;
 
   /// Check if media has expired
   bool get isMediaExpired {
@@ -80,6 +90,8 @@ class ChatMessageModel {
       isCompressed: entity.isCompressed,
       audioDuration: entity.audioDuration,
       waveformData: entity.waveformData,
+      reactions: entity.reactions,
+      expiresAt: entity.expiresAt,
     );
   }
 }

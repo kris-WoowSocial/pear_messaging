@@ -39,6 +39,11 @@ class ChatEntity {
   final String? avatarUrl;
   final int? maxMembers;
 
+  /// Disappearing messages timer in seconds — 0 = off.
+  /// New messages in this chat expire `disappearingAfterSeconds` after their
+  /// send timestamp. Synced peer-to-peer via `disappear_timer_set`.
+  final int disappearingAfterSeconds;
+
   ChatEntity({
     required this.id,
     required this.userName,
@@ -55,6 +60,7 @@ class ChatEntity {
     this.inviteCode,
     this.avatarUrl,
     this.maxMembers,
+    this.disappearingAfterSeconds = 0,
   })  : messages = messages ?? [],
         members = members ?? [],
         admins = admins ?? [];
@@ -78,6 +84,7 @@ class ChatEntity {
       'inviteCode': inviteCode,
       'avatarUrl': avatarUrl,
       'maxMembers': maxMembers,
+      'disappearingAfterSeconds': disappearingAfterSeconds,
     };
   }
 
@@ -110,6 +117,7 @@ class ChatEntity {
       inviteCode: json['inviteCode'] as String?,
       avatarUrl: json['avatarUrl'] as String?,
       maxMembers: json['maxMembers'] as int?,
+      disappearingAfterSeconds: json['disappearingAfterSeconds'] as int? ?? 0,
     );
   }
 
@@ -131,6 +139,7 @@ class ChatEntity {
     String? inviteCode,
     String? avatarUrl,
     int? maxMembers,
+    int? disappearingAfterSeconds,
   }) {
     return ChatEntity(
       id: id ?? this.id,
@@ -150,6 +159,8 @@ class ChatEntity {
       inviteCode: inviteCode ?? this.inviteCode,
       avatarUrl: avatarUrl ?? this.avatarUrl,
       maxMembers: maxMembers ?? this.maxMembers,
+      disappearingAfterSeconds:
+          disappearingAfterSeconds ?? this.disappearingAfterSeconds,
     );
   }
 }

@@ -7,12 +7,14 @@ import android.content.res.Configuration
 import android.graphics.Rect
 import android.net.Uri
 import android.os.Build
+import android.os.SystemClock
 import android.util.Log
 import android.util.Rational
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
+import android.content.ComponentName
 import android.content.Context
 import android.hardware.Sensor
 import android.hardware.SensorManager
@@ -213,6 +215,9 @@ class MainActivity : FlutterFragmentActivity() {
                     openBatterySettings()
                     result.success(null)
                 }
+                "openOemAutostartSettings" -> {
+                    result.success(openOemAutostartSettings())
+                }
                 "getDeviceManufacturer" -> {
                     result.success(android.os.Build.MANUFACTURER)
                 }
@@ -250,6 +255,9 @@ class MainActivity : FlutterFragmentActivity() {
                 "stopRingback" -> {
                     stopRingback(call.argument<String>("reason"))
                     result.success(null)
+                }
+                "playBusyTone" -> {
+                    result.success(playBusyTone())
                 }
                 else -> {
                     result.notImplemented()
@@ -991,6 +999,101 @@ class MainActivity : FlutterFragmentActivity() {
     }
 
     /**
+     * Open the OEM-specific "Autostart" / "App launch" / "Background activity"
+     * settings screen. These vendor screens are what actually controls whether
+     * a killed app can be woken by FCM on Chinese/Transsion ROMs — the AOSP
+     * battery-optimization list does not cover them.
+     *
+     * Every candidate ComponentName is resolve-checked before launch; the
+     * first that resolves wins. Package/class names differ across OS versions,
+     * so several candidates exist per vendor family. Falls back to the generic
+     * battery-optimization list, then to app details, so the method always
+     * opens SOMETHING useful. Returns true when a screen was opened.
+     */
+    private fun openOemAutostartSettings(): Boolean {
+        val manufacturer = Build.MANUFACTURER.lowercase()
+        val brand = Build.BRAND.lowercase()
+
+        // Vendor-specific intent candidates, grouped loosely by family.
+        // resolveActivity() is the only safe gate — these classes move
+        // between MIUI/ColorOS/Funtouch/XOS versions and a blind
+        // startActivity throws ActivityNotFoundException.
+        val vendorCandidates = mutableListOf<Intent>()
+        fun component(pkg: String, cls: String) {
+            vendorCandidates.add(Intent().setComponent(ComponentName(pkg, cls)))
+        }
+
+        when {
+            // Xiaomi / Redmi / POCO (MIUI, HyperOS)
+            manufacturer.contains("xiaomi") || brand.contains("redmi") ||
+                brand.contains("poco") -> {
+                component("com.miui.securitycenter", "com.miui.permcenter.autostart.AutoStartManagementActivity")
+                component("com.miui.securitycenter", "com.miui.powercenter.PowerSettings")
+            }
+            // Samsung — no autostart screen; land on Device Care battery page
+            manufacturer.contains("samsung") -> {
+                component("com.samsung.android.lool", "com.samsung.android.sm.battery.ui.BatteryActivity")
+                component("com.samsung.android.lool", "com.samsung.android.sm.ui.battery.BatteryActivity")
+                vendorCandidates.add(
+                    Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                        data = Uri.parse("package:$packageName")
+                    }
+                )
+            }
+            // Oppo / Realme / OnePlus (ColorOS + OPLUS builds)
+            manufacturer.contains("oppo") || brand.contains("realme") ||
+                manufacturer.contains("oneplus") -> {
+                component("com.coloros.safecenter", "com.coloros.safecenter.startupapp.StartupAppListActivity")
+                component("com.coloros.safecenter", "com.coloros.safecenter.permission.startup.StartupAppListActivity")
+                component("com.coloros.safecenter", "com.coloros.safecenter.startup.StartupAppListActivity")
+                component("com.oplus.safecenter", "com.oplus.safecenter.startupapp.StartupAppListActivity")
+            }
+            // Vivo / iQOO (Funtouch, OriginOS)
+            manufacturer.contains("vivo") || brand.contains("iqoo") -> {
+                component("com.vivo.permissionmanager", "com.vivo.permissionmanager.activity.BgStartUpManagerActivity")
+                component("com.iqoo.secure", "com.iqoo.secure.safeguard.PurviewTabActivity")
+                component("com.vivo.permissionmanager", "com.vivo.permissionmanager.activity.PurviewTabActivity")
+            }
+            // Huawei / Honor (EMUI, MagicOS)
+            manufacturer.contains("huawei") || brand.contains("honor") -> {
+                component("com.huawei.systemmanager", "com.huawei.systemmanager.optimize.process.ProtectActivity")
+                component("com.huawei.systemmanager", "com.huawei.systemmanager.appcontrol.activity.StartupAppControlActivity")
+            }
+            // Transsion family: Infinix (XOS), Tecno (HiOS), Itel
+            manufacturer.contains("infinix") || manufacturer.contains("tecno") ||
+                manufacturer.contains("itel") || manufacturer.contains("transsion") -> {
+                component("com.transsion.phonemanager", "com.transsion.phonemanager.autostart.AutoStartManagerActivity")
+                component("com.transsion.phonemanager", "com.letsinnovation.mtm.autoboot.AtotStartManagerActivity")
+            }
+        }
+
+        // Generic battery screens appended for every brand as secondary
+        // candidates — a vendor build that dropped its manager app still gets
+        // a usable settings page.
+        vendorCandidates.add(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+        vendorCandidates.add(
+            Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                data = Uri.parse("package:$packageName")
+            }
+        )
+
+        for (intent in vendorCandidates) {
+            try {
+                if (intent.resolveActivity(packageManager) != null) {
+                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    startActivity(intent)
+                    println("openOemAutostartSettings: opened ${intent.component?.flattenToShortString() ?: intent.action}")
+                    return true
+                }
+            } catch (e: Exception) {
+                println("openOemAutostartSettings: candidate failed — ${e.message}")
+            }
+        }
+        println("openOemAutostartSettings: no settings screen resolved")
+        return false
+    }
+
+    /**
      * Stop the ringing foreground service, tell Telecom the call is ACTIVE,
      * and set MODE_IN_COMMUNICATION.
      *
@@ -1067,6 +1170,11 @@ class MainActivity : FlutterFragmentActivity() {
     }
 
     private fun startOngoingCallService(callId: String, callerName: String, isVideo: Boolean) {
+        Log.i(
+            "VantCallFG",
+            "dispatch START_ONGOING_CALL callId=$callId isVideo=$isVideo " +
+                "t=${SystemClock.elapsedRealtime()}"
+        )
         val intent = Intent(this, CallForegroundService::class.java).apply {
             action = CallForegroundService.ACTION_START_ONGOING_CALL
             putExtra("call_id", callId)
@@ -1129,6 +1237,29 @@ class MainActivity : FlutterFragmentActivity() {
             true
         } catch (e: Exception) {
             println("Error starting ringback: $e")
+            false
+        }
+    }
+
+    /// Play the PSTN busy signal (TONE_SUP_BUSY handles the 500ms on/off
+    /// cadence itself) through the voice-call stream for ~3 seconds, then
+    /// release. Shared with the ringback cleanup path.
+    private fun playBusyTone(): Boolean {
+        stopRingback()
+        return try {
+            val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            if (audioManager.mode != AudioManager.MODE_IN_COMMUNICATION) {
+                audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+            }
+            toneGenerator = ToneGenerator(AudioManager.STREAM_VOICE_CALL, 80)
+            val handler = Handler(Looper.getMainLooper())
+            ringbackHandler = handler
+            toneGenerator?.startTone(ToneGenerator.TONE_SUP_BUSY)
+            handler.postDelayed({ stopRingback("busy_done") }, 3000)
+            println("Busy tone started via ToneGenerator on STREAM_VOICE_CALL")
+            true
+        } catch (e: Exception) {
+            println("Error starting busy tone: $e")
             false
         }
     }

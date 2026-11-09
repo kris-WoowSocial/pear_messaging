@@ -21,6 +21,8 @@ class _NotificationPermissionScreenState
   bool _isPermanentlyDenied = false;
   bool _needsBatteryOptimization = false;
   bool _isSamsungDevice = false;
+  bool _needsOemAutostart = false;
+  String _manufacturer = '';
 
   static const MethodChannel _batteryChannel =
       MethodChannel('com.pear.messaging/battery');
@@ -51,11 +53,27 @@ class _NotificationPermissionScreenState
   Future<void> _checkBatteryOptimization() async {
     if (!Platform.isAndroid) return;
 
-    // Check if device is Samsung
+    // Detect the OEM family — every brand gets the battery check, and the
+    // restricted families additionally get the vendor "Autostart" prompt.
     final deviceInfo = await _getDeviceManufacturer();
-    _isSamsungDevice = deviceInfo.toLowerCase().contains('samsung');
-
-    if (!_isSamsungDevice) return;
+    _manufacturer = deviceInfo;
+    final m = deviceInfo.toLowerCase();
+    _isSamsungDevice = m.contains('samsung');
+    _needsOemAutostart = _isSamsungDevice ||
+        m.contains('xiaomi') ||
+        m.contains('redmi') ||
+        m.contains('poco') ||
+        m.contains('oppo') ||
+        m.contains('realme') ||
+        m.contains('oneplus') ||
+        m.contains('vivo') ||
+        m.contains('iqoo') ||
+        m.contains('huawei') ||
+        m.contains('honor') ||
+        m.contains('infinix') ||
+        m.contains('tecno') ||
+        m.contains('itel') ||
+        m.contains('transsion');
 
     try {
       final isIgnoring =
@@ -107,8 +125,9 @@ class _NotificationPermissionScreenState
       debugPrint('📱 Notification permission result: $status');
 
       if (status.isGranted) {
-        // For Samsung devices, also request battery optimization exemption
-        if (_isSamsungDevice && _needsBatteryOptimization) {
+        // All Android brands get the battery-exemption step; restricted OEM
+        // families also get their vendor Autostart/background-activity screen.
+        if (_needsBatteryOptimization || _needsOemAutostart) {
           await _requestBatteryOptimizationExemption();
         } else {
           _proceedToNextScreen();
@@ -127,10 +146,17 @@ class _NotificationPermissionScreenState
 
   Future<void> _requestBatteryOptimizationExemption() async {
     try {
-      await _batteryChannel.invokeMethod('requestIgnoreBatteryOptimizations');
-      // After user returns from settings, check again
-      await Future.delayed(const Duration(seconds: 1));
-      await _checkBatteryOptimization();
+      if (_needsBatteryOptimization) {
+        await _batteryChannel.invokeMethod('requestIgnoreBatteryOptimizations');
+        // After user returns from settings, check again
+        await Future.delayed(const Duration(seconds: 1));
+        await _checkBatteryOptimization();
+      }
+      // Vendor autostart/background-activity screen — this is the setting that
+      // actually decides whether FCM can wake a killed app on restricted ROMs.
+      if (_needsOemAutostart) {
+        await _batteryChannel.invokeMethod('openOemAutostartSettings');
+      }
       if (!_needsBatteryOptimization) {
         _proceedToNextScreen();
       }
@@ -222,8 +248,8 @@ class _NotificationPermissionScreenState
                   ],
                 ),
               ),
-              // Samsung battery optimization warning
-              if (_isSamsungDevice && _needsBatteryOptimization) ...[
+              // Battery/autostart warning for brands that restrict background work
+              if (_needsBatteryOptimization || _needsOemAutostart) ...[
                 const SizedBox(height: 12),
                 Container(
                   padding: const EdgeInsets.all(16),
@@ -242,7 +268,9 @@ class _NotificationPermissionScreenState
                           const SizedBox(width: 12),
                           Expanded(
                             child: Text(
-                              'Samsung Device Detected',
+                              _manufacturer.isEmpty
+                                  ? 'Background Restrictions Detected'
+                                  : '$_manufacturer Restricts Background Activity',
                               style: TextStyle(
                                 fontSize: 16,
                                 fontWeight: FontWeight.bold,
@@ -254,7 +282,7 @@ class _NotificationPermissionScreenState
                       ),
                       const SizedBox(height: 8),
                       Text(
-                        'To receive notifications when the app is closed, you must disable battery optimization for this app. Samsung devices restrict background notifications by default.',
+                        'To receive calls and notifications when the app is closed, please allow background activity for this app. Some phones restrict this by default.',
                         style: TextStyle(
                           fontSize: 14,
                           color: Colors.red.shade900,
@@ -318,28 +346,33 @@ class _NotificationPermissionScreenState
                             ),
                           )
                         : Text(
-                            _isSamsungDevice && _needsBatteryOptimization
-                                ? 'Allow Notifications & Disable Battery Optimization'
+                            _needsBatteryOptimization || _needsOemAutostart
+                                ? 'Allow Notifications & Enable Background Activity'
                                 : 'Allow Notifications',
                             style: const TextStyle(fontSize: 18),
                             textAlign: TextAlign.center,
                           ),
                   ),
                 ),
-                // Additional button for Samsung devices to manually open battery settings
-                if (_isSamsungDevice && _needsBatteryOptimization) ...[
+                // Additional button to manually open battery/autostart settings
+                if (_needsBatteryOptimization || _needsOemAutostart) ...[
                   const SizedBox(height: 12),
                   SizedBox(
                     width: double.infinity,
                     height: 56,
                     child: OutlinedButton.icon(
                       onPressed: () async {
-                        await _batteryChannel
-                            .invokeMethod('openBatterySettings');
+                        await _batteryChannel.invokeMethod(
+                          _needsOemAutostart
+                              ? 'openOemAutostartSettings'
+                              : 'openBatterySettings',
+                        );
                       },
                       icon: const Icon(Icons.battery_saver),
-                      label: const Text(
-                        'Open Battery Settings',
+                      label: Text(
+                        _needsOemAutostart
+                            ? 'Open Background Settings'
+                            : 'Open Battery Settings',
                         style: TextStyle(fontSize: 16),
                       ),
                       style: OutlinedButton.styleFrom(

@@ -243,6 +243,21 @@ class ChatSettingsScreen extends GetView<ChatController> {
           //   },
           // ),
           // const Divider(height: 1, indent: 56),
+          if (!controller.isGroup) ...[
+            Obx(
+              () => _buildSettingsTile(
+                icon: Icons.timer_outlined,
+                title: 'Disappearing Messages',
+                subtitle: controller.disappearingAfterSeconds.value > 0
+                    ? ChatController.disappearTimerLabel(
+                        controller.disappearingAfterSeconds.value)
+                    : 'Off',
+                iconColor: AppColors.info,
+                onTap: _showDisappearingPicker,
+              ),
+            ),
+            const Divider(height: 1, indent: 56),
+          ],
           Obx(
             () => _buildSettingsTile(
               icon: controller.isBlockedByMe.value
@@ -368,6 +383,65 @@ class ChatSettingsScreen extends GetView<ChatController> {
               : null),
       onTap: onTap,
       contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+    );
+  }
+
+  /// Disappearing-messages timer picker — Off / 24h / 7d / 90d.
+  void _showDisappearingPicker() {
+    const options = <int, String>{
+      0: 'Off',
+      86400: '24 Hours',
+      604800: '7 Days',
+      7776000: '90 Days',
+    };
+    Get.bottomSheet(
+      Container(
+        decoration: const BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+        ),
+        padding: const EdgeInsets.symmetric(vertical: 16),
+        child: SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 20, vertical: 4),
+                child: Text(
+                  'Disappearing Messages',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                ),
+              ),
+              Padding(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
+                child: Text(
+                  'New messages will disappear after the selected time',
+                  style: TextStyle(fontSize: 13, color: Colors.grey[600]),
+                ),
+              ),
+              const SizedBox(height: 8),
+              ...options.entries.map(
+                (e) => Obx(
+                  () => RadioListTile<int>(
+                    value: e.key,
+                    groupValue: controller.disappearingAfterSeconds.value,
+                    activeColor: AppColors.primary,
+                    title: Text(e.value),
+                    onChanged: (value) {
+                      Get.back();
+                      if (value != null) {
+                        controller.setDisappearingTimer(value);
+                      }
+                    },
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 

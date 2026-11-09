@@ -157,6 +157,49 @@ void main() {
       expect(await future, isFalse);
       expect(queried, isTrue);
     });
+
+    test('a resumed landing during the decision invalidates the stale pause',
+        () async {
+      // Cold-start answers can see paused->resumed in quick succession; a
+      // pause applied after `resumed` would leave the camera off (self-view
+      // missing) until the next resume.
+      final result = await CallController.resolveBackgroundCameraPause(
+        state: AppLifecycleState.paused,
+        nativeCallHeld: false,
+        pipEntering: false,
+        delay: Duration.zero,
+        isInPipMode: () async => false,
+        currentLifecycle: () => AppLifecycleState.resumed,
+      );
+      expect(result, isFalse);
+    });
+
+    test('still pauses when the app really stayed paused', () async {
+      final result = await CallController.resolveBackgroundCameraPause(
+        state: AppLifecycleState.paused,
+        nativeCallHeld: false,
+        pipEntering: false,
+        delay: Duration.zero,
+        isInPipMode: () async => false,
+        currentLifecycle: () => AppLifecycleState.paused,
+      );
+      expect(result, isTrue);
+    });
+
+    test('PiP entry while resumed-guard wired still wins over the pause',
+        () async {
+      // Inside PiP the camera must keep running — the guard must not turn
+      // a real PiP pause-suppression back into a pause.
+      final result = await CallController.resolveBackgroundCameraPause(
+        state: AppLifecycleState.paused,
+        nativeCallHeld: false,
+        pipEntering: true,
+        delay: Duration.zero,
+        isInPipMode: () async => true,
+        currentLifecycle: () => AppLifecycleState.paused,
+      );
+      expect(result, isFalse);
+    });
   });
 
   group('PiP layout — VideoCallPipLayout', () {

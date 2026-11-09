@@ -57,6 +57,14 @@ class MessageEntity {
   final int? audioDuration;
   final String? waveformData;
 
+  /// Emoji reactions — reacterDeviceId -> emoji char.
+  /// Local-only metadata; syncs via the `message_reaction` socket event.
+  final Map<String, String> reactions;
+
+  /// Disappearing-message expiry — unix epoch ms, null = never expires.
+  /// Stamped at save time from the chat's `disappearingAfterSeconds`.
+  final int? expiresAt;
+
   MessageEntity({
     required this.id,
     required this.chatId,
@@ -79,7 +87,12 @@ class MessageEntity {
     this.isCompressed,
     this.audioDuration,
     this.waveformData,
+    this.reactions = const {},
+    this.expiresAt,
   });
+
+  bool get isExpired =>
+      expiresAt != null && DateTime.now().millisecondsSinceEpoch > expiresAt!;
 
   Map<String, dynamic> toJson() {
     return {
@@ -104,6 +117,8 @@ class MessageEntity {
       'isCompressed': isCompressed,
       'audioDuration': audioDuration,
       'waveformData': waveformData,
+      'reactions': reactions,
+      'expiresAt': expiresAt,
     };
   }
 
@@ -141,6 +156,10 @@ class MessageEntity {
       isCompressed: json['isCompressed'] as bool?,
       audioDuration: json['audioDuration'] as int?,
       waveformData: json['waveformData'] as String?,
+      reactions: json['reactions'] is Map
+          ? Map<String, String>.from(json['reactions'] as Map)
+          : const {},
+      expiresAt: json['expiresAt'] as int?,
     );
   }
 
@@ -166,6 +185,8 @@ class MessageEntity {
     bool? isCompressed,
     int? audioDuration,
     String? waveformData,
+    Map<String, String>? reactions,
+    int? expiresAt,
   }) {
     return MessageEntity(
       id: id ?? this.id,
@@ -189,6 +210,8 @@ class MessageEntity {
       isCompressed: isCompressed ?? this.isCompressed,
       audioDuration: audioDuration ?? this.audioDuration,
       waveformData: waveformData ?? this.waveformData,
+      reactions: reactions ?? this.reactions,
+      expiresAt: expiresAt ?? this.expiresAt,
     );
   }
 }
@@ -209,6 +232,9 @@ enum MessageType {
 
   // @HiveField(4)
   audio,
+
+  // @HiveField(5)
+  call,
 }
 
 // @HiveType(typeId: 2)
