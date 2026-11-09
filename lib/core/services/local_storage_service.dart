@@ -64,8 +64,8 @@ class LocalStorageService extends GetxService {
   /// Extracts `callerId -> displayName` pairs from the `chat_name_*`
   /// SharedPreferences keys, for seeding the native cache. Names only —
   /// no messages, no keys. Exposed for tests.
-  static Map<String, String> contactNameCacheEntries(
-      SharedPreferences prefs, {int limit = _contactNameCacheLimit}) {
+  static Map<String, String> contactNameCacheEntries(SharedPreferences prefs,
+      {int limit = _contactNameCacheLimit}) {
     final result = <String, String>{};
     for (final key in prefs.getKeys()) {
       if (result.length >= limit) break;
@@ -535,6 +535,37 @@ class LocalStorageService extends GetxService {
   }
 
   // Message operations
+  /// Delete every stored message whose `expiresAt` has passed — box rows and
+  /// in-memory index entries. Returns the expired message ids (empty when the
+  /// box isn't open yet). Messages with `expiresAt == null` are untouched.
+  Future<Set<String>> purgeExpiredMessages() async {
+    final expired = <String>{};
+    try {
+      if (!_messagesBoxInitialized) return expired;
+      await _ensureMessagesBoxOpen();
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final keysToDelete = <dynamic>[];
+      for (final key in _messagesBox.keys) {
+        final value = _messagesBox.get(key);
+        if (value is! Map) continue;
+        final expiresAt = value['expiresAt'];
+        if (expiresAt is int && expiresAt <= now) {
+          keysToDelete.add(key);
+          expired.add(key.toString());
+        }
+      }
+      if (keysToDelete.isEmpty) return expired;
+      await _messagesBox.deleteAll(keysToDelete);
+      for (final list in _chatMessageIndex.values) {
+        list.removeWhere(expired.contains);
+      }
+      debugPrint('🗑️ Purged ${keysToDelete.length} expired message(s)');
+    } catch (e) {
+      debugPrint('🗑️ purgeExpiredMessages error: $e');
+    }
+    return expired;
+  }
+
   Future<List<MessageEntity>> getChatMessages(String chatId) async {
     final getStart = DateTime.now();
     try {
@@ -544,6 +575,9 @@ class LocalStorageService extends GetxService {
         _ensureMessagesBoxOpen();
         return [];
       }
+
+      // Drop disappeared messages before they reach the UI
+      await purgeExpiredMessages();
 
       // Use index for fast lookup if available
       final indexStart = DateTime.now();
@@ -685,12 +719,26 @@ class LocalStorageService extends GetxService {
         }
       }
 
+      // Stamp disappearing-message expiry from the chat's timer when the
+      // sender didn't already set one (covers socket, FCM and group paths).
+      if (messageToSave.expiresAt == null) {
+        final chatTimer = getChat(message.chatId)?.disappearingAfterSeconds;
+        if (chatTimer != null && chatTimer > 0) {
+          messageToSave = messageToSave.copyWith(
+            expiresAt: messageToSave.timestamp.millisecondsSinceEpoch +
+                chatTimer * 1000,
+          );
+        }
+      }
+
       final jsonData = messageToSave.toJson();
       debugPrint(
           '💬 Saving message: ${message.id} for chat ${message.chatId} with status: ${message.status}');
       await _messagesBox.put(message.id, jsonData);
-      // Update in-memory index
-      _chatMessageIndex.putIfAbsent(message.chatId, () => []).add(message.id);
+      // Update in-memory index (idempotent — deterministic ids are
+      // re-saved on status updates and must not index twice)
+      final indexList = _chatMessageIndex.putIfAbsent(message.chatId, () => []);
+      if (!indexList.contains(message.id)) indexList.add(message.id);
       debugPrint(
           '💬 Message saved successfully. Box now has ${_messagesBox.length} messages');
     } catch (e) {
@@ -705,6 +753,8 @@ class LocalStorageService extends GetxService {
       String displayMessage = message.content;
       if (message.type == MessageType.image) {
         displayMessage = '📷 Photo';
+      } else if (message.type == MessageType.call) {
+        displayMessage = '📞 Call';
       }
 
       final updatedChat = chat.copyWith(
@@ -712,6 +762,40 @@ class LocalStorageService extends GetxService {
         lastMessageTime: message.timestamp,
       );
       await saveChat(updatedChat);
+    }
+  }
+
+  /// Write a complete reactions map onto the stored message JSON.
+  ///
+  /// Box-level write — must NOT go through [saveMessage] because stored text
+  /// content is already encrypted; re-saving would double-encrypt it.
+  Future<bool> setMessageReactions(
+    String messageId,
+    Map<String, String> reactions,
+  ) async {
+    try {
+      await _ensureMessagesBoxOpen();
+      final value = _messagesBox.get(messageId);
+      if (value is! Map) return false;
+      final jsonMap = Map<String, dynamic>.from(value)
+        ..['reactions'] = reactions;
+      await _messagesBox.put(messageId, jsonMap);
+      return true;
+    } catch (e) {
+      debugPrint('💬 setMessageReactions error for $messageId: $e');
+      return false;
+    }
+  }
+
+  /// Read a message's raw stored JSON (reactions-only callers; content stays
+  /// encrypted). Returns null when absent.
+  Future<Map<String, dynamic>?> getStoredMessageJson(String messageId) async {
+    try {
+      await _ensureMessagesBoxOpen();
+      final value = _messagesBox.get(messageId);
+      return value is Map ? Map<String, dynamic>.from(value) : null;
+    } catch (_) {
+      return null;
     }
   }
 
@@ -1103,8 +1187,8 @@ class LocalStorageService extends GetxService {
       return true;
     }
     final resetSequence = entry['capabilityResetSeq'];
-    final acceptingReset = entry['capabilityReset'] == true &&
-        resetSequence is num;
+    final acceptingReset =
+        entry['capabilityReset'] == true && resetSequence is num;
     final resetCapabilities = <String>{};
     if (acceptingReset) {
       final announced = entry['capabilityResetCapabilities'];

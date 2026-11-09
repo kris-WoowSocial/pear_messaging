@@ -41,6 +41,12 @@ class WebRTCCallService {
   String? _localSdp;
   String? _remoteSdp;
 
+  /// Set by CallController from ff_call_video_upgrade. When true, audio calls
+  /// pre-allocate a trackless video transceiver so [upgradeToVideo] can
+  /// swap in a camera track and renegotiate mid-call.
+  bool videoUpgradeEnabled = false;
+  bool _videoTransceiverPreallocated = false;
+
   // Call duration
   Timer? _durationTimer;
   int _callDurationSeconds = 0;
@@ -116,8 +122,7 @@ class WebRTCCallService {
   /// username/credential).
   static String _describeIceServer(Map<String, dynamic> server) {
     final urls = server['urls'];
-    final hasCreds =
-        server['username'] != null || server['credential'] != null;
+    final hasCreds = server['username'] != null || server['credential'] != null;
     final list = <String>[];
     if (urls is List) {
       for (final u in urls) {
@@ -233,6 +238,7 @@ class WebRTCCallService {
         await _peerConnection!.addTrack(track, _localStream!);
       }
       if (_currentCallId != callId) return false;
+      await _preallocateVideoTransceiver();
 
       // Verify tracks were added before creating offer
       final sendersBeforeOffer = await _peerConnection!.getSenders();
@@ -377,6 +383,7 @@ class WebRTCCallService {
         await _peerConnection!.addTrack(track, _localStream!);
       }
       if (_currentCallId != callId) return false;
+      await _preallocateVideoTransceiver();
 
       // Verify tracks were added before creating answer
       final sendersBeforeAnswer = await _peerConnection!.getSenders();
@@ -531,9 +538,8 @@ class WebRTCCallService {
       if (candidate.candidate != null && candidate.candidate!.isNotEmpty) {
         // Log only the candidate type (host/srflx/relay/prflx) — never the
         // address embedded in the candidate string.
-        final candType = RegExp(r'\btyp\s+(\w+)')
-            .firstMatch(candidate.candidate!)
-            ?.group(1);
+        final candType =
+            RegExp(r'\btyp\s+(\w+)').firstMatch(candidate.candidate!)?.group(1);
         if (candType != null) CallPhaseLogger.markOnce('cand_$candType');
         onIceCandidate?.call(
           candidate.candidate!,
@@ -604,7 +610,8 @@ class WebRTCCallService {
                 AppleAudioIOMode.localAndRemote,
                 preferSpeakerOutput: false,
               );
-              debugPrint('iOS call audio configured for local and remote media');
+              debugPrint(
+                  'iOS call audio configured for local and remote media');
             } catch (e) {
               debugPrint('Failed to configure iOS call audio: $e');
             }
@@ -780,6 +787,132 @@ class WebRTCCallService {
     debugPrint('📞 Camera set to: $_isCameraEnabled');
     _logMirrorState('setCameraEnabled($enabled)');
     await _logVideoSenderState('after setCameraEnabled($enabled)');
+  }
+
+  /// Pre-allocate a trackless video transceiver on an audio call so a later
+  /// camera-on can replaceTrack + renegotiate without needing a new m-line.
+  /// No-op for video calls, when the flag is off, or when the remote offer
+  /// already carries a video section (the transceiver exists already).
+  Future<void> _preallocateVideoTransceiver() async {
+    if (!videoUpgradeEnabled ||
+        _peerConnection == null ||
+        _isVideoCall ||
+        _videoTransceiverPreallocated) {
+      return;
+    }
+    if (_remoteSdp != null &&
+        CallMediaHelper.hasVideoMediaSection(_remoteSdp!)) {
+      return;
+    }
+    try {
+      await _peerConnection!.addTransceiver(
+        kind: RTCRtpMediaType.RTCRtpMediaTypeVideo,
+        init: RTCRtpTransceiverInit(direction: TransceiverDirection.SendRecv),
+      );
+      _videoTransceiverPreallocated = true;
+      debugPrint('📹 Video transceiver pre-allocated for mid-call upgrade');
+    } catch (e) {
+      debugPrint('⚠️ Video transceiver pre-allocation failed: $e');
+    }
+  }
+
+  /// Upgrade a live audio call to video: capture the camera, attach it to
+  /// the pre-allocated video transceiver and renegotiate over the existing
+  /// ice_restart signaling channel. Returns false on any failure — the call
+  /// stays audio-only and the audio path is never disturbed.
+  Future<bool> upgradeToVideo() async {
+    if (!videoUpgradeEnabled ||
+        _peerConnection == null ||
+        _localStream == null ||
+        _isVideoCall) {
+      return false;
+    }
+    try {
+      if (!await _requestCameraPermission()) {
+        onCameraPermissionDenied?.call();
+        return false;
+      }
+      if (Platform.isAndroid && onEnsureMediaForegroundService != null) {
+        await onEnsureMediaForegroundService!();
+      }
+
+      final stream = await navigator.mediaDevices.getUserMedia(
+        CallMediaHelper.mediaConstraints(video: true),
+      );
+      final videoTrack = stream.getVideoTracks().firstOrNull;
+      if (videoTrack == null) {
+        stream.getTracks().forEach((t) => t.stop());
+        await stream.dispose();
+        return false;
+      }
+      // This capture produced a second mic track we don't need — the call's
+      // audio already lives on _localStream.
+      stream.getAudioTracks().forEach((t) => t.stop());
+      await _localStream!.addTrack(videoTrack);
+      _isFrontCamera = true;
+
+      // Attach to the pre-allocated transceiver (sender.track == null) or any
+      // existing video transceiver; fall back to addTrack if neither exists.
+      final transceivers = await _peerConnection!.getTransceivers();
+      RTCRtpTransceiver? videoTx;
+      for (final t in transceivers) {
+        if (t.sender.track?.kind == 'video' ||
+            t.receiver.track?.kind == 'video') {
+          videoTx = t;
+          break;
+        }
+        if (t.sender.track == null) videoTx ??= t;
+      }
+      if (videoTx == null) {
+        await _peerConnection!.addTrack(videoTrack, _localStream!);
+      } else {
+        await videoTx.sender.replaceTrack(videoTrack);
+        try {
+          await videoTx.setDirection(TransceiverDirection.SendRecv);
+        } catch (_) {}
+      }
+
+      _isVideoCall = true;
+      _isCameraEnabled = true;
+      _isSpeakerOn = true;
+      await _applyVideoBitrateCap();
+      await _configureAudioSession(speakerOn: true, preferBluetooth: true);
+      // Re-fire so the UI binds the new track to the self-view renderer.
+      onLocalStream?.call(_localStream!);
+      final renegotiated = await _sendRenegotiationOffer();
+      _logMirrorState('upgradeToVideo', extra: 'renegotiated=$renegotiated');
+      return true;
+    } catch (e) {
+      debugPrint('❌ upgradeToVideo failed: $e');
+      return false;
+    }
+  }
+
+  /// Re-offer the current session after a media-section change (video
+  /// upgrade). Reuses the ice_restart channel — it is a generic
+  /// renegotiation pipe with DTLS-fingerprint validation and glare
+  /// tie-break already implemented.
+  Future<bool> _sendRenegotiationOffer() async {
+    if (_peerConnection == null || _iceRestartInProgress) return false;
+    try {
+      _iceRestartInProgress = true;
+      final offer = await _peerConnection!.createOffer();
+      if (offer.sdp == null ||
+          _localSdp == null ||
+          !CallMediaHelper.sameDtlsFingerprints(_localSdp!, offer.sdp!)) {
+        _iceRestartInProgress = false;
+        debugPrint('❌ Renegotiation aborted: DTLS fingerprint changed');
+        return false;
+      }
+      await _peerConnection!.setLocalDescription(offer);
+      _localSdp = offer.sdp;
+      onIceRestartDescription?.call(offer.sdp!, true);
+      return true;
+    } catch (e) {
+      _iceRestartInProgress = false;
+      debugPrint('❌ Renegotiation offer failed: $e');
+      return false;
+    }
   }
 
   /// Switch between front and rear cameras when a video track is active.
@@ -958,6 +1091,7 @@ class WebRTCCallService {
     _isCameraEnabled = false;
     _isFrontCamera = true;
     _iceRestartInProgress = false;
+    _videoTransceiverPreallocated = false;
     _localSdp = null;
     _remoteSdp = null;
     _callDurationSeconds = 0;
@@ -1178,8 +1312,7 @@ class WebRTCCallService {
       try {
         final stats = await _peerConnection!.getStats();
         for (final report in stats) {
-          if ((report.type == 'outbound-rtp' ||
-                  report.type == 'inbound-rtp') &&
+          if ((report.type == 'outbound-rtp' || report.type == 'inbound-rtp') &&
               (report.values['kind'] == 'video')) {
             final id = report.values['id'];
             final bytesSent = report.values['bytesSent'];

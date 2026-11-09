@@ -78,6 +78,11 @@ class ChatController extends GetxController with WidgetsBindingObserver {
   final RxString recipientStatus = ''.obs; // For UI display
   final RxBool isMuted = false.obs; // Notification mute status for this chat
 
+  /// Disappearing-messages timer for this chat (seconds; 0 = off).
+  /// Mirror of `ChatEntity.disappearingAfterSeconds` for reactive UI.
+  final RxInt disappearingAfterSeconds = 0.obs;
+  Timer? _expiryPurgeTimer;
+
   // Reply state management
   final Rx<ReplyToEntity?> replyToMessage = Rx<ReplyToEntity?>(null);
 
@@ -205,6 +210,14 @@ class ChatController extends GetxController with WidgetsBindingObserver {
     });
     _isScreenActive = true;
     debugPrint('📱 ChatController.onInit: _isScreenActive set to true');
+
+    // Disappearing messages: hydrate the timer and start the purge worker.
+    disappearingAfterSeconds.value =
+        _storageService.getChat(chatId)?.disappearingAfterSeconds ?? 0;
+    _expiryPurgeTimer = Timer.periodic(
+      const Duration(minutes: 1),
+      (_) => _purgeExpiredFromUi(),
+    );
 
     // Register lifecycle observer to detect app background/foreground
     WidgetsBinding.instance.addObserver(this);
@@ -363,6 +376,8 @@ class ChatController extends GetxController with WidgetsBindingObserver {
   Function(Map<String, dynamic>)? _previousMessageHandler;
   Function(Map<String, dynamic>)? _previousGroupMessageHandler;
   Function(Map<String, dynamic>)? _previousGroupTypingHandler;
+  Function(Map<String, dynamic>)? _previousReactionHandler;
+  Function(Map<String, dynamic>)? _previousDisappearHandler;
 
   /// Check recipient's online presence
   void _checkRecipientPresence() {
@@ -566,6 +581,10 @@ class ChatController extends GetxController with WidgetsBindingObserver {
   void _setupSocketListeners() {
     // Store the previous handler (from ChatListController)
     _previousMessageHandler = _socketService.onMessageReceived;
+    _previousReactionHandler = _socketService.onMessageReaction;
+    _socketService.onMessageReaction = _handleIncomingReaction;
+    _previousDisappearHandler = _socketService.onDisappearTimerSet;
+    _socketService.onDisappearTimerSet = _handleDisappearTimerSet;
 
     // Setup presence listeners when socket connects
     _setupPresenceListeners();
@@ -709,7 +728,7 @@ class ChatController extends GetxController with WidgetsBindingObserver {
                         isMe: false,
                       ));
           if (savedMessage.id.isNotEmpty) {
-            messages.add(ChatMessageModel.fromEntity(savedMessage));
+            _appendMessage(savedMessage);
             _scrollToBottom();
             // Mark as read if screen is active
             if (_isScreenActive) {
@@ -773,12 +792,15 @@ class ChatController extends GetxController with WidgetsBindingObserver {
           isCompressed: data['compressed'] as bool?,
           audioDuration: data['duration'] as int?,
           waveformData: data['waveformData'] as String?,
+          // Sender-stamped expiry wins; saveMessage stamps one from the
+          // chat timer when the payload doesn't carry it.
+          expiresAt: (data['expiresAt'] as num?)?.toInt(),
         );
 
         await _storageService.saveMessage(message);
 
         // Add message to chat
-        messages.add(ChatMessageModel.fromEntity(message));
+        _appendMessage(message);
 
         // Send read ack only if screen is active
         if (_isScreenActive) {
@@ -916,7 +938,7 @@ class ChatController extends GetxController with WidgetsBindingObserver {
           ),
         );
         if (savedMessage.id.isNotEmpty) {
-          messages.add(ChatMessageModel.fromEntity(savedMessage));
+          _appendMessage(savedMessage);
           _scrollToBottom();
           if (_isScreenActive) {
             _socketService.sendGroupReadAck(
@@ -978,7 +1000,7 @@ class ChatController extends GetxController with WidgetsBindingObserver {
       );
 
       await _storageService.saveMessage(message);
-      messages.add(ChatMessageModel.fromEntity(message));
+      _appendMessage(message);
 
       if (_isScreenActive) {
         _socketService.sendGroupReadAck(messageId: messageId, groupId: groupId);
@@ -1198,7 +1220,7 @@ class ChatController extends GetxController with WidgetsBindingObserver {
         );
 
         // Add to UI immediately with sending status
-        messages.add(ChatMessageModel.fromEntity(message));
+        _appendMessage(message);
         messages.refresh(); // Force UI update
 
         // Save locally
@@ -1243,6 +1265,7 @@ class ChatController extends GetxController with WidgetsBindingObserver {
 
     final messageId = _uuid.v4();
     final timestamp = DateTime.now();
+    final expiresAt = _newMessageExpiresAt;
 
     // Create message entity with reply metadata if present
     final message = MessageEntity(
@@ -1255,10 +1278,11 @@ class ChatController extends GetxController with WidgetsBindingObserver {
       status: MessageStatus.sending,
       isMe: true,
       replyTo: replyToMessage.value,
+      expiresAt: expiresAt,
     );
 
     // Add to UI
-    messages.add(ChatMessageModel.fromEntity(message));
+    _appendMessage(message);
 
     // Clear input and reply state
     messageController.clear();
@@ -1295,6 +1319,7 @@ class ChatController extends GetxController with WidgetsBindingObserver {
         recipientDeviceId: recipientDeviceId,
         content: text,
         replyTo: replyToData,
+        expiresAt: expiresAt,
       )
           .then((success) {
         // Don't update status locally - wait for server status update
@@ -1486,7 +1511,7 @@ class ChatController extends GetxController with WidgetsBindingObserver {
       type: MessageType.image,
     );
 
-    messages.add(ChatMessageModel.fromEntity(message));
+    _appendMessage(message);
     messages.refresh();
     _scrollToBottom();
     return messageId;
@@ -1516,6 +1541,7 @@ class ChatController extends GetxController with WidgetsBindingObserver {
     );
 
     messages[index] = ChatMessageModel.fromEntity(message);
+    _upsertEntity(message);
     messages.refresh();
     _storageService.saveMessage(message);
     _updateChatListAfterSending('📷 Photo', timestamp);
@@ -1531,6 +1557,7 @@ class ChatController extends GetxController with WidgetsBindingObserver {
               messageId: messageId,
               recipientDeviceId: recipientDeviceId,
               mediaToken: token,
+              expiresAt: _newMessageExpiresAt,
             );
 
       if (success) {
@@ -1564,8 +1591,8 @@ class ChatController extends GetxController with WidgetsBindingObserver {
   Future<bool> uploadPendingImage(String messageId) async {
     if (messages.indexWhere((msg) => msg.id == messageId) == -1) return false;
     try {
-      final bytes = await Get.find<ImageCacheService>()
-          .getCachedImageById(messageId);
+      final bytes =
+          await Get.find<ImageCacheService>().getCachedImageById(messageId);
       if (bytes == null || bytes.isEmpty) {
         debugPrint('❌ No cached bytes for pending image $messageId');
         await _updateMessageStatusIfNotRead(messageId, MessageStatus.failed);
@@ -1652,7 +1679,7 @@ class ChatController extends GetxController with WidgetsBindingObserver {
       fileSize: fileSize,
     );
 
-    messages.add(ChatMessageModel.fromEntity(message));
+    _appendMessage(message);
     messages.refresh();
     _scrollToBottom();
     return messageId;
@@ -1691,6 +1718,7 @@ class ChatController extends GetxController with WidgetsBindingObserver {
     );
 
     messages[index] = ChatMessageModel.fromEntity(message);
+    _upsertEntity(message);
     messages.refresh();
     _storageService.saveMessage(message);
     _updateChatListAfterSending('📎 $fileName', timestamp);
@@ -1712,6 +1740,7 @@ class ChatController extends GetxController with WidgetsBindingObserver {
               fileName: fileName,
               fileSize: fileSize,
               isCompressed: isCompressed,
+              expiresAt: _newMessageExpiresAt,
             );
 
       if (success) {
@@ -1773,7 +1802,7 @@ class ChatController extends GetxController with WidgetsBindingObserver {
       waveformData: waveformData,
     );
 
-    messages.add(ChatMessageModel.fromEntity(message));
+    _appendMessage(message);
     messages.refresh();
     _scrollToBottom();
     return messageId;
@@ -1810,6 +1839,7 @@ class ChatController extends GetxController with WidgetsBindingObserver {
     );
 
     messages[index] = ChatMessageModel.fromEntity(message);
+    _upsertEntity(message);
     messages.refresh();
     _storageService.saveMessage(message);
     _updateChatListAfterSending('🎤 Voice message', timestamp);
@@ -1829,6 +1859,7 @@ class ChatController extends GetxController with WidgetsBindingObserver {
               mediaToken: token,
               duration: duration,
               waveformData: waveformData,
+              expiresAt: _newMessageExpiresAt,
             );
 
       if (success) {
@@ -2098,6 +2129,7 @@ class ChatController extends GetxController with WidgetsBindingObserver {
             messageId: msg.id,
             recipientDeviceId: recipientDeviceId,
             mediaToken: token,
+            expiresAt: msg.expiresAt,
           );
         }
       } else {
@@ -2113,6 +2145,7 @@ class ChatController extends GetxController with WidgetsBindingObserver {
             messageId: msg.id,
             recipientDeviceId: recipientDeviceId,
             content: msg.content,
+            expiresAt: msg.expiresAt,
           );
         }
       }
@@ -2381,6 +2414,10 @@ class ChatController extends GetxController with WidgetsBindingObserver {
     if (_previousMessageHandler != null) {
       _socketService.onMessageReceived = _previousMessageHandler;
     }
+    _socketService.onMessageReaction = _previousReactionHandler;
+    _socketService.onDisappearTimerSet = _previousDisappearHandler;
+    _expiryPurgeTimer?.cancel();
+    _expiryPurgeTimer = null;
     if (_previousGroupMessageHandler != null) {
       _socketService.onGroupMessageReceived = _previousGroupMessageHandler;
     }
@@ -2684,6 +2721,199 @@ class ChatController extends GetxController with WidgetsBindingObserver {
         ),
       ),
     );
+  }
+
+  /// Toggle an emoji reaction on a message (WhatsApp-style: one emoji per
+  /// user — reacting again with the same emoji removes it, a different
+  /// emoji replaces it). Applies optimistically, then relays to the peer.
+  Future<void> toggleReaction(ChatMessageModel message, String emoji) async {
+    final reactions = Map<String, String>.from(message.reactions);
+    final action = reactions[myDeviceId] == emoji ? 'remove' : 'add';
+    if (action == 'add') {
+      reactions[myDeviceId] = emoji;
+    } else {
+      reactions.remove(myDeviceId);
+    }
+    await _applyReactionUpdate(message.id, reactions);
+
+    // Reactions relay 1:1 only — group fanout is a server-side follow-up.
+    if (!isGroup && recipientDeviceId.isNotEmpty) {
+      _socketService.sendReaction(
+        messageId: message.id,
+        chatId: chatId,
+        recipientId: recipientDeviceId,
+        emoji: emoji,
+        action: action,
+      );
+    }
+  }
+
+  /// Incoming reaction relayed by the server (peer reacted to a message).
+  /// Keys off the peer deviceId + messageId — the relayed chatId is the
+  /// sender's own chat key, not ours, so it must not be used for routing.
+  void _handleIncomingReaction(Map<String, dynamic> data) {
+    final messageId = data['messageId'] as String?;
+    final reactorId = data['senderDeviceId'] as String?;
+    final emoji = data['emoji'] as String?;
+    final action = data['action'] as String?;
+    if (messageId == null || reactorId == null || emoji == null) return;
+    if (reactorId != recipientDeviceId) return;
+
+    final idx = _allMessageEntities.indexWhere((m) => m.id == messageId);
+    if (idx >= 0) {
+      final reactions =
+          Map<String, String>.from(_allMessageEntities[idx].reactions);
+      if (action == 'add') {
+        reactions[reactorId] = emoji;
+      } else {
+        reactions.remove(reactorId);
+      }
+      unawaited(_applyReactionUpdate(messageId, reactions));
+      return;
+    }
+
+    // Message isn't in the loaded page (older than the window) — merge
+    // straight into the Hive box so it still renders on scroll-back.
+    unawaited(() async {
+      final json = await _storageService.getStoredMessageJson(messageId);
+      if (json == null) return;
+      final reactions = json['reactions'] is Map
+          ? Map<String, String>.from(json['reactions'] as Map)
+          : <String, String>{};
+      if (action == 'add') {
+        reactions[reactorId] = emoji;
+      } else {
+        reactions.remove(reactorId);
+      }
+      await _storageService.setMessageReactions(messageId, reactions);
+    }());
+  }
+
+  /// Keep `_allMessageEntities` authoritative — every path that adds or
+  /// finalizes a message must go through here so reactions, purge and
+  /// pagination can find the entity (a UI-only add used to leave reactions
+  /// dead until the next storage reload).
+  void _upsertEntity(MessageEntity entity) {
+    final idx = _allMessageEntities.indexWhere((m) => m.id == entity.id);
+    if (idx >= 0) {
+      _allMessageEntities[idx] = entity;
+    } else {
+      _allMessageEntities.add(entity);
+    }
+  }
+
+  /// Append a new message to both the entity store and the UI list.
+  void _appendMessage(MessageEntity entity) {
+    _upsertEntity(entity);
+    if (!messages.any((m) => m.id == entity.id)) {
+      messages.add(ChatMessageModel.fromEntity(entity));
+    }
+  }
+
+  /// Replace a message's reactions in memory, the Rx list and the Hive box.
+  Future<void> _applyReactionUpdate(
+    String messageId,
+    Map<String, String> reactions,
+  ) async {
+    final idx = _allMessageEntities.indexWhere((m) => m.id == messageId);
+    if (idx < 0) return;
+    _allMessageEntities[idx] =
+        _allMessageEntities[idx].copyWith(reactions: reactions);
+    final listIdx = messages.indexWhere((m) => m.id == messageId);
+    if (listIdx >= 0) {
+      messages[listIdx] = ChatMessageModel.fromEntity(_allMessageEntities[idx]);
+    }
+    await _storageService.setMessageReactions(messageId, reactions);
+  }
+
+  // ---------- Disappearing messages ----------
+
+  /// Human-readable label for a timer value (seconds).
+  static String disappearTimerLabel(int seconds) {
+    switch (seconds) {
+      case 86400:
+        return '24 hours';
+      case 604800:
+        return '7 days';
+      case 7776000:
+        return '90 days';
+      default:
+        return 'off';
+    }
+  }
+
+  /// Expiry (epoch ms) for a message being sent now, or null when the timer
+  /// is off. Storage re-derives this on every save path as a fallback.
+  int? get _newMessageExpiresAt {
+    final seconds = disappearingAfterSeconds.value;
+    if (seconds <= 0) return null;
+    return DateTime.now().millisecondsSinceEpoch + seconds * 1000;
+  }
+
+  /// Change this chat's disappearing-messages timer: persist, notify the
+  /// peer, and insert a system bubble. `seconds == 0` turns it off.
+  Future<void> setDisappearingTimer(int seconds) async {
+    disappearingAfterSeconds.value = seconds;
+    final chat = _storageService.getChat(chatId);
+    if (chat != null) {
+      await _storageService
+          .saveChat(chat.copyWith(disappearingAfterSeconds: seconds));
+    }
+    if (!isGroup && recipientDeviceId.isNotEmpty) {
+      _socketService.sendDisappearingTimer(
+        chatId: chatId,
+        recipientId: recipientDeviceId,
+        seconds: seconds,
+      );
+    }
+    await _insertSystemMessage(seconds > 0
+        ? 'You set disappearing messages to ${disappearTimerLabel(seconds)}'
+        : 'You turned disappearing messages off');
+  }
+
+  /// Peer changed the timer — mirror it and surface a system bubble.
+  void _handleDisappearTimerSet(Map<String, dynamic> data) {
+    final seconds = (data['disappearingAfterSeconds'] as num?)?.toInt();
+    final senderId = data['senderDeviceId'] as String?;
+    if (seconds == null || senderId != recipientDeviceId) return;
+
+    disappearingAfterSeconds.value = seconds;
+    final chat = _storageService.getChat(chatId);
+    if (chat != null) {
+      unawaited(_storageService
+          .saveChat(chat.copyWith(disappearingAfterSeconds: seconds)));
+    }
+    final name = displayName.value.isNotEmpty ? displayName.value : 'Contact';
+    unawaited(_insertSystemMessage(seconds > 0
+        ? '$name set disappearing messages to ${disappearTimerLabel(seconds)}'
+        : '$name turned disappearing messages off'));
+  }
+
+  /// Insert a lightweight centered system bubble into this chat thread.
+  Future<void> _insertSystemMessage(String text) async {
+    final entity = MessageEntity(
+      id: 'sys_${_uuid.v4()}',
+      chatId: chatId,
+      senderId: 'system',
+      receiverId: myDeviceId,
+      content: text,
+      timestamp: DateTime.now(),
+      status: MessageStatus.read,
+      isMe: false,
+      type: MessageType.system,
+    );
+    await _storageService.saveMessage(entity);
+    if (_isDisposed) return;
+    _appendMessage(entity);
+    _scrollToBottom();
+  }
+
+  /// Drop disappeared messages from the box and the in-memory lists.
+  Future<void> _purgeExpiredFromUi() async {
+    final expired = await _storageService.purgeExpiredMessages();
+    if (expired.isEmpty || _isDisposed) return;
+    _allMessageEntities.removeWhere((m) => expired.contains(m.id));
+    messages.removeWhere((m) => expired.contains(m.id));
   }
 
   /// Start replying to a message

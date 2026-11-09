@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:pear_messaging/core/services/api_service.dart';
@@ -43,6 +45,7 @@ class ChatListController extends GetxController {
   // User name editing state
   final RxBool isEditingName = false.obs;
   final RxString currentUserName = ''.obs;
+  Timer? _expiryPurgeTimer;
 
   @override
   void onInit() {
@@ -56,6 +59,13 @@ class ChatListController extends GetxController {
     loadConnectionRequests(); // Explicitly load connection requests before checking pending invitation
     _checkPendingInvitation();
     _setupSocketListeners();
+    // Disappearing messages: purge expired rows every minute. The box-level
+    // sweep is idempotent — safe alongside ChatController's purge, which
+    // owns UI-list pruning while a chat is open.
+    _expiryPurgeTimer = Timer.periodic(
+      const Duration(minutes: 1),
+      (_) => _storageService.purgeExpiredMessages(),
+    );
     _loadUserName();
     _syncExistingUsernames();
     _syncMembership();
@@ -287,6 +297,8 @@ class ChatListController extends GetxController {
   void _setupSocketListeners() {
     // Listen for incoming messages to create/update conversations
     _socketService.onMessageReceived = _handleIncomingMessage;
+    _socketService.onMessageReaction = _handleIncomingReaction;
+    _socketService.onDisappearTimerSet = _handleDisappearTimerSet;
     _socketService.onPendingMessages = _handlePendingMessages;
     _socketService.onGroupMessageReceived = _handleGroupMessage;
 
@@ -299,6 +311,75 @@ class ChatListController extends GetxController {
     _socketService.onGroupDissolved = _onGroupDissolved;
 
     _socketService.processPendingMessages();
+  }
+
+  /// Persist a peer's emoji reaction while no chat screen is open — storage
+  /// only; the bubble renders it on next open.
+  void _handleIncomingReaction(Map<String, dynamic> data) {
+    final messageId = data['messageId'] as String?;
+    final reactorId = data['senderDeviceId'] as String?;
+    final emoji = data['emoji'] as String?;
+    final action = data['action'] as String?;
+    if (messageId == null || reactorId == null || emoji == null) return;
+    unawaited(() async {
+      final json = await _storageService.getStoredMessageJson(messageId);
+      if (json == null) return;
+      final reactions = json['reactions'] is Map
+          ? Map<String, String>.from(json['reactions'] as Map)
+          : <String, String>{};
+      if (action == 'add') {
+        reactions[reactorId] = emoji;
+      } else {
+        reactions.remove(reactorId);
+      }
+      await _storageService.setMessageReactions(messageId, reactions);
+    }());
+  }
+
+  /// Persist a peer's disappearing-timer change while no chat screen is
+  /// open: update the stored ChatEntity and insert the system bubble so it
+  /// appears when the thread is next opened. The open-chat variant lives in
+  /// ChatController (handler swap), so the two never run together.
+  void _handleDisappearTimerSet(Map<String, dynamic> data) {
+    final seconds = (data['disappearingAfterSeconds'] as num?)?.toInt();
+    final senderId = data['senderDeviceId'] as String?;
+    if (seconds == null || senderId == null) return;
+    unawaited(() async {
+      // 1:1 chats are keyed by the peer's deviceId
+      final chat = _storageService.getChat(senderId);
+      if (chat != null) {
+        await _storageService
+            .saveChat(chat.copyWith(disappearingAfterSeconds: seconds));
+      }
+      final name =
+          (chat?.userName.isNotEmpty ?? false) ? chat!.userName : 'Contact';
+      await _storageService.saveMessage(MessageEntity(
+        id: 'sys_${_uuid.v4()}',
+        chatId: senderId,
+        senderId: 'system',
+        receiverId: _storageService.deviceId ?? '',
+        content: seconds > 0
+            ? '$name set disappearing messages to ${_disappearTimerLabel(seconds)}'
+            : '$name turned disappearing messages off',
+        timestamp: DateTime.now(),
+        status: MessageStatus.read,
+        isMe: false,
+        type: MessageType.system,
+      ));
+    }());
+  }
+
+  static String _disappearTimerLabel(int seconds) {
+    switch (seconds) {
+      case 86400:
+        return '24 hours';
+      case 604800:
+        return '7 days';
+      case 7776000:
+        return '90 days';
+      default:
+        return 'off';
+    }
   }
 
   Future<void> _handleIncomingMessage(Map<String, dynamic> data) async {
@@ -1244,8 +1325,7 @@ class ChatListController extends GetxController {
   }
 
   /// Initialize chat from scanned QR code - now sends connection request
-  Future<void> initializeChatFromQR(String deviceId,
-      {String? userName}) async {
+  Future<void> initializeChatFromQR(String deviceId, {String? userName}) async {
     try {
       // Check if chat already exists in memory list
       ChatListModel? existingChatModel = chats.firstWhereOrNull(
@@ -1368,6 +1448,8 @@ class ChatListController extends GetxController {
 
   @override
   void onClose() {
+    _expiryPurgeTimer?.cancel();
+    _expiryPurgeTimer = null;
     searchController.dispose();
     super.onClose();
   }

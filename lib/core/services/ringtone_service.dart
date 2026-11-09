@@ -34,6 +34,7 @@ class RingtoneService {
 
   bool _isPlaying = false;
   AudioPlayer? _ringbackPlayer;
+  AudioPlayer? _busyPlayer;
   // Direction tracking: which tone is playing and for which call, so a stale
   // reset from a previous call can never stop a newer call's outgoing tone or
   // a live incoming ringtone.
@@ -262,6 +263,36 @@ class RingtoneService {
     debugPrint('🔔 RingtoneService: Ringback player started (iOS)');
   }
 
+  /// PSTN busy signal for ~3-4s after a busy rejection. Android uses the
+  /// native TONE_SUP_BUSY generator on STREAM_VOICE_CALL (auto-stops);
+  /// iOS plays a generated busy.wav through the still-active call session.
+  Future<void> playBusyTone() async {
+    try {
+      if (Platform.isAndroid) {
+        await _audioChannel.invokeMethod('playBusyTone');
+      } else {
+        await _busyPlayer?.dispose();
+        _busyPlayer = AudioPlayer();
+        try {
+          final session = await audio_session.AudioSession.instance;
+          await session.setActive(true);
+        } catch (_) {}
+        await _busyPlayer!.setVolume(0.8);
+        await _busyPlayer!.setReleaseMode(ReleaseMode.release);
+        unawaited(
+          _busyPlayer!.onPlayerComplete.first.then((_) async {
+            await _busyPlayer?.dispose();
+            _busyPlayer = null;
+          }),
+        );
+        await _busyPlayer!.play(AssetSource('audio/busy.wav'));
+      }
+      debugPrint('🔔 RingtoneService: Busy tone started');
+    } catch (e) {
+      debugPrint('❌ RingtoneService: Busy tone failed: $e');
+    }
+  }
+
   /// Play outgoing call tone (single beep)
   Future<void> playOutgoingTone() async {
     try {
@@ -316,8 +347,7 @@ class RingtoneService {
 
     if (Platform.isAndroid) {
       try {
-        await _audioChannel
-            .invokeMethod('stopRingback', {'reason': reason});
+        await _audioChannel.invokeMethod('stopRingback', {'reason': reason});
       } catch (e) {
         debugPrint('⚠️ RingtoneService: Could not stop native ringback: $e');
       }
@@ -346,8 +376,7 @@ class RingtoneService {
     // Stop native ringback on Android
     if (Platform.isAndroid) {
       try {
-        await _audioChannel
-            .invokeMethod('stopRingback', {'reason': reason});
+        await _audioChannel.invokeMethod('stopRingback', {'reason': reason});
       } catch (e) {
         debugPrint('⚠️ RingtoneService: Could not stop native ringback: $e');
       }

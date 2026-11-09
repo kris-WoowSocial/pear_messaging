@@ -175,6 +175,13 @@ class _ActiveCallScreenState extends State<ActiveCallScreen> {
                           isActive: controller.isSpeakerOn.value,
                           onTap: () => controller.toggleSpeaker(),
                         ),
+                        if (controller.canUpgradeToVideo)
+                          _buildControlButton(
+                            icon: Icons.videocam,
+                            label: 'Video',
+                            isActive: false,
+                            onTap: () => controller.setCameraEnabled(true),
+                          ),
                       ],
                     ),
                   ),

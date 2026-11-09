@@ -256,6 +256,9 @@ class MainActivity : FlutterFragmentActivity() {
                     stopRingback(call.argument<String>("reason"))
                     result.success(null)
                 }
+                "playBusyTone" -> {
+                    result.success(playBusyTone())
+                }
                 else -> {
                     result.notImplemented()
                 }
@@ -1234,6 +1237,29 @@ class MainActivity : FlutterFragmentActivity() {
             true
         } catch (e: Exception) {
             println("Error starting ringback: $e")
+            false
+        }
+    }
+
+    /// Play the PSTN busy signal (TONE_SUP_BUSY handles the 500ms on/off
+    /// cadence itself) through the voice-call stream for ~3 seconds, then
+    /// release. Shared with the ringback cleanup path.
+    private fun playBusyTone(): Boolean {
+        stopRingback()
+        return try {
+            val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            if (audioManager.mode != AudioManager.MODE_IN_COMMUNICATION) {
+                audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+            }
+            toneGenerator = ToneGenerator(AudioManager.STREAM_VOICE_CALL, 80)
+            val handler = Handler(Looper.getMainLooper())
+            ringbackHandler = handler
+            toneGenerator?.startTone(ToneGenerator.TONE_SUP_BUSY)
+            handler.postDelayed({ stopRingback("busy_done") }, 3000)
+            println("Busy tone started via ToneGenerator on STREAM_VOICE_CALL")
+            true
+        } catch (e: Exception) {
+            println("Error starting busy tone: $e")
             false
         }
     }

@@ -67,6 +67,8 @@ class SocketService extends GetxService {
   Function(Map<String, dynamic>)? onCallResync;
   Function(Map<String, dynamic>)? onCalleeConnecting;
   Function(Map<String, dynamic>)? onCallStatusResponse;
+  Function(Map<String, dynamic>)? onMessageReaction;
+  Function(Map<String, dynamic>)? onDisappearTimerSet;
 
   // Callbacks for group chat events
   Function(Map<String, dynamic>)? onGroupMessageReceived;
@@ -631,6 +633,22 @@ class SocketService extends GetxService {
       }
     });
 
+    // Chat: emoji reaction on a message (real-time relay, 1:1 only)
+    _socket?.on('message_reaction', (data) {
+      debugPrint('👍 Message reaction: $data');
+      if (onMessageReaction != null && data != null) {
+        onMessageReaction!(Map<String, dynamic>.from(data));
+      }
+    });
+
+    // Chat: peer changed the disappearing-messages timer
+    _socket?.on('disappear_timer_set', (data) {
+      debugPrint('⏱️ Disappear timer set: $data');
+      if (onDisappearTimerSet != null && data != null) {
+        onDisappearTimerSet!(Map<String, dynamic>.from(data));
+      }
+    });
+
     // Group chat: incoming message
     _socket?.on('group_message', (data) {
       debugPrint('👥 Group message: $data');
@@ -922,6 +940,7 @@ class SocketService extends GetxService {
     bool? isCompressed,
     int? duration,
     String? waveformData,
+    int? expiresAt,
   }) async {
     if (!isConnected.value) {
       debugPrint('❌ Cannot send message: not connected');
@@ -994,6 +1013,9 @@ class SocketService extends GetxService {
       if (isCompressed != null) 'compressed': isCompressed,
       if (duration != null) 'duration': duration,
       if (waveformData != null) 'waveformData': waveformData,
+      // Disappearing messages: sender-stamped expiry so the receiver
+      // deletes at the same deadline even if its timer state is stale.
+      if (expiresAt != null) 'expiresAt': expiresAt,
     };
 
     _socket?.emit('send_message', messageData);
@@ -1051,6 +1073,7 @@ class SocketService extends GetxService {
     required String messageId,
     required String recipientDeviceId,
     required String mediaToken,
+    int? expiresAt,
   }) async {
     debugPrint('📷 SocketService.sendMediaMessage token=$mediaToken');
 
@@ -1064,6 +1087,7 @@ class SocketService extends GetxService {
       messageId: messageId,
       recipientDeviceId: recipientDeviceId,
       content: 'MEDIA:$mediaToken',
+      expiresAt: expiresAt,
     );
   }
 
@@ -1075,6 +1099,7 @@ class SocketService extends GetxService {
     required String fileName,
     required int fileSize,
     bool isCompressed = false,
+    int? expiresAt,
   }) async {
     debugPrint(
         '📎 SocketService.sendFileMessage token=$mediaToken file=$fileName');
@@ -1091,6 +1116,7 @@ class SocketService extends GetxService {
       fileName: fileName,
       fileSize: fileSize,
       isCompressed: isCompressed,
+      expiresAt: expiresAt,
     );
   }
 
@@ -1101,6 +1127,7 @@ class SocketService extends GetxService {
     required String mediaToken,
     required int duration,
     String? waveformData,
+    int? expiresAt,
   }) async {
     debugPrint(
         '🎤 SocketService.sendAudioMessage token=$mediaToken duration=$duration');
@@ -1118,6 +1145,7 @@ class SocketService extends GetxService {
       fileSize: duration,
       duration: duration,
       waveformData: waveformData,
+      expiresAt: expiresAt,
     );
   }
 
@@ -1747,6 +1775,45 @@ class SocketService extends GetxService {
   }
 
   /// Notify the peer that local camera transmission changed.
+  /// Emit an emoji reaction for a 1:1 message. action: 'add' | 'remove'.
+  void sendReaction({
+    required String messageId,
+    required String chatId,
+    required String recipientId,
+    required String emoji,
+    required String action,
+  }) {
+    if (!isConnected.value) {
+      debugPrint('❌ Cannot send reaction: not connected');
+      return;
+    }
+    _socket?.emit('message_reaction', {
+      'messageId': messageId,
+      'chatId': chatId,
+      'recipientId': recipientId,
+      'emoji': emoji,
+      'action': action,
+    });
+  }
+
+  /// Notify the peer that this chat's disappearing-messages timer changed.
+  /// `seconds` of 0 disables the timer. Real-time relay — dropped if offline.
+  void sendDisappearingTimer({
+    required String chatId,
+    required String recipientId,
+    required int seconds,
+  }) {
+    if (!isConnected.value) {
+      debugPrint('❌ Cannot send disappear_timer_set: not connected');
+      return;
+    }
+    _socket?.emit('disappear_timer_set', {
+      'chatId': chatId,
+      'recipientId': recipientId,
+      'disappearingAfterSeconds': seconds,
+    });
+  }
+
   void sendCallMediaUpdate({
     required String callId,
     required bool video,
@@ -1776,8 +1843,8 @@ class SocketService extends GetxService {
 
   Future<({List<Map<String, dynamic>>? servers, int? expiresAtEpoch})>
       _fetchIceServers() {
-    final completer =
-        Completer<({List<Map<String, dynamic>>? servers, int? expiresAtEpoch})>();
+    final completer = Completer<
+        ({List<Map<String, dynamic>>? servers, int? expiresAtEpoch})>();
     const empty = (
       servers: null as List<Map<String, dynamic>>?,
       expiresAtEpoch: null as int?,

@@ -19,6 +19,7 @@ import '../../core/services/media_upload_service.dart';
 import '../../core/services/url_preview_service.dart';
 import '../../core/utils/time_utils.dart';
 import '../../storage/models/message_entity.dart';
+import '../call/call_controller.dart';
 import 'chat_controller.dart';
 import 'chat_message_model.dart';
 import '../../core/widgets/report_bottom_sheet.dart';
@@ -230,6 +231,32 @@ class _ChatMessageBubbleState extends State<ChatMessageBubble> {
 
   @override
   Widget build(BuildContext context) {
+    // System events (disappearing-timer changes, etc.) render as a centered
+    // pill — no bubble, alignment, gestures, or options sheet.
+    if (widget.message.type == MessageType.system) {
+      return Center(
+        child: Container(
+          margin: const EdgeInsets.symmetric(
+            vertical: AppSizes.paddingXS,
+            horizontal: AppSizes.paddingL,
+          ),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+          decoration: BoxDecoration(
+            color: Colors.grey.shade200,
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: Text(
+            widget.message.content,
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              fontSize: AppSizes.fontXS,
+              color: Colors.grey.shade700,
+            ),
+          ),
+        ),
+      );
+    }
+
     final hasLinks = _hasLinks(widget.message.content);
     final shouldWrapToContent = _shouldWrapToContent();
 
@@ -322,6 +349,18 @@ class _ChatMessageBubbleState extends State<ChatMessageBubble> {
                       ),
                     ],
                   ),
+                  // Emoji reaction pill overlapping the bubble's bottom edge
+                  if (widget.message.reactions.isNotEmpty)
+                    Transform.translate(
+                      offset: const Offset(0, -6),
+                      child: Padding(
+                        padding: EdgeInsets.only(
+                          left: widget.message.isMe ? 0 : 8,
+                          right: widget.message.isMe ? 8 : 0,
+                        ),
+                        child: _buildReactionsPill(),
+                      ),
+                    ),
                 ],
               ),
             ),
@@ -385,6 +424,16 @@ class _ChatMessageBubbleState extends State<ChatMessageBubble> {
             Row(
               mainAxisSize: MainAxisSize.min,
               children: [
+                if (widget.message.isExpiring) ...[
+                  Icon(
+                    Icons.timer_outlined,
+                    size: 12,
+                    color: widget.message.isMe
+                        ? Colors.black.withValues(alpha: 0.4)
+                        : Colors.black54,
+                  ),
+                  const SizedBox(width: 3),
+                ],
                 Text(
                   TimeUtils.formatMessageTime(widget.message.timestamp),
                   style: TextStyle(
@@ -462,6 +511,16 @@ class _ChatMessageBubbleState extends State<ChatMessageBubble> {
               Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
+                  if (widget.message.isExpiring) ...[
+                    Icon(
+                      Icons.timer_outlined,
+                      size: 12,
+                      color: widget.message.isMe
+                          ? Colors.black.withValues(alpha: 0.4)
+                          : Colors.black54,
+                    ),
+                    const SizedBox(width: 3),
+                  ],
                   Text(
                     TimeUtils.formatMessageTime(widget.message.timestamp),
                     style: TextStyle(
@@ -506,6 +565,11 @@ class _ChatMessageBubbleState extends State<ChatMessageBubble> {
   }
 
   Widget _buildMessageContent() {
+    // Check if this is a call log card
+    if (widget.message.isCall) {
+      return _buildCallCard();
+    }
+
     // Check if this is a file message
     final content = widget.message.content;
     if (widget.message.isFile || content.startsWith('FILE:')) {
@@ -938,6 +1002,187 @@ class _ChatMessageBubbleState extends State<ChatMessageBubble> {
         snackPosition: SnackPosition.BOTTOM,
       );
     }
+  }
+
+  /// WhatsApp-style call log card (voice/video, missed/completed/etc.)
+  Widget _buildCallCard() {
+    final meta = _callCardMeta();
+    final isVideo = meta['media'] == 'video';
+    final isMissed = meta['status'] == 'missed' ||
+        meta['status'] == 'declined' ||
+        (meta['dir'] == 'out' && meta['status'] == 'cancelled');
+
+    final String title;
+    final kind = isVideo ? 'Video call' : 'Voice call';
+    switch (meta['status']) {
+      case 'missed':
+        title = 'Missed $kind';
+        break;
+      case 'declined':
+        title = 'Declined $kind';
+        break;
+      case 'cancelled':
+      case 'failed':
+        title = meta['dir'] == 'out' ? 'No answer' : 'Missed $kind';
+        break;
+      default:
+        title = kind;
+    }
+
+    final String subtitle;
+    final dur = meta['dur'] is int ? meta['dur'] as int : 0;
+    if (dur > 0) {
+      subtitle = _formatCallDuration(dur);
+    } else if (meta['status'] == 'missed') {
+      subtitle = 'Tap to call back';
+    } else {
+      subtitle = 'Not answered';
+    }
+
+    final iconColor = isMissed ? Colors.red.shade600 : const Color(0xFF128C7E);
+
+    return GestureDetector(
+      onTap: _showCallBackSheet,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            isMissed
+                ? (isVideo ? Icons.missed_video_call : Icons.phone_missed)
+                : (isVideo ? Icons.videocam : Icons.call),
+            size: 22,
+            color: iconColor,
+          ),
+          const SizedBox(width: 8),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                title,
+                style: TextStyle(
+                  color: Colors.black,
+                  fontSize: AppSizes.fontM,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+              const SizedBox(height: 1),
+              Text(
+                subtitle,
+                style: TextStyle(
+                  color: isMissed ? iconColor : Colors.black.withOpacity(0.5),
+                  fontSize: AppSizes.fontXS,
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Parse the JSON payload stored in a call card's content field.
+  Map<String, dynamic> _callCardMeta() {
+    try {
+      final decoded = jsonDecode(widget.message.content);
+      if (decoded is Map<String, dynamic>) return decoded;
+    } catch (_) {}
+    return const {};
+  }
+
+  String _formatCallDuration(int seconds) {
+    if (seconds < 60) return '${seconds}s';
+    final m = seconds ~/ 60;
+    final s = seconds % 60;
+    if (m < 60) return s > 0 ? '$m min $s sec' : '$m min';
+    final h = m ~/ 60;
+    return '$h hr ${m % 60} min';
+  }
+
+  /// WhatsApp-style bottom sheet with a call-back action button.
+  void _showCallBackSheet() {
+    final meta = _callCardMeta();
+    String name = 'Unknown';
+    String peerId = '';
+    try {
+      final chatController = Get.find<ChatController>();
+      peerId = chatController.recipientDeviceId;
+      if (chatController.displayName.value.isNotEmpty) {
+        name = chatController.displayName.value;
+      }
+    } catch (_) {}
+    if (peerId.isEmpty) return;
+
+    Get.bottomSheet(
+      Container(
+        padding: const EdgeInsets.fromLTRB(20, 12, 20, 28),
+        decoration: const BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 40,
+              height: 4,
+              decoration: BoxDecoration(
+                color: Colors.grey.shade300,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            const SizedBox(height: 20),
+            Text(
+              name,
+              style: const TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.w600,
+                color: Colors.black87,
+              ),
+            ),
+            const SizedBox(height: 24),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton(
+                onPressed: () async {
+                  Get.back();
+                  try {
+                    final callController = Get.find<CallController>();
+                    final success = await callController.startCall(
+                      peerId,
+                      isVideo: meta['media'] == 'video',
+                    );
+                    if (success) {
+                      Get.toNamed('/call/outgoing');
+                    }
+                  } catch (e) {
+                    debugPrint('❌ Failed to start call from card: $e');
+                    Get.snackbar(
+                      'Error',
+                      'Could not start call',
+                      snackPosition: SnackPosition.BOTTOM,
+                    );
+                  }
+                },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF00A884),
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(24),
+                  ),
+                ),
+                child: const Text(
+                  'Call',
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+      isScrollControlled: true,
+    );
   }
 
   Widget _buildAudioContent() {
@@ -1651,6 +1896,157 @@ class _ChatMessageBubbleState extends State<ChatMessageBubble> {
     }
   }
 
+  static const List<String> _reactionEmojis = [
+    '👍',
+    '❤️',
+    '😂',
+    '😮',
+    '😢',
+    '🙏',
+  ];
+
+  /// Floating emoji strip shown atop the message-options sheet.
+  Widget _buildReactionBar() {
+    String myId = '';
+    try {
+      myId = Get.find<ChatController>().myDeviceId;
+    } catch (_) {}
+    final myEmoji = widget.message.reactions[myId];
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      decoration: BoxDecoration(
+        color: Colors.grey[100],
+        borderRadius: BorderRadius.circular(28),
+        border: Border.all(color: Colors.grey.shade300),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: _reactionEmojis.map((emoji) {
+          final selected = myEmoji == emoji;
+          return GestureDetector(
+            onTap: () {
+              Get.back();
+              try {
+                Get.find<ChatController>()
+                    .toggleReaction(widget.message, emoji);
+              } catch (e) {
+                debugPrint('⚠️ Reaction failed: $e');
+              }
+            },
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+              decoration: selected
+                  ? BoxDecoration(
+                      color: AppColors.primary.withValues(alpha: 0.15),
+                      borderRadius: BorderRadius.circular(16),
+                    )
+                  : null,
+              child: Text(
+                emoji,
+                style: TextStyle(fontSize: selected ? 28 : 24),
+              ),
+            ),
+          );
+        }).toList(),
+      ),
+    );
+  }
+
+  /// Reaction summary pill — groups unique emojis with counts (`👍 2 ❤️ 1`).
+  Widget _buildReactionsPill() {
+    // Preserve first-seen order like WhatsApp
+    final counts = <String, int>{};
+    for (final emoji in widget.message.reactions.values) {
+      counts[emoji] = (counts[emoji] ?? 0) + 1;
+    }
+    if (counts.isEmpty) return const SizedBox.shrink();
+
+    return GestureDetector(
+      onTap: _showReactorsSheet,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: Colors.grey.shade300),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.08),
+              blurRadius: 3,
+              offset: const Offset(0, 1),
+            ),
+          ],
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            for (final entry in counts.entries) ...[
+              Text(entry.key, style: const TextStyle(fontSize: 13)),
+              if (entry.value > 1)
+                Padding(
+                  padding: const EdgeInsets.only(left: 2, right: 4),
+                  child: Text(
+                    '${entry.value}',
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600,
+                      color: Colors.grey[700],
+                    ),
+                  ),
+                )
+              else
+                const SizedBox(width: 4),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Who-reacted sheet: each reactor's name and emoji.
+  void _showReactorsSheet() {
+    String myId = '';
+    String peerName = 'Unknown';
+    try {
+      final cc = Get.find<ChatController>();
+      myId = cc.myDeviceId;
+      if (cc.displayName.value.isNotEmpty) peerName = cc.displayName.value;
+    } catch (_) {}
+    Get.bottomSheet(
+      Container(
+        padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
+        decoration: const BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 40,
+              height: 4,
+              decoration: BoxDecoration(
+                color: Colors.grey.shade300,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            const SizedBox(height: 16),
+            for (final e in widget.message.reactions.entries)
+              ListTile(
+                dense: true,
+                contentPadding: EdgeInsets.zero,
+                leading: Text(e.value, style: const TextStyle(fontSize: 22)),
+                title: Text(
+                  e.key == myId ? 'You' : peerName,
+                  style: const TextStyle(fontSize: 15),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
   void _showMessageOptions(BuildContext context, bool hasLinks) {
     final links = _extractLinks(widget.message.content);
 
@@ -1661,147 +2057,156 @@ class _ChatMessageBubbleState extends State<ChatMessageBubble> {
           borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
         ),
         padding: const EdgeInsets.all(20),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // Header
-            Text(
-              'Message Options',
-              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 16),
-
-            // Message preview
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: Colors.grey[100],
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Text(
-                widget.message.content,
-                style: const TextStyle(fontSize: 14),
-                maxLines: 3,
-                overflow: TextOverflow.ellipsis,
-              ),
-            ),
-            const SizedBox(height: 20),
-
-            // Reply button - always show for all messages
-            SizedBox(
-              width: double.infinity,
-              child: ElevatedButton.icon(
-                onPressed: () {
-                  Get.back();
-                  try {
-                    final chatController = Get.find<ChatController>();
-                    chatController.startReply(widget.message);
-                  } catch (e) {
-                    debugPrint('⚠️ Could not start reply: $e');
-                    Get.snackbar(
-                      'Error',
-                      'Could not reply to message',
-                      snackPosition: SnackPosition.BOTTOM,
-                      backgroundColor: Colors.red.shade100,
-                    );
-                  }
-                },
-                icon: const Icon(Icons.reply, size: 18),
-                label: const Text('Reply'),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: AppColors.primary,
-                  foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(vertical: 12),
-                ),
-              ),
-            ),
-            const SizedBox(height: 12),
-
-            // Action buttons
-            if (hasLinks && links.isNotEmpty) ...[
-              // Link actions only
-              Row(
-                children: [
-                  Expanded(
-                    child: ElevatedButton.icon(
-                      onPressed: () {
-                        Get.back();
-                        _openLink(links.first);
-                      },
-                      icon: const Icon(Icons.open_in_new),
-                      label: const Text('Open Link'),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.blue,
-                        foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(vertical: 12),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: ElevatedButton.icon(
-                      onPressed: () {
-                        Get.back();
-                        _copyLink(links.first);
-                      },
-                      icon: const Icon(Icons.copy),
-                      label: const Text('Copy Link'),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.green,
-                        foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(vertical: 12),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ] else ...[
-              // Text copy only (when no links)
+        child: SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // Emoji reaction bar (WhatsApp-style)
+              if (!widget.message.isCall &&
+                  widget.message.type != MessageType.system) ...[
+                Center(child: _buildReactionBar()),
+                const SizedBox(height: 16),
+              ],
+          
+              // // Header
+              // Text(
+              //   'Message Options',
+              //   style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+              // ),
+              // const SizedBox(height: 16),
+          
+              // // Message preview
+              // Container(
+              //   padding: const EdgeInsets.all(12),
+              //   decoration: BoxDecoration(
+              //     color: Colors.grey[100],
+              //     borderRadius: BorderRadius.circular(8),
+              //   ),
+              //   child: Text(
+              //     widget.message.content,
+              //     style: const TextStyle(fontSize: 14),
+              //     maxLines: 3,
+              //     overflow: TextOverflow.ellipsis,
+              //   ),
+              // ),
+              // const SizedBox(height: 20),
+          
+              // Reply button - always show for all messages
               SizedBox(
                 width: double.infinity,
                 child: ElevatedButton.icon(
                   onPressed: () {
                     Get.back();
-                    _copyText(widget.message.content);
+                    try {
+                      final chatController = Get.find<ChatController>();
+                      chatController.startReply(widget.message);
+                    } catch (e) {
+                      debugPrint('⚠️ Could not start reply: $e');
+                      Get.snackbar(
+                        'Error',
+                        'Could not reply to message',
+                        snackPosition: SnackPosition.BOTTOM,
+                        backgroundColor: Colors.red.shade100,
+                      );
+                    }
                   },
-                  icon: const Icon(Icons.copy),
-                  label: const Text('Copy Text'),
+                  icon: const Icon(Icons.reply, size: 18,color: Colors.white,),
+                  label: const Text('Reply'),
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.grey[600],
+                    backgroundColor: AppColors.primary,
                     foregroundColor: Colors.white,
                     padding: const EdgeInsets.symmetric(vertical: 12),
                   ),
                 ),
               ),
-            ],
-            const SizedBox(height: 8),
-
-            // Report message button
-            if (!widget.message.isMe) ...[
-              const SizedBox(height: 4),
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton.icon(
-                  onPressed: () {
-                    Get.back();
-                    ReportBottomSheet.show(
-                      targetType: 'message',
-                      targetId: widget.message.id,
-                    );
-                  },
-                  icon: const Icon(Icons.flag_outlined, size: 18),
-                  label: const Text('Report Message'),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.red.shade50,
-                    foregroundColor: Colors.red.shade700,
-                    padding: const EdgeInsets.symmetric(vertical: 12),
-                    elevation: 0,
+              const SizedBox(height: 12),
+          
+              // Action buttons
+              if (hasLinks && links.isNotEmpty) ...[
+                // Link actions only
+                Row(
+                  children: [
+                    Expanded(
+                      child: ElevatedButton.icon(
+                        onPressed: () {
+                          Get.back();
+                          _openLink(links.first);
+                        },
+                        icon: const Icon(Icons.open_in_new),
+                        label: const Text('Open Link'),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.blue,
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: ElevatedButton.icon(
+                        onPressed: () {
+                          Get.back();
+                          _copyLink(links.first);
+                        },
+                        icon: const Icon(Icons.copy),
+                        label: const Text('Copy Link'),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.green,
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ] else ...[
+                // Text copy only (when no links)
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton.icon(
+                    onPressed: () {
+                      Get.back();
+                      _copyText(widget.message.content);
+                    },
+                    icon: const Icon(Icons.copy,color: Colors.white,),
+                    label: const Text('Copy Text'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.grey[600],
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                    ),
                   ),
                 ),
-              ),
+              ],
+              const SizedBox(height: 8),
+          
+              // Report message button
+              if (!widget.message.isMe) ...[
+                const SizedBox(height: 4),
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton.icon(
+                    onPressed: () {
+                      Get.back();
+                      ReportBottomSheet.show(
+                        targetType: 'message',
+                        targetId: widget.message.id,
+                      );
+                    },
+                    icon: const Icon(Icons.flag_outlined, size: 18,color: Colors.red,),
+                    label: const Text('Report Message'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.red.shade50,
+                      foregroundColor: Colors.red.shade700,
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      elevation: 0,
+                    ),
+                  ),
+                ),
+              ],
             ],
-          ],
+          ),
         ),
       ),
       isScrollControlled: true,

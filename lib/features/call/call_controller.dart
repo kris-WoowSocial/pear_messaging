@@ -4,10 +4,9 @@ import 'dart:io';
 import 'dart:math';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:http/http.dart' as http;
-import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter_webrtc/flutter_webrtc.dart';
+import 'package:flutter_webrtc/flutter_webrtc.dart' hide MessageType;
 import 'package:get/get.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -39,6 +38,10 @@ import '../../core/services/membership_service.dart';
 import '../../core/utils/string_utils.dart';
 import '../../routes/app_routes.dart';
 import '../../storage/models/call_history_entry.dart';
+import '../../storage/models/chat_entity.dart';
+import '../../storage/models/message_entity.dart';
+import '../chat/chat_controller.dart';
+import '../chat_list/chat_list_controller.dart';
 import 'call_encryption_indicator.dart';
 import 'fsi_prompt_decision.dart';
 
@@ -112,7 +115,8 @@ FriendlyCallMessage friendlyCallMessage(
     case 'encryption_required':
       return const FriendlyCallMessage(
         title: 'Secure call unavailable',
-        body: 'This call requires end-to-end encryption support on both devices.',
+        body:
+            'This call requires end-to-end encryption support on both devices.',
       );
     case 'unavailable':
     case 'offline':
@@ -234,8 +238,7 @@ class CallController extends GetxController {
   // render the normal calling UI, not the no-answer panel.
   bool get isShowingNoAnswerUi =>
       noAnswerUi.value != null &&
-      (callState.value == CallState.ended ||
-          callState.value == CallState.idle);
+      (callState.value == CallState.ended || callState.value == CallState.idle);
   final RxBool isMuted = false.obs;
   final RxBool isSpeakerOn = false.obs;
   final RxString callDuration = '00:00'.obs;
@@ -541,7 +544,8 @@ class CallController extends GetxController {
         final servers = await _socketService.requestIceServers();
         if (servers != null && servers.isNotEmpty) {
           _webrtcService.primeIceServers(servers);
-          debugPrint('📞 ICE servers primed during ringing (${servers.length})');
+          debugPrint(
+              '📞 ICE servers primed during ringing (${servers.length})');
         }
       }).catchError((Object e) {
         debugPrint('⚠️ ICE prefetch during ringing failed: $e');
@@ -897,7 +901,8 @@ class CallController extends GetxController {
   /// setCameraEnabled itself emits call_media_update(video:true) to the peer.
   Future<void> _restoreCameraAfterPip() async {
     await setCameraEnabled(true);
-    debugPrint('📺 VantPip: camera restored (call_media_update sent by setCameraEnabled)');
+    debugPrint(
+        '📺 VantPip: camera restored (call_media_update sent by setCameraEnabled)');
   }
 
   /// Recompute whether the PiP entry conditions hold right now and push the
@@ -909,8 +914,7 @@ class CallController extends GetxController {
     final flagOn = Get.isRegistered<FeatureFlagService>() &&
         Get.find<FeatureFlagService>().pipAndroidEnabled;
     final cameraPerm = await Permission.camera.isGranted;
-    final incomingRinging =
-        Get.currentRoute == '/call/incoming' ||
+    final incomingRinging = Get.currentRoute == '/call/incoming' ||
         callState.value == CallState.ringing ||
         callState.value == CallState.reaching ||
         callState.value == CallState.dialing;
@@ -1497,6 +1501,14 @@ class CallController extends GetxController {
       Get.isRegistered<FeatureFlagService>() &&
       Get.find<FeatureFlagService>().videoCalling.value;
 
+  /// ff_call_video_upgrade — mid-call audio→video upgrade. Requires video
+  /// calling to be enabled at all; the service-side field is synced before
+  /// each use so a Remote Config flip takes effect on the next tap.
+  bool get _videoUpgradeEnabled =>
+      _videoCallingEnabled &&
+      Get.isRegistered<FeatureFlagService>() &&
+      Get.find<FeatureFlagService>().callVideoUpgrade.value;
+
   void prepareVideoCallScreen(String peerDeviceId, {required bool incoming}) {
     if (!_videoCallingEnabled) return;
     remoteDeviceId.value = peerDeviceId;
@@ -1862,11 +1874,19 @@ class CallController extends GetxController {
   }
 
   void _handleCallMediaUpdate(Map<String, dynamic> data) {
-    if ((data['callId'] as String?) != currentCallId.value ||
-        (!isVideoCall.value && !_videoRequested)) {
-      return;
+    if ((data['callId'] as String?) != currentCallId.value) return;
+    final videoOn = data['video'] == 'on';
+    peerCameraOff.value = !videoOn;
+    // Remote side upgraded an audio call to video mid-call — switch this
+    // device to the video surface too.
+    if (videoOn && !isVideoCall.value && _videoUpgradeEnabled) {
+      isVideoCall.value = true;
+      _videoRequested = true;
+      _stopProximitySensor();
+      if (Get.currentRoute == '/call/active') {
+        Get.offNamed('/call/video');
+      }
     }
-    peerCameraOff.value = data['video'] == 'off';
   }
 
   /// Setup proximity sensor using actual hardware proximity sensor
@@ -2600,7 +2620,8 @@ class CallController extends GetxController {
     if (isInCall) {
       // The timed-out call was ringing while another call is active — clear
       // its cached data/notification only, never reset the live call.
-      debugPrint('📞 CallKit timeout during active call — cleared ring state only');
+      debugPrint(
+          '📞 CallKit timeout during active call — cleared ring state only');
       return;
     }
     _ringtoneService.stopRingtone(reason: 'timeout');
@@ -2713,6 +2734,7 @@ class CallController extends GetxController {
 
       // Start WebRTC call - this will trigger onLocalDescription callback.
       // The video track (if requested) is captured and added before createOffer.
+      _webrtcService.videoUpgradeEnabled = _videoUpgradeEnabled;
       final success = await _webrtcService.startCall(
         calleeDeviceId: calleeDeviceId,
         callerDeviceId: callerDeviceId,
@@ -3004,6 +3026,7 @@ class CallController extends GetxController {
       // Accept WebRTC call - this will trigger onLocalDescription callback with answer.
       // The video track (if requested) is captured and added before createAnswer.
       _webrtcService.primeIceServers(callData['iceServers']);
+      _webrtcService.videoUpgradeEnabled = _videoUpgradeEnabled;
       final success = await _webrtcService.acceptCall(
         callId: callId,
         callerDeviceId: callerId,
@@ -3052,7 +3075,8 @@ class CallController extends GetxController {
   void rejectCall(Map<String, dynamic> callData) {
     final callId = callData['callId'] as String;
     if (Platform.isIOS) {
-      unawaited(CallKitService().endGhostCallKitForCall(callId, reason: 'decline'));
+      unawaited(
+          CallKitService().endGhostCallKitForCall(callId, reason: 'decline'));
     }
     final callerId = callData['callerId'] as String;
 
@@ -3394,6 +3418,28 @@ class CallController extends GetxController {
 
   /// Enable or disable the local video track without renegotiation.
   Future<void> setCameraEnabled(bool enabled) async {
+    _webrtcService.videoUpgradeEnabled = _videoUpgradeEnabled;
+    if (enabled && !_webrtcService.isVideoCall && _videoUpgradeEnabled) {
+      // Audio call → camera on: upgrade path (replaceTrack + renegotiation)
+      final upgraded = await _webrtcService.upgradeToVideo();
+      isCameraOn.value = _webrtcService.isCameraEnabled;
+      if (upgraded) {
+        _videoRequested = true;
+        isVideoCall.value = true;
+        _stopProximitySensor();
+        unawaited(_refreshAndroidOngoingCallNotification());
+        if (Get.currentRoute == '/call/active') {
+          Get.offNamed('/call/video');
+        }
+        if (callState.value == CallState.connected) {
+          _sendCallMediaUpdate(
+            video: true,
+            reason: 'audio call upgraded to video',
+          );
+        }
+      }
+      return;
+    }
     await _webrtcService.setCameraEnabled(enabled);
     isCameraOn.value = _webrtcService.isCameraEnabled;
     if (_videoCallingEnabled && callState.value == CallState.connected) {
@@ -3403,6 +3449,11 @@ class CallController extends GetxController {
       );
     }
   }
+
+  /// Whether the camera button should be shown on the audio call screen —
+  /// enables the mid-call audio→video upgrade.
+  bool get canUpgradeToVideo =>
+      _videoUpgradeEnabled && callState.value == CallState.connected;
 
   void _sendCallMediaUpdate({required bool video, required String reason}) {
     debugPrint(
@@ -3563,7 +3614,8 @@ class CallController extends GetxController {
         if (_videoRequested) {
           isCameraOn.value = _webrtcService.isCameraEnabled;
           isFrontCamera.value = _webrtcService.isFrontCamera;
-          isVideoCall.value = _videoCallingEnabled && _webrtcService.isVideoCall;
+          isVideoCall.value =
+              _videoCallingEnabled && _webrtcService.isVideoCall;
           if (isCameraOn.value) {
             unawaited(_refreshAndroidOngoingCallNotification());
             _stopProximitySensor();
@@ -3659,6 +3711,12 @@ class CallController extends GetxController {
 
     final reason = data['reason'] as String?;
 
+    // Busy rejection: give the caller a short PSTN-style busy signal so the
+    // outcome is audible, not just a text message on the ended-call screen.
+    if (reason == 'busy') {
+      unawaited(_ringtoneService.playBusyTone());
+    }
+
     // Log rejected call
     _logCallHistory(
       reason: reason ?? 'rejected',
@@ -3700,7 +3758,8 @@ class CallController extends GetxController {
     final callId = data['callId'] as String?;
     debugPrint('📞 Call terminated: $data');
     if (Platform.isIOS && callId != null) {
-      unawaited(CallKitService().endGhostCallKitForCall(callId, reason: 'terminated'));
+      unawaited(CallKitService()
+          .endGhostCallKitForCall(callId, reason: 'terminated'));
     }
     unawaited(CallKitService().reconcileNativeCalls(completedCallId: callId));
 
@@ -3830,7 +3889,8 @@ class CallController extends GetxController {
       if (!route.startsWith('/call/')) return;
       final navigator = Get.key.currentState;
       if (navigator != null && navigator.canPop()) {
-        navigator.popUntil((r) => !(r.settings.name ?? '').startsWith('/call/'));
+        navigator
+            .popUntil((r) => !(r.settings.name ?? '').startsWith('/call/'));
       } else {
         Get.offAllNamed('/chat-list');
       }
@@ -4173,7 +4233,8 @@ class CallController extends GetxController {
       title: 'Could not reach',
       body: "$peerName couldn't be reached. Try again.",
       actionLabel: 'Retry',
-      action: target.isEmpty ? null : () => startCall(target, isVideo: wasVideo),
+      action:
+          target.isEmpty ? null : () => startCall(target, isVideo: wasVideo),
     ));
   }
 
@@ -4189,7 +4250,8 @@ class CallController extends GetxController {
       title: 'Could not reach',
       body: 'No connection — check your network and try again.',
       actionLabel: 'Retry',
-      action: target.isEmpty ? null : () => startCall(target, isVideo: wasVideo),
+      action:
+          target.isEmpty ? null : () => startCall(target, isVideo: wasVideo),
     ));
   }
 
@@ -4206,8 +4268,7 @@ class CallController extends GetxController {
         if (isCaller.value) {
           unawaited(
             _ringtoneService.playOutgoingRingtone(
-              callId:
-                  currentCallId.value.isEmpty ? null : currentCallId.value,
+              callId: currentCallId.value.isEmpty ? null : currentCallId.value,
             ),
           );
         }
@@ -4324,10 +4385,7 @@ class CallController extends GetxController {
     required bool isConnected,
     required bool hasPendingIncomingCall,
   }) {
-    return !isCaller &&
-        !wasConnected &&
-        !isConnected &&
-        hasPendingIncomingCall;
+    return !isCaller && !wasConnected && !isConnected && hasPendingIncomingCall;
   }
 
   /// Pure form of the caller no-answer-screen decision (ff_call_no_answer_screen).
@@ -4486,21 +4544,20 @@ class CallController extends GetxController {
           .then((cached) async =>
               cached ?? await _decryptIncomingOffer(data, callId, callerId))
           .then((sdpOffer) {
-            if (sdpOffer == null) return Future.value(false);
-            // Note: _decryptIncomingOffer already kicked prepareAnswer —
-            // verify + keygen + session keys are running now; beginAnswer
-            // at Accept only produces the fingerprint signature.
-            return _webrtcService.prepareIncomingCall(
-              callId: callId,
-              callerDeviceId: callerId,
-              sdpOffer: sdpOffer,
-              isVideo: data['isVideo'] == true,
-            );
-          })
-          .catchError((Object e) {
-            debugPrint('⚠️ WebRTC ringing-time prepare failed: $e');
-            return false;
-          }),
+        if (sdpOffer == null) return Future.value(false);
+        // Note: _decryptIncomingOffer already kicked prepareAnswer —
+        // verify + keygen + session keys are running now; beginAnswer
+        // at Accept only produces the fingerprint signature.
+        return _webrtcService.prepareIncomingCall(
+          callId: callId,
+          callerDeviceId: callerId,
+          sdpOffer: sdpOffer,
+          isVideo: data['isVideo'] == true,
+        );
+      }).catchError((Object e) {
+        debugPrint('⚠️ WebRTC ringing-time prepare failed: $e');
+        return false;
+      }),
     );
   }
 
@@ -4521,7 +4578,8 @@ class CallController extends GetxController {
 
     if (exists) return;
 
-    debugPrint('📞 Server reports call $callId no longer exists, ending locally');
+    debugPrint(
+        '📞 Server reports call $callId no longer exists, ending locally');
     _logCallHistory(
       reason: data['reason'] as String? ?? 'expired',
     );
@@ -4777,9 +4835,8 @@ class CallController extends GetxController {
       CallState.connected => callDuration.value,
       CallState.dialing => 'Calling…',
       CallState.reaching => 'Trying to reach…',
-      CallState.ringing => isCaller.value
-          ? 'Ringing…'
-          : 'Securing Encrypted Tunnel…',
+      CallState.ringing =>
+        isCaller.value ? 'Ringing…' : 'Securing Encrypted Tunnel…',
       CallState.ended => 'Call ended',
       CallState.idle => 'Connecting…',
     };
@@ -4845,10 +4902,98 @@ class CallController extends GetxController {
       '📞 Call logged: ${entry.id} - ${entry.direction} - ${entry.status} - ${entry.durationSeconds}s',
     );
 
+    // WhatsApp-style call card inside the 1:1 chat thread
+    unawaited(_insertCallCardMessage(entry));
+
     // Reset tracking
     _callStartTime = null;
     _wasConnected = false;
     _durationSeconds = 0;
+  }
+
+  /// Persist a WhatsApp-style call card inside the peer's 1:1 chat thread.
+  ///
+  /// The card is stored as a [MessageType.call] [MessageEntity] with a
+  /// deterministic id (`callcard_<callId>`) so re-logging the same call
+  /// (timeout + cancel + native reconciliation) overwrites rather than
+  /// duplicates. Content is a small JSON payload parsed by the bubble
+  /// renderer — never sent over the wire.
+  Future<void> _insertCallCardMessage(CallHistoryEntry entry) async {
+    try {
+      final remoteId = entry.remoteDeviceId;
+      final myId = _storageService.deviceId ?? '';
+      if (remoteId.isEmpty || myId.isEmpty || remoteId == myId) return;
+
+      final isOutgoing = entry.direction == CallDirection.outgoing;
+      final card = MessageEntity(
+        id: 'callcard_${entry.id}',
+        chatId: remoteId,
+        senderId: isOutgoing ? myId : remoteId,
+        receiverId: isOutgoing ? remoteId : myId,
+        content: jsonEncode({
+          'v': 1,
+          'dir': isOutgoing ? 'out' : 'in',
+          'status': entry.status.name,
+          'dur': entry.durationSeconds,
+          'media': entry.callType,
+        }),
+        timestamp: entry.timestamp,
+        status: isOutgoing ? MessageStatus.sent : MessageStatus.read,
+        isMe: isOutgoing,
+        type: MessageType.call,
+      );
+      await _storageService.saveMessage(card);
+
+      // Keep the chat list preview in sync (e.g. "Missed voice call")
+      final preview = _callCardPreviewText(entry);
+      final existing = _storageService.getChat(remoteId);
+      await _storageService.saveChat(
+        existing?.copyWith(
+              lastMessage: preview,
+              lastMessageTime: entry.timestamp,
+            ) ??
+            ChatEntity(
+              id: remoteId,
+              userName: entry.remoteName,
+              lastMessage: preview,
+              lastMessageTime: entry.timestamp,
+            ),
+      );
+
+      // Refresh UI surfaces if they are alive right now
+      if (Get.isRegistered<ChatListController>()) {
+        Get.find<ChatListController>().loadChats();
+      }
+      if (Get.isRegistered<ChatController>()) {
+        final chatController = Get.find<ChatController>();
+        if (chatController.chatId == remoteId) {
+          unawaited(chatController.refreshMessagesFromStorage());
+        }
+      }
+      debugPrint('💬 Call card saved to chat $remoteId: ${entry.status.name}');
+    } catch (e) {
+      debugPrint('💬 Failed to save call card: $e');
+    }
+  }
+
+  /// Human-readable preview shown in the chat list for a call card.
+  String _callCardPreviewText(CallHistoryEntry entry) {
+    final isVideo = entry.callType == 'video';
+    final kind = isVideo ? 'video call' : 'voice call';
+    switch (entry.status) {
+      case CallStatus.completed:
+        return '${entry.direction == CallDirection.outgoing ? 'Outgoing' : 'Incoming'} $kind';
+      case CallStatus.missed:
+        return 'Missed $kind';
+      case CallStatus.declined:
+        return 'Declined $kind';
+      case CallStatus.cancelled:
+        return entry.direction == CallDirection.outgoing
+            ? 'No answer'
+            : 'Missed $kind';
+      case CallStatus.failed:
+        return 'Failed $kind';
+    }
   }
 
   /// Set pending auto-accept flag (used for cold-start after background CallKit accept)
@@ -5318,6 +5463,7 @@ class CallController extends GetxController {
 
       // Accept WebRTC call directly (no ringing state)
       _webrtcService.primeIceServers(data['iceServers']);
+      _webrtcService.videoUpgradeEnabled = _videoUpgradeEnabled;
       final success = await _webrtcService.acceptCall(
         callId: callId,
         callerDeviceId: callerId,
