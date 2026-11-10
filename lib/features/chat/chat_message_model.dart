@@ -70,6 +70,52 @@ class ChatMessageModel {
   /// Check if this message is a reply
   bool get isReply => replyTo != null;
 
+  ChatMessageModel copyWith({
+    String? id,
+    String? content,
+    bool? isMe,
+    DateTime? timestamp,
+    MessageStatus? status,
+    MessageType? type,
+    String? mediaToken,
+    DateTime? mediaExpiryTimestamp,
+    ReplyToEntity? replyTo,
+    String? senderName,
+    int? totalMembers,
+    int? deliveredCount,
+    int? readCount,
+    String? fileName,
+    int? fileSize,
+    bool? isCompressed,
+    int? audioDuration,
+    String? waveformData,
+    Map<String, String>? reactions,
+    int? expiresAt,
+  }) {
+    return ChatMessageModel(
+      id: id ?? this.id,
+      content: content ?? this.content,
+      isMe: isMe ?? this.isMe,
+      timestamp: timestamp ?? this.timestamp,
+      status: status ?? this.status,
+      type: type ?? this.type,
+      mediaToken: mediaToken ?? this.mediaToken,
+      mediaExpiryTimestamp: mediaExpiryTimestamp ?? this.mediaExpiryTimestamp,
+      replyTo: replyTo ?? this.replyTo,
+      senderName: senderName ?? this.senderName,
+      totalMembers: totalMembers ?? this.totalMembers,
+      deliveredCount: deliveredCount ?? this.deliveredCount,
+      readCount: readCount ?? this.readCount,
+      fileName: fileName ?? this.fileName,
+      fileSize: fileSize ?? this.fileSize,
+      isCompressed: isCompressed ?? this.isCompressed,
+      audioDuration: audioDuration ?? this.audioDuration,
+      waveformData: waveformData ?? this.waveformData,
+      reactions: reactions ?? this.reactions,
+      expiresAt: expiresAt ?? this.expiresAt,
+    );
+  }
+
   factory ChatMessageModel.fromEntity(MessageEntity entity) {
     return ChatMessageModel(
       id: entity.id,

@@ -389,7 +389,9 @@ class _ChatMessageBubbleState extends State<ChatMessageBubble> {
   /// Build bubble that wraps to content size
   Widget _buildContentWrappedBubble(bool hasLinks) {
     return GestureDetector(
-      onLongPress: () => _showMessageOptions(Get.context!, hasLinks),
+      onLongPress: () => widget.message.isCall
+          ? _showCallBackSheet()
+          : _showMessageOptions(Get.context!, hasLinks),
       child: Container(
         constraints: BoxConstraints(
           minWidth: AppSizes.minMessageWidth,
@@ -443,31 +445,32 @@ class _ChatMessageBubbleState extends State<ChatMessageBubble> {
                     fontSize: AppSizes.fontXS,
                   ),
                 ),
-                if (widget.message.isMe) ...[
+                if (widget.message.isMe && !widget.message.isCall) ...[
                   const SizedBox(width: 4),
                   _buildStatusIcon(widget.message.status),
                 ],
-                // Reply icon
-                GestureDetector(
-                  onTap: () {
-                    try {
-                      final chatController = Get.find<ChatController>();
-                      chatController.startReply(widget.message);
-                    } catch (e) {
-                      debugPrint('⚠️ Could not start reply: $e');
-                    }
-                  },
-                  child: Container(
-                    padding: EdgeInsets.all(2),
-                    child: Icon(
-                      Icons.reply,
-                      size: 16,
-                      color: widget.message.isMe
-                          ? Colors.black.withValues(alpha: 0.4)
-                          : Colors.black.withValues(alpha: 0.6),
+                // Reply icon (not on call cards — there's nothing to quote)
+                if (!widget.message.isCall)
+                  GestureDetector(
+                    onTap: () {
+                      try {
+                        final chatController = Get.find<ChatController>();
+                        chatController.startReply(widget.message);
+                      } catch (e) {
+                        debugPrint('⚠️ Could not start reply: $e');
+                      }
+                    },
+                    child: Container(
+                      padding: EdgeInsets.all(2),
+                      child: Icon(
+                        Icons.reply,
+                        size: 16,
+                        color: widget.message.isMe
+                            ? Colors.black.withValues(alpha: 0.4)
+                            : Colors.black.withValues(alpha: 0.6),
+                      ),
                     ),
                   ),
-                ),
               ],
             ),
           ],
@@ -480,7 +483,9 @@ class _ChatMessageBubbleState extends State<ChatMessageBubble> {
   Widget _buildFullWidthBubble(bool hasLinks) {
     return Flexible(
       child: GestureDetector(
-        onLongPress: () => _showMessageOptions(Get.context!, hasLinks),
+        onLongPress: () => widget.message.isCall
+            ? _showCallBackSheet()
+            : _showMessageOptions(Get.context!, hasLinks),
         child: Container(
           constraints: BoxConstraints(maxWidth: AppSizes.maxMessageWidth),
           padding: const EdgeInsets.symmetric(
@@ -530,31 +535,32 @@ class _ChatMessageBubbleState extends State<ChatMessageBubble> {
                       fontSize: AppSizes.fontXS,
                     ),
                   ),
-                  if (widget.message.isMe) ...[
+                  if (widget.message.isMe && !widget.message.isCall) ...[
                     const SizedBox(width: 4),
                     _buildStatusIcon(widget.message.status),
                   ],
-                  // Reply icon
-                  GestureDetector(
-                    onTap: () {
-                      try {
-                        final chatController = Get.find<ChatController>();
-                        chatController.startReply(widget.message);
-                      } catch (e) {
-                        debugPrint('⚠️ Could not start reply: $e');
-                      }
-                    },
-                    child: Container(
-                      padding: EdgeInsets.all(2),
-                      child: Icon(
-                        Icons.reply,
-                        size: 16,
-                        color: widget.message.isMe
-                            ? Colors.black.withValues(alpha: 0.4)
-                            : Colors.black.withValues(alpha: 0.6),
+                  // Reply icon (not on call cards — there's nothing to quote)
+                  if (!widget.message.isCall)
+                    GestureDetector(
+                      onTap: () {
+                        try {
+                          final chatController = Get.find<ChatController>();
+                          chatController.startReply(widget.message);
+                        } catch (e) {
+                          debugPrint('⚠️ Could not start reply: $e');
+                        }
+                      },
+                      child: Container(
+                        padding: EdgeInsets.all(2),
+                        child: Icon(
+                          Icons.reply,
+                          size: 16,
+                          color: widget.message.isMe
+                              ? Colors.black.withValues(alpha: 0.4)
+                              : Colors.black.withValues(alpha: 0.6),
+                        ),
                       ),
                     ),
-                  ),
                 ],
               ),
             ],
@@ -1120,65 +1126,67 @@ class _ChatMessageBubbleState extends State<ChatMessageBubble> {
           color: Colors.white,
           borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
         ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              width: 40,
-              height: 4,
-              decoration: BoxDecoration(
-                color: Colors.grey.shade300,
-                borderRadius: BorderRadius.circular(2),
+        child: SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 40,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: Colors.grey.shade300,
+                  borderRadius: BorderRadius.circular(2),
+                ),
               ),
-            ),
-            const SizedBox(height: 20),
-            Text(
-              name,
-              style: const TextStyle(
-                fontSize: 18,
-                fontWeight: FontWeight.w600,
-                color: Colors.black87,
+              const SizedBox(height: 20),
+              Text(
+                name,
+                style: const TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.w600,
+                  color: Colors.black87,
+                ),
               ),
-            ),
-            const SizedBox(height: 24),
-            SizedBox(
-              width: double.infinity,
-              child: ElevatedButton(
-                onPressed: () async {
-                  Get.back();
-                  try {
-                    final callController = Get.find<CallController>();
-                    final success = await callController.startCall(
-                      peerId,
-                      isVideo: meta['media'] == 'video',
-                    );
-                    if (success) {
-                      Get.toNamed('/call/outgoing');
+              const SizedBox(height: 24),
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton(
+                  onPressed: () async {
+                    Get.back();
+                    try {
+                      final callController = Get.find<CallController>();
+                      final success = await callController.startCall(
+                        peerId,
+                        isVideo: meta['media'] == 'video',
+                      );
+                      if (success) {
+                        Get.toNamed('/call/outgoing');
+                      }
+                    } catch (e) {
+                      debugPrint('❌ Failed to start call from card: $e');
+                      Get.snackbar(
+                        'Error',
+                        'Could not start call',
+                        snackPosition: SnackPosition.BOTTOM,
+                      );
                     }
-                  } catch (e) {
-                    debugPrint('❌ Failed to start call from card: $e');
-                    Get.snackbar(
-                      'Error',
-                      'Could not start call',
-                      snackPosition: SnackPosition.BOTTOM,
-                    );
-                  }
-                },
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF00A884),
-                  foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(vertical: 14),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(24),
+                  },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF00A884),
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(24),
+                    ),
+                  ),
+                  child: const Text(
+                    'Call',
+                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
                   ),
                 ),
-                child: const Text(
-                  'Call',
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
-                ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
       isScrollControlled: true,
@@ -2068,14 +2076,14 @@ class _ChatMessageBubbleState extends State<ChatMessageBubble> {
                 Center(child: _buildReactionBar()),
                 const SizedBox(height: 16),
               ],
-          
+
               // // Header
               // Text(
               //   'Message Options',
               //   style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
               // ),
               // const SizedBox(height: 16),
-          
+
               // // Message preview
               // Container(
               //   padding: const EdgeInsets.all(12),
@@ -2091,37 +2099,43 @@ class _ChatMessageBubbleState extends State<ChatMessageBubble> {
               //   ),
               // ),
               // const SizedBox(height: 20),
-          
-              // Reply button - always show for all messages
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton.icon(
-                  onPressed: () {
-                    Get.back();
-                    try {
-                      final chatController = Get.find<ChatController>();
-                      chatController.startReply(widget.message);
-                    } catch (e) {
-                      debugPrint('⚠️ Could not start reply: $e');
-                      Get.snackbar(
-                        'Error',
-                        'Could not reply to message',
-                        snackPosition: SnackPosition.BOTTOM,
-                        backgroundColor: Colors.red.shade100,
-                      );
-                    }
-                  },
-                  icon: const Icon(Icons.reply, size: 18,color: Colors.white,),
-                  label: const Text('Reply'),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: AppColors.primary,
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(vertical: 12),
+
+              // Reply button - not on call cards (nothing meaningful to quote)
+              if (!widget.message.isCall) ...[
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton.icon(
+                    onPressed: () {
+                      Get.back();
+                      try {
+                        final chatController = Get.find<ChatController>();
+                        chatController.startReply(widget.message);
+                      } catch (e) {
+                        debugPrint('⚠️ Could not start reply: $e');
+                        Get.snackbar(
+                          'Error',
+                          'Could not reply to message',
+                          snackPosition: SnackPosition.BOTTOM,
+                          backgroundColor: Colors.red.shade100,
+                        );
+                      }
+                    },
+                    icon: const Icon(
+                      Icons.reply,
+                      size: 18,
+                      color: Colors.white,
+                    ),
+                    label: const Text('Reply'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppColors.primary,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                    ),
                   ),
                 ),
-              ),
-              const SizedBox(height: 12),
-          
+                const SizedBox(height: 12),
+              ],
+
               // Action buttons
               if (hasLinks && links.isNotEmpty) ...[
                 // Link actions only
@@ -2169,7 +2183,10 @@ class _ChatMessageBubbleState extends State<ChatMessageBubble> {
                       Get.back();
                       _copyText(widget.message.content);
                     },
-                    icon: const Icon(Icons.copy,color: Colors.white,),
+                    icon: const Icon(
+                      Icons.copy,
+                      color: Colors.white,
+                    ),
                     label: const Text('Copy Text'),
                     style: ElevatedButton.styleFrom(
                       backgroundColor: Colors.grey[600],
@@ -2180,7 +2197,7 @@ class _ChatMessageBubbleState extends State<ChatMessageBubble> {
                 ),
               ],
               const SizedBox(height: 8),
-          
+
               // Report message button
               if (!widget.message.isMe) ...[
                 const SizedBox(height: 4),
@@ -2194,7 +2211,11 @@ class _ChatMessageBubbleState extends State<ChatMessageBubble> {
                         targetId: widget.message.id,
                       );
                     },
-                    icon: const Icon(Icons.flag_outlined, size: 18,color: Colors.red,),
+                    icon: const Icon(
+                      Icons.flag_outlined,
+                      size: 18,
+                      color: Colors.red,
+                    ),
                     label: const Text('Report Message'),
                     style: ElevatedButton.styleFrom(
                       backgroundColor: Colors.red.shade50,
