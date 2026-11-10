@@ -115,6 +115,27 @@ class ChatListController extends GetxController {
     Future.microtask(() async {
       try {
         final usernameSyncService = Get.find<UsernameSyncService>();
+
+        // Ensure THIS device's display name is registered on the backend.
+        // Devices that previously hit the 409 collision (username taken by
+        // another user) stayed unregistered — peers saw @user_xxxxx. Now
+        // that duplicates are allowed, verify-and-push heals them: corrects
+        // a missing OR stale registry entry (e.g. an old uniquified name).
+        final deviceId = _storageService.deviceId;
+        final myName = _storageService.getUserName();
+        if (deviceId != null &&
+            deviceId.isNotEmpty &&
+            myName != null &&
+            myName.trim().isNotEmpty) {
+          final registered = await usernameSyncService.getUsername(deviceId);
+          if (registered != myName.trim()) {
+            await usernameSyncService.syncUsername(deviceId, myName.trim());
+            debugPrint(
+              '🔄 Own username healed on backend: "$registered" -> "$myName"',
+            );
+          }
+        }
+
         await usernameSyncService.syncAllChatNames();
         debugPrint('🔄 Existing usernames synced to backend on startup');
       } catch (e) {

@@ -77,7 +77,11 @@ class UsernameSyncService extends GetxService {
           final deviceId = key.substring(10); // Remove 'chat_name_' prefix
           final username = prefs.getString(key);
 
-          if (username != null && username.isNotEmpty) {
+          // Skip @user_xxxxx placeholders — they are generated fallbacks,
+          // not real names, and shouldn't claim a global registry entry.
+          if (username != null &&
+              username.isNotEmpty &&
+              !username.startsWith('@user_')) {
             final success = await syncUsername(deviceId, username);
             if (success) {
               syncedCount++;
@@ -116,8 +120,8 @@ class UsernameSyncService extends GetxService {
         // Mirror to the App Group store so native iOS code can read it
         // before Flutter starts (PushKit incoming-call name lookup).
         if (Platform.isIOS) {
-          unawaited(
-              LocalStorageService.writeContactNameToAppGroup(deviceId, username));
+          unawaited(LocalStorageService.writeContactNameToAppGroup(
+              deviceId, username));
         }
       }
 

@@ -493,11 +493,15 @@ class ConnectionRequestService extends GetxService {
     String requestId,
     String senderDeviceId,
   ) async {
+    final myName = _storageService.deviceId != null
+        ? _storageService.getDisplayName(_storageService.deviceId!)
+        : null;
     // Send acceptance response via socket with senderDeviceId so server knows who to notify
     await _socketService.respondToConnectionRequest(
       requestId,
       true,
       senderDeviceId: senderDeviceId,
+      responderName: myName,
     );
 
     // Create chat entity for the accepted connection
@@ -678,10 +682,14 @@ class ConnectionRequestService extends GetxService {
     }
 
     // Send rejection response with senderDeviceId so server knows who to notify
+    final myName = _storageService.deviceId != null
+        ? _storageService.getDisplayName(_storageService.deviceId!)
+        : null;
     await _socketService.respondToConnectionRequest(
       requestId,
       false,
       senderDeviceId: senderDeviceId,
+      responderName: myName,
     );
 
     // Add to blocked users
@@ -723,9 +731,22 @@ class ConnectionRequestService extends GetxService {
     if (accepted) {
       debugPrint('✅ SENDER LOG: Connection was accepted by recipient');
 
-      // Connection accepted - UPDATE existing chat instead of creating duplicate
-      final targetName = _storageService.getDisplayName(targetDeviceId);
-      debugPrint('👤 SENDER LOG: Target name: $targetName');
+      // Prefer the acceptor's self-reported name from the response payload —
+      // it's immune to username-registry failures (409s) that leave the
+      // local/server lookup at the @user_xxxxx fallback. Only upgrade the
+      // stored name when the current one is a placeholder, so a contact
+      // rename the user chose is never stomped.
+      final payloadName =
+          (data['responderName'] ?? data['targetName']) as String?;
+      final hasRealPayloadName = payloadName != null &&
+          payloadName.trim().isNotEmpty &&
+          !payloadName.trim().startsWith('@user_') &&
+          payloadName.trim() != targetDeviceId;
+      final targetName = hasRealPayloadName
+          ? payloadName.trim()
+          : _storageService.getDisplayName(targetDeviceId);
+      debugPrint(
+          '👤 SENDER LOG: Target name: $targetName (payload: $payloadName)');
 
       // Check if chat already exists and update it
       final existingChat = _storageService.getChat(targetDeviceId);
@@ -744,9 +765,15 @@ class ConnectionRequestService extends GetxService {
                     'Connection accepted - start chatting!')
             ? existingChat.lastMessage
             : defaultAcceptMessage;
+        final existingIsPlaceholder = existingChat.userName.isEmpty ||
+            existingChat.userName.startsWith('@user_') ||
+            existingChat.userName == targetDeviceId;
         updatedChat = existingChat.copyWith(
           lastMessage: lastMessage,
           lastMessageTime: DateTime.now(),
+          userName: hasRealPayloadName && existingIsPlaceholder
+              ? targetName
+              : existingChat.userName,
         );
         debugPrint('🔄 SENDER LOG: Updated existing chat to accepted status');
       } else {

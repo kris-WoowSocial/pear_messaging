@@ -371,6 +371,45 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
     return;
   }
 
+  // Connection accepted/declined pushes carry the responder's self-reported
+  // name — persist it so the chat shows the real contact name even when the
+  // socket response event was missed (killed app, offline). The FCM
+  // notification block is displayed by the OS; nothing else needed here.
+  if (message.data['type'] == 'connection_accepted' ||
+      message.data['type'] == 'connection_declined') {
+    try {
+      final peerId = (message.data['acceptor'] ??
+              message.data['decliner'] ??
+              message.data['senderDeviceId'] ??
+              '')
+          .toString();
+      final peerName =
+          (message.data['acceptorName'] ?? message.data['responderName'] ?? '')
+              .toString()
+              .trim();
+      if (peerId.isNotEmpty &&
+          peerName.isNotEmpty &&
+          !peerName.startsWith('@user_') &&
+          peerName != peerId) {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString('chat_name_$peerId', peerName);
+        final storageService = LocalStorageService();
+        await storageService.init();
+        final chat = storageService.getChat(peerId);
+        if (chat != null &&
+            (chat.userName.isEmpty ||
+                chat.userName.startsWith('@user_') ||
+                chat.userName == peerId)) {
+          await storageService.saveChat(chat.copyWith(userName: peerName));
+        }
+        debugPrint('💾 Background: persisted responder name for $peerId');
+      }
+    } catch (e) {
+      debugPrint('❌ Background: connection-name persist failed: $e');
+    }
+    return;
+  }
+
   // Determine message type and identifiers
   final messageType = message.data['type']?.toString() ?? 'message';
   final isGroup = messageType == 'group_message';
@@ -868,6 +907,42 @@ class FCMService extends GetxService {
     // Handle call-related FCM messages
     final msgType = message.data['type'];
     final callId = message.data['callId'] ?? '';
+
+    // Connection accepted/declined: persist the responder's self-reported
+    // name so the chat shows the real contact name even if the socket
+    // response event raced or was missed. Falls through to the generic
+    // path afterwards so the notification still displays.
+    if (msgType == 'connection_accepted' || msgType == 'connection_declined') {
+      try {
+        final peerId = (message.data['acceptor'] ??
+                message.data['decliner'] ??
+                message.data['senderDeviceId'] ??
+                '')
+            .toString();
+        final peerName = (message.data['acceptorName'] ??
+                message.data['responderName'] ??
+                '')
+            .toString()
+            .trim();
+        if (peerId.isNotEmpty &&
+            peerName.isNotEmpty &&
+            !peerName.startsWith('@user_') &&
+            peerName != peerId) {
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setString('chat_name_$peerId', peerName);
+          final chat = _storageService.getChat(peerId);
+          if (chat != null &&
+              (chat.userName.isEmpty ||
+                  chat.userName.startsWith('@user_') ||
+                  chat.userName == peerId)) {
+            await _storageService.saveChat(chat.copyWith(userName: peerName));
+          }
+          debugPrint('💾 Foreground: persisted responder name for $peerId');
+        }
+      } catch (e) {
+        debugPrint('❌ Foreground: connection-name persist failed: $e');
+      }
+    }
 
     if (msgType == 'call_cancelled') {
       debugPrint(
