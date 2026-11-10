@@ -1524,6 +1524,7 @@ class SocketService extends GetxService {
     String requestId,
     bool accepted, {
     String? senderDeviceId,
+    String? responderName,
   }) async {
     if (!isConnected.value) {
       debugPrint('❌ Cannot respond to connection request: not connected');
@@ -1535,6 +1536,11 @@ class SocketService extends GetxService {
       'accepted': accepted,
       'responderDeviceId': _deviceId,
       if (senderDeviceId != null) 'senderDeviceId': senderDeviceId,
+      // Carry our display name so the requester can show the real contact
+      // name even when the server-side username lookup fails (e.g. the
+      // globally-unique username registry rejected it with a 409).
+      if (responderName != null && responderName.trim().isNotEmpty)
+        'responderName': responderName.trim(),
     });
 
     debugPrint(
