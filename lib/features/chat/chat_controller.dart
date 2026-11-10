@@ -496,24 +496,18 @@ class ChatController extends GetxController with WidgetsBindingObserver {
         await _storageService.updateMessageStatus(
             message.id, MessageStatus.read);
 
-        // Update in UI
+        // Update in UI + entity store (same staleness fix as
+        // _updateMessageStatusIfNotRead — reactions rebuild from entities)
         final index = messages.indexWhere((msg) => msg.id == message.id);
         if (index != -1) {
-          messages[index] = ChatMessageModel(
-            id: messages[index].id,
-            content: messages[index].content,
-            isMe: messages[index].isMe,
-            timestamp: messages[index].timestamp,
-            status: MessageStatus.read,
-            type: messages[index].type,
-            mediaToken: messages[index].mediaToken,
-            mediaExpiryTimestamp: messages[index].mediaExpiryTimestamp,
-            replyTo: messages[index].replyTo,
-            senderName: messages[index].senderName,
-            totalMembers: messages[index].totalMembers,
-            deliveredCount: messages[index].deliveredCount,
-            readCount: messages[index].readCount,
-          );
+          messages[index] =
+              messages[index].copyWith(status: MessageStatus.read);
+        }
+        final entityIdx =
+            _allMessageEntities.indexWhere((m) => m.id == message.id);
+        if (entityIdx >= 0) {
+          _allMessageEntities[entityIdx] = _allMessageEntities[entityIdx]
+              .copyWith(status: MessageStatus.read);
         }
 
         // Send read acknowledgment to sender for delivered messages
@@ -2220,22 +2214,18 @@ class ChatController extends GetxController with WidgetsBindingObserver {
       // Update in storage
       await _storageService.updateMessageStatus(messageId, newStatus);
 
+      // Keep the entity store in sync — reaction/purge paths rebuild UI
+      // models from it and would otherwise resurrect the stale status
+      // (this is what made ticks regress to the clock after reacting).
+      final entityIdx =
+          _allMessageEntities.indexWhere((m) => m.id == messageId);
+      if (entityIdx >= 0) {
+        _allMessageEntities[entityIdx] =
+            _allMessageEntities[entityIdx].copyWith(status: newStatus);
+      }
+
       // Update in UI
-      messages[index] = ChatMessageModel(
-        id: messages[index].id,
-        content: messages[index].content,
-        isMe: messages[index].isMe,
-        timestamp: messages[index].timestamp,
-        status: newStatus,
-        type: messages[index].type,
-        mediaToken: messages[index].mediaToken,
-        mediaExpiryTimestamp: messages[index].mediaExpiryTimestamp,
-        replyTo: messages[index].replyTo,
-        senderName: messages[index].senderName,
-        totalMembers: messages[index].totalMembers,
-        deliveredCount: messages[index].deliveredCount,
-        readCount: messages[index].readCount,
-      );
+      messages[index] = messages[index].copyWith(status: newStatus);
     } catch (e) {
       debugPrint('❌ Error updating message status: $e');
     }
@@ -2252,22 +2242,11 @@ class ChatController extends GetxController with WidgetsBindingObserver {
       final index = messages.indexWhere((msg) => msg.id == messageId);
       if (index == -1) return;
 
-      final updated = ChatMessageModel(
-        id: messages[index].id,
-        content: messages[index].content,
-        isMe: messages[index].isMe,
-        timestamp: messages[index].timestamp,
-        status: messages[index].status,
-        type: messages[index].type,
-        mediaToken: messages[index].mediaToken,
-        mediaExpiryTimestamp: messages[index].mediaExpiryTimestamp,
-        replyTo: messages[index].replyTo,
-        senderName: messages[index].senderName,
+      messages[index] = messages[index].copyWith(
         totalMembers: totalMembers ?? messages[index].totalMembers,
         deliveredCount: deliveredCount ?? messages[index].deliveredCount,
         readCount: readCount ?? messages[index].readCount,
       );
-      messages[index] = updated;
 
       // Persist counts to storage
       final storedMessages = await _storageService.getChatMessages(chatId);

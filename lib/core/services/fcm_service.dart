@@ -341,6 +341,36 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
     return;
   }
 
+  // Emoji reaction push — persist the reaction silently. The FCM
+  // notification block is displayed by the OS automatically; nothing else
+  // to do here beyond keeping Hive in sync for the next chat open.
+  if (message.data['type'] == 'reaction') {
+    try {
+      final messageId = message.data['messageId']?.toString() ?? '';
+      final reactorId = message.data['senderDeviceId']?.toString() ?? '';
+      final emoji = message.data['emoji']?.toString() ?? '';
+      final action = message.data['action']?.toString() ?? 'add';
+      if (messageId.isNotEmpty && reactorId.isNotEmpty && emoji.isNotEmpty) {
+        final storageService = LocalStorageService();
+        final json = await storageService.getStoredMessageJson(messageId);
+        if (json != null) {
+          final reactions = json['reactions'] is Map
+              ? Map<String, String>.from(json['reactions'] as Map)
+              : <String, String>{};
+          if (action == 'add') {
+            reactions[reactorId] = emoji;
+          } else {
+            reactions.remove(reactorId);
+          }
+          await storageService.setMessageReactions(messageId, reactions);
+        }
+      }
+    } catch (e) {
+      debugPrint('❌ Background: reaction apply failed: $e');
+    }
+    return;
+  }
+
   // Determine message type and identifiers
   final messageType = message.data['type']?.toString() ?? 'message';
   final isGroup = messageType == 'group_message';
@@ -373,32 +403,33 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
       }
 
       await flutterLocalNotificationsPlugin.show(
-      DateTime.now().millisecondsSinceEpoch.remainder(100000),
-      title,
-      body,
-      const NotificationDetails(
-        android: AndroidNotificationDetails(
-          'high_importance_channel',
-          'High Importance Notifications',
-          channelDescription:
-              'This channel is used for important notifications.',
-          importance: Importance.max,
-          priority: Priority.max,
-          playSound: true,
-          enableVibration: true,
+        DateTime.now().millisecondsSinceEpoch.remainder(100000),
+        title,
+        body,
+        const NotificationDetails(
+          android: AndroidNotificationDetails(
+            'high_importance_channel',
+            'High Importance Notifications',
+            channelDescription:
+                'This channel is used for important notifications.',
+            importance: Importance.max,
+            priority: Priority.max,
+            playSound: true,
+            enableVibration: true,
+          ),
+          iOS: DarwinNotificationDetails(
+            presentAlert: true,
+            presentBadge: true,
+            presentSound: true,
+          ),
         ),
-        iOS: DarwinNotificationDetails(
-          presentAlert: true,
-          presentBadge: true,
-          presentSound: true,
-        ),
-      ),
         payload: payload,
       );
 
       debugPrint('📱 Background notification shown for sender: $senderId');
     } else {
-      debugPrint('📱 System already displayed notification, skipping local show');
+      debugPrint(
+          '📱 System already displayed notification, skipping local show');
     }
   } catch (e) {
     debugPrint('❌ Error showing background notification: $e');
@@ -912,6 +943,23 @@ class FCMService extends GetxService {
       return;
     }
 
+    // Emoji reaction push — route through the active reaction handler
+    // (ChatController when its chat is open, ChatListController otherwise);
+    // it updates both the in-memory lists and Hive. No local notification:
+    // the socket relay already covers live delivery and this push is the
+    // backgrounded-peer path.
+    if (msgType == 'reaction') {
+      try {
+        final handler = _socketService?.onMessageReaction;
+        if (handler != null) {
+          handler(Map<String, dynamic>.from(message.data));
+        }
+      } catch (e) {
+        debugPrint('⚠️ Foreground: reaction handler failed: $e');
+      }
+      return;
+    }
+
     // Handle payment confirmed notification
     if (message.data['type'] == 'payment_confirmed') {
       final planId = message.data['planId'] ?? '6_months';
@@ -1229,7 +1277,8 @@ class FCMService extends GetxService {
     if (!shouldSuppressNotification && senderId.isNotEmpty) {
       try {
         var title = message.notification?.title ?? 'New Message';
-        final body = message.notification?.body ?? 'You have a new encrypted message';
+        final body =
+            message.notification?.body ?? 'You have a new encrypted message';
 
         // If title is a raw device ID (no username found), format it as friendly name
         if (title == senderId && senderId.length > 5) {

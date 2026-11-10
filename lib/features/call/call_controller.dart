@@ -3093,6 +3093,15 @@ class CallController extends GetxController {
     // Stop ringtone
     _ringtoneService.stopRingtone(reason: 'rejected');
 
+    // Log the declined call BEFORE WebRTC teardown + state reset — those
+    // clear _latestIncomingCallData/_callStartTime and a generic 'ended'
+    // fallback would misclassify this as missed.
+    _logCallHistory(
+      reason: 'rejected',
+      terminatedBy: 'callee',
+      callId: callId,
+    );
+
     if (_socketService.isConnected.value) {
       _socketService.rejectCall(
         callId: callId,
@@ -3721,6 +3730,7 @@ class CallController extends GetxController {
     _logCallHistory(
       reason: reason ?? 'rejected',
       terminatedBy: data['terminatedBy'] as String?,
+      callId: data['callId'] as String?,
     );
 
     _webrtcService.endCall();
@@ -3816,6 +3826,7 @@ class CallController extends GetxController {
     _logCallHistory(
       reason: reason,
       terminatedBy: data['terminatedBy'] as String?,
+      callId: callId,
     );
 
     // WhatsApp-style caller no-answer screen (ff_call_no_answer_screen):
@@ -4727,6 +4738,7 @@ class CallController extends GetxController {
     CallKitService.liveCallId = () => currentCallId.value;
     unawaited(CallKitService().reconcileNativeCalls(completedCallId: callId));
     isCaller.value = false;
+    _callStartTime = null;
     _latestIncomingCallData = null;
     _shownIncomingCallIds.clear();
     _nativeCallHeld = false;
@@ -4844,18 +4856,26 @@ class CallController extends GetxController {
 
   /// Log call history entry
   /// Called when call ends - classifies and stores the outcome
-  void _logCallHistory({required String reason, String? terminatedBy}) {
+  void _logCallHistory({
+    required String reason,
+    String? terminatedBy,
+    String? callId,
+  }) {
     // Skip if no call was started
     if (_callStartTime == null) {
       debugPrint('📞 Skipping call history log - no call start time');
       return;
     }
 
-    // Generate a temporary call ID if server hasn't assigned one yet
-    // This happens when caller ends before server responds with call ID
-    final callId = currentCallId.value.isNotEmpty
-        ? currentCallId.value
-        : 'temp_${_callStartTime!.millisecondsSinceEpoch}';
+    // Prefer the server-assigned call id so the deterministic card id
+    // (`callcard_<callId>`) dedupes re-logs. Callees ringing but not yet
+    // accepted have no currentCallId — fall back to the stored incoming
+    // payload, then a temp id as the last resort.
+    final resolvedCallId = callId ??
+        (currentCallId.value.isNotEmpty
+            ? currentCallId.value
+            : (_latestIncomingCallData?['callId'] as String?) ??
+                'temp_${_callStartTime!.millisecondsSinceEpoch}');
 
     // Determine call status based on direction and outcome
     CallStatus status;
@@ -4881,7 +4901,7 @@ class CallController extends GetxController {
 
     // Create history entry
     final entry = CallHistoryEntry(
-      id: callId,
+      id: resolvedCallId,
       remoteDeviceId: remoteDeviceId.value,
       remoteName: remoteDisplayName.value.isNotEmpty
           ? remoteDisplayName.value
@@ -5160,6 +5180,15 @@ class CallController extends GetxController {
     }
 
     remoteDeviceId.value = incomingCallerId;
+    // Callee-side call tracking for history + the WhatsApp-style chat card.
+    // Set once the call has survived every reject gate — before the
+    // native-owned and background UI early-returns below — so declined,
+    // cancelled and missed calls all reach _logCallHistory (which
+    // early-returns while _callStartTime is null).
+    isCaller.value = false;
+    _callStartTime = DateTime.now();
+    _wasConnected = false;
+    _durationSeconds = 0;
     // Resolve the display name through the single resolver: payload name ->
     // saved contact -> server profile -> friendly fallback. The socket
     // payload's callerName is often the sender's generated @user_xxxxx
