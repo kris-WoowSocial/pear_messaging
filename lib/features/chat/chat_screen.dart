@@ -989,7 +989,7 @@ class ChatScreen extends GetView<ChatController> {
 
       // Step 2: Preview sheet — includes the "[1]" view-once toggle.
       // Returns null if the user cancelled.
-      final isViewOnce = await _showImageSendPreview(compressedBytes);
+      final isViewOnce = await _showImageSendPreview([compressedBytes]);
       if (isViewOnce == null) return;
 
       // Step 3: Add bubble immediately so user sees it with upload progress
@@ -1046,10 +1046,10 @@ class ChatScreen extends GetView<ChatController> {
     }
   }
 
-  /// Media preview panel before a single image is sent — image preview,
-  /// a "[1]" view-once toggle (accent green when active), and the send
-  /// button. Returns `true`/`false` for the toggle state, `null` on cancel.
-  Future<bool?> _showImageSendPreview(Uint8List imageBytes) {
+  /// Media preview panel before image(s) are sent — preview, a "[1]"
+  /// view-once toggle (accent green when active), and the send button.
+  /// Returns `true`/`false` for the toggle state, `null` on cancel.
+  Future<bool?> _showImageSendPreview(List<Uint8List> images) {
     final isViewOnce = false.obs;
     return Get.bottomSheet<bool>(
       SafeArea(
@@ -1071,13 +1071,30 @@ class ChatScreen extends GetView<ChatController> {
                   borderRadius: BorderRadius.circular(2),
                 ),
               ),
-              ClipRRect(
-                borderRadius: BorderRadius.circular(12),
-                child: Image.memory(
-                  imageBytes,
-                  height: 260,
-                  fit: BoxFit.contain,
-                ),
+              SizedBox(
+                height: 260,
+                child: images.length == 1
+                    ? ClipRRect(
+                        borderRadius: BorderRadius.circular(12),
+                        child: Image.memory(
+                          images[0],
+                          height: 260,
+                          fit: BoxFit.contain,
+                        ),
+                      )
+                    : ListView.separated(
+                        scrollDirection: Axis.horizontal,
+                        itemCount: images.length,
+                        separatorBuilder: (_, __) => const SizedBox(width: 8),
+                        itemBuilder: (_, i) => ClipRRect(
+                          borderRadius: BorderRadius.circular(12),
+                          child: Image.memory(
+                            images[i],
+                            height: 260,
+                            fit: BoxFit.contain,
+                          ),
+                        ),
+                      ),
               ),
               const SizedBox(height: 16),
               Row(
@@ -1214,9 +1231,16 @@ class ChatScreen extends GetView<ChatController> {
         );
         return;
       }
+
+      // Same preview sheet the single-image path uses — includes the "[1]"
+      // view-once toggle. Returns null if the user cancelled.
+      final isViewOnce = await _showImageSendPreview(compressed);
+      if (isViewOnce == null) return;
+
       await controller.sendImagesSequentially(
         compressed,
         maxPerBatch: _maxImagesPerSend,
+        isViewOnce: isViewOnce,
       );
     } catch (e) {
       debugPrint('❌ Error in multi-image send: $e');

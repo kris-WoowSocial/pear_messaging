@@ -1633,10 +1633,12 @@ class ChatController extends GetxController with WidgetsBindingObserver {
   Future<List<String?>> sendImagesSequentially(
     List<Uint8List> images, {
     int maxPerBatch = 5,
+    bool isViewOnce = false,
   }) async {
     final results = <String?>[];
     for (final bytes in images.take(maxPerBatch)) {
-      final messageId = await createPendingImageMessage(bytes);
+      final messageId =
+          await createPendingImageMessage(bytes, isViewOnce: isViewOnce);
       if (messageId == null) {
         results.add(null);
         continue;
