@@ -69,6 +69,7 @@ class SocketService extends GetxService {
   Function(Map<String, dynamic>)? onCallStatusResponse;
   Function(Map<String, dynamic>)? onMessageReaction;
   Function(Map<String, dynamic>)? onDisappearTimerSet;
+  Function(Map<String, dynamic>)? onViewOnceOpened;
 
   // Callbacks for group chat events
   Function(Map<String, dynamic>)? onGroupMessageReceived;
@@ -649,6 +650,14 @@ class SocketService extends GetxService {
       }
     });
 
+    // Chat: recipient opened a view-once media item (relayed to sender)
+    _socket?.on('view_once_opened', (data) {
+      debugPrint('👁️ View-once opened: $data');
+      if (onViewOnceOpened != null && data != null) {
+        onViewOnceOpened!(Map<String, dynamic>.from(data));
+      }
+    });
+
     // Group chat: incoming message
     _socket?.on('group_message', (data) {
       debugPrint('👥 Group message: $data');
@@ -941,6 +950,7 @@ class SocketService extends GetxService {
     int? duration,
     String? waveformData,
     int? expiresAt,
+    bool? isViewOnce,
   }) async {
     if (!isConnected.value) {
       debugPrint('❌ Cannot send message: not connected');
@@ -1016,6 +1026,9 @@ class SocketService extends GetxService {
       // Disappearing messages: sender-stamped expiry so the receiver
       // deletes at the same deadline even if its timer state is stale.
       if (expiresAt != null) 'expiresAt': expiresAt,
+      // View-once flag — receiver renders the "[1] Photo" tile and must
+      // not pre-fetch the media token.
+      if (isViewOnce == true) 'isViewOnce': true,
     };
 
     _socket?.emit('send_message', messageData);
@@ -1074,6 +1087,7 @@ class SocketService extends GetxService {
     required String recipientDeviceId,
     required String mediaToken,
     int? expiresAt,
+    bool isViewOnce = false,
   }) async {
     debugPrint('📷 SocketService.sendMediaMessage token=$mediaToken');
 
@@ -1088,6 +1102,7 @@ class SocketService extends GetxService {
       recipientDeviceId: recipientDeviceId,
       content: 'MEDIA:$mediaToken',
       expiresAt: expiresAt,
+      isViewOnce: isViewOnce,
     );
   }
 
@@ -1817,6 +1832,25 @@ class SocketService extends GetxService {
       'chatId': chatId,
       'recipientId': recipientId,
       'disappearingAfterSeconds': seconds,
+    });
+  }
+
+  /// Notify the original sender that this device opened (and destroyed) a
+  /// view-once media item. `recipientId` is the media's sender. Real-time
+  /// relay — dropped if the sender is offline.
+  void sendViewOnceOpened({
+    required String messageId,
+    required String chatId,
+    required String recipientId,
+  }) {
+    if (!isConnected.value) {
+      debugPrint('❌ Cannot send view_once_opened: not connected');
+      return;
+    }
+    _socket?.emit('view_once_opened', {
+      'messageId': messageId,
+      'chatId': chatId,
+      'recipientId': recipientId,
     });
   }
 

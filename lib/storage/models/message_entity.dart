@@ -65,6 +65,13 @@ class MessageEntity {
   /// Stamped at save time from the chat's `disappearingAfterSeconds`.
   final int? expiresAt;
 
+  // View-once media fields
+  /// True when the sender marked this media as view-once ("1" badge).
+  final bool isViewOnce;
+
+  /// Set once the recipient has opened (and purged) a view-once item.
+  final bool isViewOnceOpened;
+
   MessageEntity({
     required this.id,
     required this.chatId,
@@ -89,6 +96,8 @@ class MessageEntity {
     this.waveformData,
     this.reactions = const {},
     this.expiresAt,
+    this.isViewOnce = false,
+    this.isViewOnceOpened = false,
   });
 
   bool get isExpired =>
@@ -119,6 +128,8 @@ class MessageEntity {
       'waveformData': waveformData,
       'reactions': reactions,
       'expiresAt': expiresAt,
+      'isViewOnce': isViewOnce,
+      'isViewOnceOpened': isViewOnceOpened,
     };
   }
 
@@ -160,6 +171,8 @@ class MessageEntity {
           ? Map<String, String>.from(json['reactions'] as Map)
           : const {},
       expiresAt: json['expiresAt'] as int?,
+      isViewOnce: json['isViewOnce'] as bool? ?? false,
+      isViewOnceOpened: json['isViewOnceOpened'] as bool? ?? false,
     );
   }
 
@@ -187,6 +200,8 @@ class MessageEntity {
     String? waveformData,
     Map<String, String>? reactions,
     int? expiresAt,
+    bool? isViewOnce,
+    bool? isViewOnceOpened,
   }) {
     return MessageEntity(
       id: id ?? this.id,
@@ -212,6 +227,8 @@ class MessageEntity {
       waveformData: waveformData ?? this.waveformData,
       reactions: reactions ?? this.reactions,
       expiresAt: expiresAt ?? this.expiresAt,
+      isViewOnce: isViewOnce ?? this.isViewOnce,
+      isViewOnceOpened: isViewOnceOpened ?? this.isViewOnceOpened,
     );
   }
 }

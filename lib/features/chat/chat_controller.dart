@@ -23,6 +23,7 @@ import '../../storage/models/group_member_entity.dart';
 import '../../storage/models/reply_to_entity.dart';
 import '../chat_list/chat_list_controller.dart';
 import 'chat_message_model.dart';
+import 'view_once_viewer_screen.dart';
 
 class ChatController extends GetxController with WidgetsBindingObserver {
   final LocalStorageService _storageService = Get.find();
@@ -378,6 +379,7 @@ class ChatController extends GetxController with WidgetsBindingObserver {
   Function(Map<String, dynamic>)? _previousGroupTypingHandler;
   Function(Map<String, dynamic>)? _previousReactionHandler;
   Function(Map<String, dynamic>)? _previousDisappearHandler;
+  Function(Map<String, dynamic>)? _previousViewOnceHandler;
 
   /// Check recipient's online presence
   void _checkRecipientPresence() {
@@ -579,6 +581,8 @@ class ChatController extends GetxController with WidgetsBindingObserver {
     _socketService.onMessageReaction = _handleIncomingReaction;
     _previousDisappearHandler = _socketService.onDisappearTimerSet;
     _socketService.onDisappearTimerSet = _handleDisappearTimerSet;
+    _previousViewOnceHandler = _socketService.onViewOnceOpened;
+    _socketService.onViewOnceOpened = _handleViewOnceOpened;
 
     // Setup presence listeners when socket connects
     _setupPresenceListeners();
@@ -789,6 +793,8 @@ class ChatController extends GetxController with WidgetsBindingObserver {
           // Sender-stamped expiry wins; saveMessage stamps one from the
           // chat timer when the payload doesn't carry it.
           expiresAt: (data['expiresAt'] as num?)?.toInt(),
+          // View-once: render "[1] Photo" tile; media is fetched only on tap.
+          isViewOnce: data['isViewOnce'] == true,
         );
 
         await _storageService.saveMessage(message);
@@ -1474,7 +1480,11 @@ class ChatController extends GetxController with WidgetsBindingObserver {
   /// Step 1 of WhatsApp-style image send:
   /// Add the bubble immediately with [localBytes] preview and uploading state.
   /// Returns the messageId so the caller can track progress and finalize.
-  Future<String?> createPendingImageMessage(Uint8List localBytes) async {
+  /// [isViewOnce] marks the bubble as a "[1] Photo" view-once item.
+  Future<String?> createPendingImageMessage(
+    Uint8List localBytes, {
+    bool isViewOnce = false,
+  }) async {
     if (!isGroup) {
       _updateLocalBlockState();
       if (isBlocked.value) {
@@ -1503,6 +1513,7 @@ class ChatController extends GetxController with WidgetsBindingObserver {
       status: MessageStatus.sending,
       isMe: true,
       type: MessageType.image,
+      isViewOnce: isViewOnce,
     );
 
     _appendMessage(message);
@@ -1521,6 +1532,7 @@ class ChatController extends GetxController with WidgetsBindingObserver {
     if (index == -1) return false;
 
     final timestamp = messages[index].timestamp;
+    final isViewOnce = messages[index].isViewOnce;
 
     final message = MessageEntity(
       id: messageId,
@@ -1532,6 +1544,7 @@ class ChatController extends GetxController with WidgetsBindingObserver {
       status: MessageStatus.sending,
       isMe: true,
       type: MessageType.image,
+      isViewOnce: isViewOnce,
     );
 
     messages[index] = ChatMessageModel.fromEntity(message);
@@ -1552,6 +1565,7 @@ class ChatController extends GetxController with WidgetsBindingObserver {
               recipientDeviceId: recipientDeviceId,
               mediaToken: token,
               expiresAt: _newMessageExpiresAt,
+              isViewOnce: isViewOnce,
             );
 
       if (success) {
@@ -1593,11 +1607,15 @@ class ChatController extends GetxController with WidgetsBindingObserver {
         return false;
       }
       uploadProgressMap[messageId] ??= 0.0.obs;
+      final isViewOnce =
+          messages.firstWhereOrNull((m) => m.id == messageId)?.isViewOnce ??
+              false;
       final token = await MediaUploadService.uploadImage(
         EncryptionService.encryptMessage(base64Encode(bytes)),
         onProgress: (progress) {
           uploadProgressMap[messageId]?.value = progress;
         },
+        isViewOnce: isViewOnce,
       );
       return finalizeImageMessage(messageId, token);
     } catch (e) {
@@ -2395,6 +2413,7 @@ class ChatController extends GetxController with WidgetsBindingObserver {
     }
     _socketService.onMessageReaction = _previousReactionHandler;
     _socketService.onDisappearTimerSet = _previousDisappearHandler;
+    _socketService.onViewOnceOpened = _previousViewOnceHandler;
     _expiryPurgeTimer?.cancel();
     _expiryPurgeTimer = null;
     if (_previousGroupMessageHandler != null) {
@@ -2866,6 +2885,119 @@ class ChatController extends GetxController with WidgetsBindingObserver {
     unawaited(_insertSystemMessage(seconds > 0
         ? '$name set disappearing messages to ${disappearTimerLabel(seconds)}'
         : '$name turned disappearing messages off'));
+  }
+
+  /// Extract the media token from `MEDIA:`/`IMAGE:` message content.
+  String? _mediaTokenFromContent(String content) {
+    if (content.startsWith('MEDIA:')) return content.substring(6);
+    if (content.startsWith('IMAGE:')) return content.substring(6);
+    return null;
+  }
+
+  /// Recipient tapped the "[1] Photo" tile: fetch the one-time blob, show it
+  /// in the full-screen secure viewer, then mark + purge + notify the sender.
+  Future<void> openViewOncePhoto(ChatMessageModel message) async {
+    if (message.isMe || !message.isViewOnce || message.isViewOnceOpened) {
+      return;
+    }
+    final token =
+        message.mediaToken ?? _mediaTokenFromContent(message.content);
+    if (token == null || token == 'pending') return;
+
+    try {
+      final blob = await MediaUploadService.downloadImage(token);
+      if (blob == null) {
+        // Already consumed elsewhere or expired — it can never be viewed.
+        await markViewOnceAsOpened(message.id);
+        Get.snackbar(
+          'Photo',
+          'This photo is no longer available',
+          snackPosition: SnackPosition.BOTTOM,
+        );
+        return;
+      }
+      final bytes = base64Decode(EncryptionService.decryptMessage(blob));
+
+      // Full-screen viewer — returns when the user exits/dismisses.
+      await Get.to(() => ViewOnceViewerScreen(imageBytes: bytes));
+      await markViewOnceAsOpened(message.id);
+    } catch (e) {
+      debugPrint('❌ openViewOncePhoto failed: $e');
+      Get.snackbar(
+        'Photo',
+        'Could not open this photo',
+        snackPosition: SnackPosition.BOTTOM,
+      );
+    }
+  }
+
+  /// Recipient-side completion: flag the entity, wipe the local media bytes,
+  /// persist a box-level write (no re-encryption), and notify the sender.
+  Future<void> markViewOnceAsOpened(String messageId) async {
+    final entityIdx =
+        _allMessageEntities.indexWhere((m) => m.id == messageId);
+    final entity = entityIdx >= 0 ? _allMessageEntities[entityIdx] : null;
+    if (entity != null && entity.isViewOnceOpened) return; // idempotent
+
+    if (entity != null) {
+      _allMessageEntities[entityIdx] =
+          entity.copyWith(isViewOnceOpened: true);
+    }
+    unawaited(_storageService.setMessageViewOnceOpened(messageId));
+
+    // Purge decrypted bytes from both cache layers.
+    try {
+      await Get.find<ImageCacheService>().removeCachedImageById(messageId);
+    } catch (_) {}
+
+    final uiIdx = messages.indexWhere((m) => m.id == messageId);
+    if (uiIdx >= 0 && !messages[uiIdx].isViewOnceOpened) {
+      messages[uiIdx] = messages[uiIdx].copyWith(isViewOnceOpened: true);
+      messages.refresh();
+    }
+
+    _socketService.sendViewOnceOpened(
+      messageId: messageId,
+      chatId: entity?.chatId ?? chatId,
+      recipientId: entity?.senderId ?? recipientDeviceId,
+    );
+  }
+
+  /// Sender-side notice: the recipient opened (and destroyed) this photo.
+  void _handleViewOnceOpened(Map<String, dynamic> data) {
+    final messageId = data['messageId'] as String?;
+    if (messageId == null) return;
+    final idx = _allMessageEntities.indexWhere((m) => m.id == messageId);
+    if (idx >= 0 && _allMessageEntities[idx].isMe) {
+      unawaited(_applyViewOnceOpened(messageId));
+    } else {
+      // Outside the loaded page (or not mine) — box-level write only.
+      unawaited(_storageService.setMessageViewOnceOpened(messageId));
+    }
+  }
+
+  /// Mark the stored entity as opened without emitting the socket event
+  /// (used for incoming `view_once_opened` notices).
+  Future<void> _applyViewOnceOpened(String messageId) async {
+    final entityIdx =
+        _allMessageEntities.indexWhere((m) => m.id == messageId);
+    if (entityIdx < 0 || _allMessageEntities[entityIdx].isViewOnceOpened) {
+      return;
+    }
+    _allMessageEntities[entityIdx] =
+        _allMessageEntities[entityIdx].copyWith(isViewOnceOpened: true);
+    unawaited(_storageService.setMessageViewOnceOpened(messageId));
+    // Drop the sender's own cached copy — once opened, the media should be
+    // unrecoverable on both devices.
+    try {
+      unawaited(Get.find<ImageCacheService>()
+          .removeCachedImageById(messageId));
+    } catch (_) {}
+    final uiIdx = messages.indexWhere((m) => m.id == messageId);
+    if (uiIdx >= 0 && !messages[uiIdx].isViewOnceOpened) {
+      messages[uiIdx] = messages[uiIdx].copyWith(isViewOnceOpened: true);
+      messages.refresh();
+    }
   }
 
   /// Insert a lightweight centered system bubble into this chat thread.

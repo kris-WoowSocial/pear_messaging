@@ -787,6 +787,23 @@ class LocalStorageService extends GetxService {
     }
   }
 
+  /// Mark a view-once message as opened — box-level write so stored (already
+  /// encrypted) content is never re-saved.
+  Future<bool> setMessageViewOnceOpened(String messageId) async {
+    try {
+      await _ensureMessagesBoxOpen();
+      final value = _messagesBox.get(messageId);
+      if (value is! Map) return false;
+      final jsonMap = Map<String, dynamic>.from(value)
+        ..['isViewOnceOpened'] = true;
+      await _messagesBox.put(messageId, jsonMap);
+      return true;
+    } catch (e) {
+      debugPrint('💬 setMessageViewOnceOpened error for $messageId: $e');
+      return false;
+    }
+  }
+
   /// Read a message's raw stored JSON (reactions-only callers; content stays
   /// encrypted). Returns null when absent.
   Future<Map<String, dynamic>?> getStoredMessageJson(String messageId) async {

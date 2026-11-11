@@ -987,13 +987,19 @@ class ChatScreen extends GetView<ChatController> {
         return;
       }
 
-      // Step 2: Add bubble immediately so user sees it with upload progress
+      // Step 2: Preview sheet — includes the "[1]" view-once toggle.
+      // Returns null if the user cancelled.
+      final isViewOnce = await _showImageSendPreview(compressedBytes);
+      if (isViewOnce == null) return;
+
+      // Step 3: Add bubble immediately so user sees it with upload progress
       pendingMsgId = await controller.createPendingImageMessage(
         compressedBytes,
+        isViewOnce: isViewOnce,
       );
       if (pendingMsgId == null) return;
 
-      // Step 3: Encrypt + upload; progress goes directly into the bubble overlay
+      // Step 4: Encrypt + upload; progress goes directly into the bubble overlay
       final base64Image = base64Encode(compressedBytes);
       final encryptedBlob = EncryptionService.encryptMessage(base64Image);
 
@@ -1002,6 +1008,7 @@ class ChatScreen extends GetView<ChatController> {
         onProgress: (progress) {
           controller.uploadProgressMap[pendingMsgId]?.value = progress;
         },
+        isViewOnce: isViewOnce,
       );
 
       // Step 4: Finalize bubble content + send token via socket
@@ -1037,6 +1044,121 @@ class ChatScreen extends GetView<ChatController> {
         duration: const Duration(seconds: 4),
       );
     }
+  }
+
+  /// Media preview panel before a single image is sent — image preview,
+  /// a "[1]" view-once toggle (accent green when active), and the send
+  /// button. Returns `true`/`false` for the toggle state, `null` on cancel.
+  Future<bool?> _showImageSendPreview(Uint8List imageBytes) {
+    final isViewOnce = false.obs;
+    return Get.bottomSheet<bool>(
+      SafeArea(
+        child: Container(
+          decoration: const BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+          ),
+          padding: const EdgeInsets.fromLTRB(20, 16, 20, 20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 36,
+                height: 4,
+                margin: const EdgeInsets.only(bottom: 16),
+                decoration: BoxDecoration(
+                  color: Colors.grey[300],
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(12),
+                child: Image.memory(
+                  imageBytes,
+                  height: 260,
+                  fit: BoxFit.contain,
+                ),
+              ),
+              const SizedBox(height: 16),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  // View-once "1" toggle — 1:1 chats only (the group socket
+                  // payload doesn't carry the flag).
+                  if (!controller.isGroup)
+                    Obx(() => GestureDetector(
+                        onTap: () => isViewOnce.value = !isViewOnce.value,
+                        child: Row(
+                          children: [
+                            Container(
+                              width: 40,
+                              height: 40,
+                              decoration: BoxDecoration(
+                                shape: BoxShape.circle,
+                                color: isViewOnce.value
+                                    ? const Color(0xFF25D366)
+                                    : Colors.transparent,
+                                border: Border.all(
+                                  color: isViewOnce.value
+                                      ? const Color(0xFF25D366)
+                                      : Colors.grey[500]!,
+                                  width: 2,
+                                ),
+                              ),
+                              child: Center(
+                                child: Text(
+                                  '1',
+                                  style: TextStyle(
+                                    color: isViewOnce.value
+                                        ? Colors.white
+                                        : Colors.grey[600],
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Text(
+                              'View once',
+                              style: TextStyle(
+                                color: isViewOnce.value
+                                    ? const Color(0xFF25D366)
+                                    : Colors.grey[700],
+                                fontSize: 14,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ))
+                  else
+                    const SizedBox.shrink(),
+                  // Send button
+                  GestureDetector(
+                    onTap: () => Get.back(result: isViewOnce.value),
+                    child: Container(
+                      width: 52,
+                      height: 52,
+                      decoration: const BoxDecoration(
+                        color: Color(0xFF25D366),
+                        shape: BoxShape.circle,
+                      ),
+                      child: const Icon(
+                        Icons.send,
+                        color: Colors.white,
+                        size: 24,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+      isScrollControlled: true,
+    );
   }
 
   /// WhatsApp-style multi-image send: pick up to 5 images, bubble each in

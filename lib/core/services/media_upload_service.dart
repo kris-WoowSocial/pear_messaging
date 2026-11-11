@@ -23,6 +23,7 @@ class MediaUploadService {
     String encryptedBlob, {
     void Function(double progress)? onProgress,
     int maxRetries = 3,
+    bool isViewOnce = false,
   }) async {
     debugPrint(
       '📤 MediaUploadService: uploading blob (${encryptedBlob.length} chars)',
@@ -45,7 +46,11 @@ class MediaUploadService {
       }
 
       try {
-        final token = await _attemptUpload(encryptedBlob, onProgress);
+        final token = await _attemptUpload(
+          encryptedBlob,
+          onProgress,
+          isViewOnce: isViewOnce,
+        );
         debugPrint(
           '✅ MediaUploadService: upload succeeded on attempt ${attempt + 1}',
         );
@@ -70,13 +75,17 @@ class MediaUploadService {
 
   static Future<String> _attemptUpload(
     String encryptedBlob,
-    void Function(double progress)? onProgress,
-  ) async {
+    void Function(double progress)? onProgress, {
+    bool isViewOnce = false,
+  }) async {
     final uri = Uri.parse('$_baseUrl/api/media/upload');
     final request = http.Request('POST', uri);
     request.headers['Content-Type'] = 'application/json';
 
-    final bodyBytes = utf8.encode(jsonEncode({'encryptedBlob': encryptedBlob}));
+    final bodyBytes = utf8.encode(jsonEncode({
+      'encryptedBlob': encryptedBlob,
+      if (isViewOnce) 'isViewOnce': true,
+    }));
     request.bodyBytes = bodyBytes;
 
     final client = http.Client();
