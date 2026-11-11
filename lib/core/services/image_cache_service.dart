@@ -151,6 +151,21 @@ class ImageCacheService extends GetxService {
     }
   }
 
+  /// Remove a cached image by message ID from both memory and disk.
+  /// Used by view-once media purge — zeroes the in-memory copy first.
+  Future<void> removeCachedImageById(String messageId) async {
+    try {
+      final key = 'id_$messageId';
+      final data = _memoryCache.remove(key);
+      data?.fillRange(0, data.length, 0);
+      if (_cacheBox.isOpen && _cacheBox.containsKey(key)) {
+        await _cacheBox.delete(key);
+      }
+    } catch (e) {
+      debugPrint('❌ Error removing cached image by id: $e');
+    }
+  }
+
   static Uint8List _listToUint8List(List<int> list) => Uint8List.fromList(list);
 
   /// Cache processed image data (legacy hash-based)

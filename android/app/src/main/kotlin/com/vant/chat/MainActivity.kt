@@ -71,6 +71,7 @@ class MainActivity : FlutterFragmentActivity() {
     private val PROXIMITY_CHANNEL = "com.pear.messaging/proximity"
     private val INCOMING_CALL_CHANNEL = "com.vant.chat/incoming_call"
     private val EVENT_CHANNEL = "com.vant.chat/call_events"
+    private val SECURITY_CHANNEL = "com.vant.chat/security"
     private var pendingIntent: Intent? = null
     private var pendingCallAction: String? = null
     private var pendingCallData: Map<String, String>? = null
@@ -228,6 +229,23 @@ class MainActivity : FlutterFragmentActivity() {
         }
         
         // Setup audio routing method channel for reliable speakerphone control during WebRTC calls
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, SECURITY_CHANNEL).setMethodCallHandler { call, result ->
+            when (call.method) {
+                // View-once viewer: FLAG_SECURE blocks screenshots/screen
+                // recording while the full-screen photo is visible.
+                "setSecureFlag" -> {
+                    val enable = call.argument<Boolean>("enable") == true
+                    if (enable) {
+                        window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+                    } else {
+                        window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+                    }
+                    result.success(true)
+                }
+                else -> result.notImplemented()
+            }
+        }
+
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, AUDIO_CHANNEL).setMethodCallHandler { call, result ->
             when (call.method) {
                 "setSpeakerphoneOn" -> {

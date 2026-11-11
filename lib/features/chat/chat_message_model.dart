@@ -22,6 +22,8 @@ class ChatMessageModel {
   final String? waveformData;
   final Map<String, String> reactions;
   final int? expiresAt;
+  final bool isViewOnce;
+  final bool isViewOnceOpened;
 
   ChatMessageModel({
     required this.id,
@@ -44,6 +46,8 @@ class ChatMessageModel {
     this.waveformData,
     this.reactions = const {},
     this.expiresAt,
+    this.isViewOnce = false,
+    this.isViewOnceOpened = false,
   });
 
   /// Check if message is an image
@@ -57,6 +61,9 @@ class ChatMessageModel {
 
   /// Check if message is a call log card
   bool get isCall => type == MessageType.call;
+
+  /// View-once tile shown to the recipient before opening.
+  bool get isViewOncePending => isViewOnce && !isViewOnceOpened;
 
   /// Disappearing message still counting down
   bool get isExpiring => expiresAt != null;
@@ -91,6 +98,8 @@ class ChatMessageModel {
     String? waveformData,
     Map<String, String>? reactions,
     int? expiresAt,
+    bool? isViewOnce,
+    bool? isViewOnceOpened,
   }) {
     return ChatMessageModel(
       id: id ?? this.id,
@@ -113,6 +122,8 @@ class ChatMessageModel {
       waveformData: waveformData ?? this.waveformData,
       reactions: reactions ?? this.reactions,
       expiresAt: expiresAt ?? this.expiresAt,
+      isViewOnce: isViewOnce ?? this.isViewOnce,
+      isViewOnceOpened: isViewOnceOpened ?? this.isViewOnceOpened,
     );
   }
 
@@ -138,6 +149,8 @@ class ChatMessageModel {
       waveformData: entity.waveformData,
       reactions: entity.reactions,
       expiresAt: entity.expiresAt,
+      isViewOnce: entity.isViewOnce,
+      isViewOnceOpened: entity.isViewOnceOpened,
     );
   }
 }

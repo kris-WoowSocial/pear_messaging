@@ -566,6 +566,7 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
           type: msgType,
           fileName: message.data['fileName']?.toString(),
           fileSize: int.tryParse(message.data['fileSize']?.toString() ?? ''),
+          isViewOnce: message.data['isViewOnce']?.toString() == 'true',
         ),
       );
       debugPrint(
@@ -1263,6 +1264,7 @@ class FCMService extends GetxService {
               fileName: message.data['fileName']?.toString(),
               fileSize:
                   int.tryParse(message.data['fileSize']?.toString() ?? ''),
+              isViewOnce: message.data['isViewOnce']?.toString() == 'true',
             ),
           );
           debugPrint(

@@ -94,6 +94,9 @@ class _ChatMessageBubbleState extends State<ChatMessageBubble> {
 
   /// Check cache synchronously for instant display of cached images
   void _checkCacheSynchronously() {
+    // View-once media is never preloaded — it only exists in memory between
+    // the recipient's tap and the full-screen viewer closing.
+    if (widget.message.isViewOnce) return;
     try {
       final cacheService = Get.find<ImageCacheService>();
 
@@ -153,6 +156,7 @@ class _ChatMessageBubbleState extends State<ChatMessageBubble> {
   }
 
   void _preloadImageData() async {
+    if (widget.message.isViewOnce) return; // never pre-fetch view-once media
     if (_isLoadingImage.value) return;
 
     // Check static memory cache first — instant, no disk I/O
@@ -597,7 +601,9 @@ class _ChatMessageBubbleState extends State<ChatMessageBubble> {
         children: [
           // Add quoted bubble if this is a reply
           if (widget.message.replyTo != null) _buildQuotedBubble(),
-          _buildImageContent(),
+          widget.message.isViewOnce
+              ? _buildViewOnceContent()
+              : _buildImageContent(),
         ],
       );
     }
@@ -1198,6 +1204,62 @@ class _ChatMessageBubbleState extends State<ChatMessageBubble> {
       key: ValueKey('${widget.message.id}:${widget.message.content}'),
       message: widget.message,
     );
+  }
+
+  /// WhatsApp-style view-once tile: "[1] Photo" until opened, dim "[1]
+  /// Opened" afterwards. The media bytes are never pre-fetched — the
+  /// recipient's tap is the only thing that downloads them.
+  Widget _buildViewOnceContent() {
+    final opened = widget.message.isViewOnceOpened;
+    final canOpen = !widget.message.isMe && !opened;
+    final textColor = opened ? Colors.grey[500] : Colors.black87;
+
+    return GestureDetector(
+      onTap: canOpen ? _openViewOnce : null,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 36,
+            height: 36,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              border: Border.all(
+                color: opened ? Colors.grey[400]! : Colors.black87,
+                width: 2,
+              ),
+            ),
+            child: Center(
+              child: Text(
+                '1',
+                style: TextStyle(
+                  color: opened ? Colors.grey[500] : Colors.black87,
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Text(
+            opened ? 'Opened' : 'Photo',
+            style: TextStyle(
+              color: textColor,
+              fontSize: 15,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _openViewOnce() {
+    try {
+      Get.find<ChatController>().openViewOncePhoto(widget.message);
+    } catch (e) {
+      debugPrint('❌ Cannot open view-once photo: $e');
+    }
   }
 
   Widget _buildImageContent() {

@@ -320,6 +320,7 @@ class ChatListController extends GetxController {
     _socketService.onMessageReceived = _handleIncomingMessage;
     _socketService.onMessageReaction = _handleIncomingReaction;
     _socketService.onDisappearTimerSet = _handleDisappearTimerSet;
+    _socketService.onViewOnceOpened = _handleViewOnceOpened;
     _socketService.onPendingMessages = _handlePendingMessages;
     _socketService.onGroupMessageReceived = _handleGroupMessage;
 
@@ -361,6 +362,16 @@ class ChatListController extends GetxController {
   /// open: update the stored ChatEntity and insert the system bubble so it
   /// appears when the thread is next opened. The open-chat variant lives in
   /// ChatController (handler swap), so the two never run together.
+  /// Sender-side view-once notice while no chat screen is open: flip the
+  /// stored entity's `isViewOnceOpened` so the bubble reads "Opened" when
+  /// the thread is next viewed. The open-chat variant lives in
+  /// ChatController (handler swap), so the two never run together.
+  void _handleViewOnceOpened(Map<String, dynamic> data) {
+    final messageId = data['messageId'] as String?;
+    if (messageId == null) return;
+    unawaited(_storageService.setMessageViewOnceOpened(messageId));
+  }
+
   void _handleDisappearTimerSet(Map<String, dynamic> data) {
     final seconds = (data['disappearingAfterSeconds'] as num?)?.toInt();
     final senderId = data['senderDeviceId'] as String?;
