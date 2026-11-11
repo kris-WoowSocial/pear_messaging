@@ -555,7 +555,7 @@ class _SelfDestructSheetState extends State<_SelfDestructSheet> {
             width: 72,
             height: 72,
             decoration: BoxDecoration(
-              color: Colors.red.shade900.withOpacity(0.3),
+              color: Colors.red.shade900.withValues(alpha: 0.3),
               shape: BoxShape.circle,
               border: Border.all(color: Colors.red.shade700, width: 2),
             ),
