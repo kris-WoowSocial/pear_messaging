@@ -2452,14 +2452,13 @@ class ChatController extends GetxController with WidgetsBindingObserver {
   /// Toggle mute notifications for this chat
   void toggleMute() {
     isMuted.value = !isMuted.value;
-    // TODO: Persist mute status to local storage
     Get.snackbar(
       isMuted.value ? 'Muted' : 'Unmuted',
       isMuted.value
           ? 'Notifications muted for this chat'
           : 'Notifications enabled for this chat',
       snackPosition: SnackPosition.BOTTOM,
-      backgroundColor: AppColors.primary.withOpacity(0.1),
+      backgroundColor: AppColors.primary.withValues(alpha: 0.1),
       colorText: Colors.black,
       duration: const Duration(seconds: 2),
     );
