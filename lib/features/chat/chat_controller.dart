@@ -1195,7 +1195,7 @@ class ChatController extends GetxController with WidgetsBindingObserver {
           Get.snackbar(
             'Blocked',
             'You cannot send messages to this user',
-            snackPosition: SnackPosition.BOTTOM,
+            snackPosition: SnackPosition.TOP,
             backgroundColor: Colors.red.shade100,
             colorText: Colors.red.shade800,
             duration: const Duration(seconds: 3),
@@ -1915,7 +1915,7 @@ class ChatController extends GetxController with WidgetsBindingObserver {
         Get.snackbar(
           'Success',
           'Contact name updated',
-          snackPosition: SnackPosition.BOTTOM,
+          snackPosition: SnackPosition.TOP,
           duration: const Duration(seconds: 2),
         );
       }
@@ -1924,7 +1924,7 @@ class ChatController extends GetxController with WidgetsBindingObserver {
       Get.snackbar(
         'Error',
         'Failed to update contact name',
-        snackPosition: SnackPosition.BOTTOM,
+        snackPosition: SnackPosition.TOP,
         duration: const Duration(seconds: 2),
       );
     }
@@ -1957,7 +1957,7 @@ class ChatController extends GetxController with WidgetsBindingObserver {
           Get.snackbar(
             'Success',
             'Chat deleted successfully',
-            snackPosition: SnackPosition.BOTTOM,
+            snackPosition: SnackPosition.TOP,
             duration: const Duration(seconds: 2),
           );
         } catch (e) {
@@ -1965,7 +1965,7 @@ class ChatController extends GetxController with WidgetsBindingObserver {
           Get.snackbar(
             'Error',
             'Failed to delete chat',
-            snackPosition: SnackPosition.BOTTOM,
+            snackPosition: SnackPosition.TOP,
             duration: const Duration(seconds: 2),
           );
         }
@@ -2065,7 +2065,7 @@ class ChatController extends GetxController with WidgetsBindingObserver {
     Get.snackbar(
       'Updated',
       'Contact name updated to $newName',
-      snackPosition: SnackPosition.BOTTOM,
+      snackPosition: SnackPosition.TOP,
       backgroundColor: Colors.green.shade100,
       colorText: Colors.green.shade800,
     );
@@ -2095,7 +2095,7 @@ class ChatController extends GetxController with WidgetsBindingObserver {
     Get.snackbar(
       'Deleted',
       'Chat deleted successfully',
-      snackPosition: SnackPosition.BOTTOM,
+      snackPosition: SnackPosition.TOP,
       backgroundColor: Colors.red.shade100,
       colorText: Colors.red.shade800,
     );
@@ -2457,7 +2457,7 @@ class ChatController extends GetxController with WidgetsBindingObserver {
       isMuted.value
           ? 'Notifications muted for this chat'
           : 'Notifications enabled for this chat',
-      snackPosition: SnackPosition.BOTTOM,
+      snackPosition: SnackPosition.TOP,
       backgroundColor: AppColors.primary.withValues(alpha: 0.1),
       colorText: Colors.black,
       duration: const Duration(seconds: 2),
@@ -2627,7 +2627,7 @@ class ChatController extends GetxController with WidgetsBindingObserver {
     Get.snackbar(
       'Report Submitted',
       'Thank you for reporting. We will review this user.',
-      snackPosition: SnackPosition.BOTTOM,
+      snackPosition: SnackPosition.TOP,
       backgroundColor: Colors.green.shade100,
       colorText: Colors.green.shade800,
       duration: const Duration(seconds: 3),
@@ -2913,7 +2913,7 @@ class ChatController extends GetxController with WidgetsBindingObserver {
         Get.snackbar(
           'Photo',
           'This photo is no longer available',
-          snackPosition: SnackPosition.BOTTOM,
+          snackPosition: SnackPosition.TOP,
         );
         return;
       }
@@ -2927,7 +2927,7 @@ class ChatController extends GetxController with WidgetsBindingObserver {
       Get.snackbar(
         'Photo',
         'Could not open this photo',
-        snackPosition: SnackPosition.BOTTOM,
+        snackPosition: SnackPosition.TOP,
       );
     }
   }

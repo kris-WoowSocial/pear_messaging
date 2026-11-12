@@ -252,7 +252,7 @@ class ConnectionRequestService extends GetxService {
       // Get.snackbar(
       //   'Connection Request Sent',
       //   'Waiting for response...',
-      //   snackPosition: SnackPosition.BOTTOM,
+      //   snackPosition: SnackPosition.TOP,
       //   backgroundColor: Colors.blue.shade100,
       //   colorText: Colors.blue.shade800,
       //   duration: const Duration(seconds: 3),
@@ -261,7 +261,7 @@ class ConnectionRequestService extends GetxService {
       Get.snackbar(
         'Failed to Send',
         'Could not send connection request. Please try again.',
-        snackPosition: SnackPosition.BOTTOM,
+        snackPosition: SnackPosition.TOP,
         backgroundColor: Colors.red.shade100,
         colorText: Colors.red.shade800,
       );
@@ -589,7 +589,7 @@ class ConnectionRequestService extends GetxService {
     Get.snackbar(
       'Connection Accepted',
       'You can now chat with $senderName',
-      snackPosition: SnackPosition.BOTTOM,
+      snackPosition: SnackPosition.TOP,
       backgroundColor: Colors.green.shade100,
       colorText: Colors.green.shade800,
     );
@@ -674,7 +674,7 @@ class ConnectionRequestService extends GetxService {
       Get.snackbar(
         'Connection Request Blocked',
         'Request blocked but chat with $senderName preserved',
-        snackPosition: SnackPosition.BOTTOM,
+        snackPosition: SnackPosition.TOP,
         backgroundColor: Colors.orange.shade100,
         colorText: Colors.orange.shade800,
       );
@@ -710,7 +710,7 @@ class ConnectionRequestService extends GetxService {
     Get.snackbar(
       'Connection Blocked',
       '$senderName has been blocked',
-      snackPosition: SnackPosition.BOTTOM,
+      snackPosition: SnackPosition.TOP,
       backgroundColor: Colors.red.shade100,
       colorText: Colors.red.shade800,
     );
@@ -814,7 +814,7 @@ class ConnectionRequestService extends GetxService {
       Get.snackbar(
         'Connection Accepted',
         '$targetName accepted your request! You can now chat.',
-        snackPosition: SnackPosition.BOTTOM,
+        snackPosition: SnackPosition.TOP,
         backgroundColor: Colors.green.shade100,
         colorText: Colors.green.shade800,
       );
@@ -842,7 +842,7 @@ class ConnectionRequestService extends GetxService {
       Get.snackbar(
         'Connection Declined',
         '$targetName declined your request',
-        snackPosition: SnackPosition.BOTTOM,
+        snackPosition: SnackPosition.TOP,
         backgroundColor: Colors.orange.shade100,
         colorText: Colors.orange.shade800,
       );

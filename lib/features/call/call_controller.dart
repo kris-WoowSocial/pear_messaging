@@ -1408,7 +1408,7 @@ class CallController extends GetxController {
       Get.snackbar(
         'Camera unavailable',
         'Camera permission was denied. Continuing with audio only.',
-        snackPosition: SnackPosition.BOTTOM,
+        snackPosition: SnackPosition.TOP,
         duration: const Duration(seconds: 4),
       );
       if (Get.currentRoute == '/call/video') {
@@ -1702,7 +1702,7 @@ class CallController extends GetxController {
     Get.snackbar(
       'Security warning',
       'This contact\'s encryption key changed. Verify them before calling.',
-      snackPosition: SnackPosition.BOTTOM,
+      snackPosition: SnackPosition.TOP,
       duration: const Duration(seconds: 6),
     );
   }
@@ -2693,7 +2693,7 @@ class CallController extends GetxController {
         Get.snackbar(
           'Video unavailable',
           'Ask them to update Vant to use video calls.',
-          snackPosition: SnackPosition.BOTTOM,
+          snackPosition: SnackPosition.TOP,
           duration: const Duration(seconds: 4),
         );
         _resetCallState();
@@ -2713,7 +2713,7 @@ class CallController extends GetxController {
           wantsVideo
               ? 'Video calls require encrypted signaling.'
               : 'This contact requires encrypted calling.',
-          snackPosition: SnackPosition.BOTTOM,
+          snackPosition: SnackPosition.TOP,
           duration: const Duration(seconds: 4),
         );
         _resetCallState();
@@ -2770,7 +2770,7 @@ class CallController extends GetxController {
         Get.snackbar(
           'Call Failed',
           'Microphone permission is required for calls. Please enable it in Settings.',
-          snackPosition: SnackPosition.BOTTOM,
+          snackPosition: SnackPosition.TOP,
           colorText: Colors.white,
           duration: const Duration(seconds: 4),
         );
@@ -2784,7 +2784,7 @@ class CallController extends GetxController {
       Get.snackbar(
         'Call Failed',
         'Failed to start call. Please check your permissions.',
-        snackPosition: SnackPosition.BOTTOM,
+        snackPosition: SnackPosition.TOP,
         duration: const Duration(seconds: 3),
       );
       return false;
@@ -3049,7 +3049,7 @@ class CallController extends GetxController {
         Get.snackbar(
           'Call Failed',
           'Failed to accept call. Please check your permissions.',
-          snackPosition: SnackPosition.BOTTOM,
+          snackPosition: SnackPosition.TOP,
           duration: const Duration(seconds: 4),
         );
         _resetCallState();
@@ -3700,7 +3700,7 @@ class CallController extends GetxController {
     Get.snackbar(
       message.title,
       message.body,
-      snackPosition: SnackPosition.BOTTOM,
+      snackPosition: SnackPosition.TOP,
       duration: const Duration(seconds: 4),
       mainButton: message.action != null && message.actionLabel != null
           ? TextButton(
@@ -5357,7 +5357,7 @@ class CallController extends GetxController {
         Get.snackbar(
           'Permission Required',
           'Microphone permission is required for calls. Please enable it in Settings.',
-          snackPosition: SnackPosition.BOTTOM,
+          snackPosition: SnackPosition.TOP,
           duration: const Duration(seconds: 4),
           mainButton: TextButton(
             onPressed: () async {
@@ -5383,7 +5383,7 @@ class CallController extends GetxController {
         Get.snackbar(
           'Permission Required',
           'Microphone permission is required for calls. Please enable it in Settings.',
-          snackPosition: SnackPosition.BOTTOM,
+          snackPosition: SnackPosition.TOP,
           duration: const Duration(seconds: 4),
           mainButton: TextButton(
             onPressed: () async {

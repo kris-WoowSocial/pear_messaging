@@ -518,7 +518,7 @@ class _SelfDestructSheetState extends State<_SelfDestructSheet> {
       Get.snackbar(
         'Error',
         'Failed to wipe data: ${e.toString()}',
-        snackPosition: SnackPosition.BOTTOM,
+        snackPosition: SnackPosition.TOP,
         backgroundColor: Colors.red.shade100,
         colorText: Colors.red.shade800,
         duration: const Duration(seconds: 5),

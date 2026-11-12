@@ -530,7 +530,7 @@ class ChatSettingsScreen extends GetView<ChatController> {
                       Get.snackbar(
                         'Success',
                         'Contact name updated',
-                        snackPosition: SnackPosition.BOTTOM,
+                        snackPosition: SnackPosition.TOP,
                         backgroundColor: Colors.green.withOpacity(0.8),
                         colorText: Colors.white,
                         duration: const Duration(seconds: 2),
@@ -539,7 +539,7 @@ class ChatSettingsScreen extends GetView<ChatController> {
                       Get.snackbar(
                         'Error',
                         'Please enter a name',
-                        snackPosition: SnackPosition.BOTTOM,
+                        snackPosition: SnackPosition.TOP,
                         backgroundColor: Colors.red.withOpacity(0.8),
                         colorText: Colors.white,
                       );

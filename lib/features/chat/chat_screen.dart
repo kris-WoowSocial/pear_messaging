@@ -624,7 +624,7 @@ class ChatScreen extends GetView<ChatController> {
         Get.snackbar(
           'Error',
           'Could not read the selected file.',
-          snackPosition: SnackPosition.BOTTOM,
+          snackPosition: SnackPosition.TOP,
           backgroundColor: Colors.red.shade100,
           colorText: Colors.red.shade800,
         );
@@ -639,7 +639,7 @@ class ChatScreen extends GetView<ChatController> {
         Get.snackbar(
           'File Too Large',
           'Please select a file smaller than 10 MB.',
-          snackPosition: SnackPosition.BOTTOM,
+          snackPosition: SnackPosition.TOP,
           backgroundColor: Colors.red.shade100,
           colorText: Colors.red.shade800,
         );
@@ -716,7 +716,7 @@ class ChatScreen extends GetView<ChatController> {
       Get.snackbar(
         'Upload Failed',
         errorMessage,
-        snackPosition: SnackPosition.BOTTOM,
+        snackPosition: SnackPosition.TOP,
         backgroundColor: Colors.red.shade100,
         colorText: Colors.red.shade800,
         duration: const Duration(seconds: 4),
@@ -900,7 +900,7 @@ class ChatScreen extends GetView<ChatController> {
                       Get.snackbar(
                         'Error',
                         'Please enter a name',
-                        snackPosition: SnackPosition.BOTTOM,
+                        snackPosition: SnackPosition.TOP,
                         backgroundColor: Colors.red.shade100,
                         colorText: Colors.red.shade800,
                       );
@@ -933,7 +933,7 @@ class ChatScreen extends GetView<ChatController> {
           Get.snackbar(
             'Permission Required',
             'Please allow access to photos to send images.',
-            snackPosition: SnackPosition.BOTTOM,
+            snackPosition: SnackPosition.TOP,
             backgroundColor: Colors.red.shade100,
             colorText: Colors.red.shade800,
           );
@@ -967,7 +967,7 @@ class ChatScreen extends GetView<ChatController> {
         Get.snackbar(
           'Error',
           'Could not access selected image. Please try again.',
-          snackPosition: SnackPosition.BOTTOM,
+          snackPosition: SnackPosition.TOP,
           backgroundColor: Colors.red.shade100,
           colorText: Colors.red.shade800,
         );
@@ -980,7 +980,7 @@ class ChatScreen extends GetView<ChatController> {
         Get.snackbar(
           'Error',
           'Failed to process image',
-          snackPosition: SnackPosition.BOTTOM,
+          snackPosition: SnackPosition.TOP,
           backgroundColor: Colors.red.shade100,
           colorText: Colors.red.shade800,
         );
@@ -1038,7 +1038,7 @@ class ChatScreen extends GetView<ChatController> {
       Get.snackbar(
         'Upload Failed',
         errorMessage,
-        snackPosition: SnackPosition.BOTTOM,
+        snackPosition: SnackPosition.TOP,
         backgroundColor: Colors.red.shade100,
         colorText: Colors.red.shade800,
         duration: const Duration(seconds: 4),
@@ -1191,7 +1191,7 @@ class ChatScreen extends GetView<ChatController> {
         Get.snackbar(
           'Permission Required',
           'Please allow access to photos to send images.',
-          snackPosition: SnackPosition.BOTTOM,
+          snackPosition: SnackPosition.TOP,
           backgroundColor: Colors.red.shade100,
           colorText: Colors.red.shade800,
         );
@@ -1205,7 +1205,7 @@ class ChatScreen extends GetView<ChatController> {
         Get.snackbar(
           'Too many images',
           'You can send up to $_maxImagesPerSend images at a time',
-          snackPosition: SnackPosition.BOTTOM,
+          snackPosition: SnackPosition.TOP,
         );
       }
 
@@ -1225,7 +1225,7 @@ class ChatScreen extends GetView<ChatController> {
         Get.snackbar(
           'Error',
           'Failed to process images',
-          snackPosition: SnackPosition.BOTTOM,
+          snackPosition: SnackPosition.TOP,
           backgroundColor: Colors.red.shade100,
           colorText: Colors.red.shade800,
         );
@@ -1247,7 +1247,7 @@ class ChatScreen extends GetView<ChatController> {
       Get.snackbar(
         'Error',
         'Failed to send images. Please try again.',
-        snackPosition: SnackPosition.BOTTOM,
+        snackPosition: SnackPosition.TOP,
         backgroundColor: Colors.red.shade100,
         colorText: Colors.red.shade800,
       );
@@ -1459,7 +1459,7 @@ class ChatScreen extends GetView<ChatController> {
       Get.snackbar(
         'Error',
         'Failed to start call',
-        snackPosition: SnackPosition.BOTTOM,
+        snackPosition: SnackPosition.TOP,
       );
     }
   }
@@ -1493,7 +1493,7 @@ class ChatScreen extends GetView<ChatController> {
       Get.snackbar(
         'Error',
         'Failed to start video call',
-        snackPosition: SnackPosition.BOTTOM,
+        snackPosition: SnackPosition.TOP,
       );
     }
   }
@@ -1566,7 +1566,7 @@ class ChatScreen extends GetView<ChatController> {
       Get.snackbar(
         'Upload Failed',
         'Failed to send voice message. Please try again.',
-        snackPosition: SnackPosition.BOTTOM,
+        snackPosition: SnackPosition.TOP,
         backgroundColor: Colors.red.shade100,
         colorText: Colors.red.shade800,
         duration: const Duration(seconds: 4),
@@ -1765,7 +1765,7 @@ class _MessageInputState extends State<_MessageInput> {
                         Get.snackbar(
                           'Microphone Permission',
                           'Please enable microphone access in app settings.',
-                          snackPosition: SnackPosition.BOTTOM,
+                          snackPosition: SnackPosition.TOP,
                           backgroundColor: Colors.red.shade100,
                           colorText: Colors.red.shade800,
                           mainButton: TextButton(
@@ -1777,7 +1777,7 @@ class _MessageInputState extends State<_MessageInput> {
                         Get.snackbar(
                           'Permission Required',
                           'Microphone permission is needed to record voice messages.',
-                          snackPosition: SnackPosition.BOTTOM,
+                          snackPosition: SnackPosition.TOP,
                           backgroundColor: Colors.red.shade100,
                           colorText: Colors.red.shade800,
                         );

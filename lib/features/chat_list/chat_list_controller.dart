@@ -247,7 +247,7 @@ class ChatListController extends GetxController {
         Get.snackbar(
           'Authentication Failed',
           'Please authenticate to continue',
-          snackPosition: SnackPosition.BOTTOM,
+          snackPosition: SnackPosition.TOP,
           duration: const Duration(seconds: 5),
           mainButton: TextButton(
             onPressed: () => _authenticateIfNeeded(),
@@ -1267,7 +1267,7 @@ class ChatListController extends GetxController {
     Get.snackbar(
       'Success',
       'Chat name updated to "$newName"',
-      snackPosition: SnackPosition.BOTTOM,
+      snackPosition: SnackPosition.TOP,
       duration: const Duration(seconds: 2),
     );
   }
@@ -1288,7 +1288,7 @@ class ChatListController extends GetxController {
       Get.snackbar(
         'Deleted',
         'Chat deleted successfully',
-        snackPosition: SnackPosition.BOTTOM,
+        snackPosition: SnackPosition.TOP,
         duration: const Duration(seconds: 2),
       );
 
@@ -1298,7 +1298,7 @@ class ChatListController extends GetxController {
       Get.snackbar(
         'Error',
         'Failed to delete chat: $e',
-        snackPosition: SnackPosition.BOTTOM,
+        snackPosition: SnackPosition.TOP,
         duration: const Duration(seconds: 3),
       );
     }
@@ -1386,7 +1386,7 @@ class ChatListController extends GetxController {
         Get.snackbar(
           'Opening Chat',
           'Continuing conversation with ${existingChatModel.userName}',
-          snackPosition: SnackPosition.BOTTOM,
+          snackPosition: SnackPosition.TOP,
           backgroundColor: Colors.blue,
           colorText: Colors.white,
           duration: const Duration(seconds: 2),
@@ -1464,7 +1464,7 @@ class ChatListController extends GetxController {
         Get.snackbar(
           'Error',
           'Failed to process QR code: ${e.toString()}',
-          snackPosition: SnackPosition.BOTTOM,
+          snackPosition: SnackPosition.TOP,
           duration: const Duration(seconds: 3),
         );
       }
@@ -1472,7 +1472,7 @@ class ChatListController extends GetxController {
       Get.snackbar(
         'Error',
         'Failed to initialize chat from QR: ${e.toString()}',
-        snackPosition: SnackPosition.BOTTOM,
+        snackPosition: SnackPosition.TOP,
         duration: const Duration(seconds: 3),
       );
     }

@@ -41,7 +41,7 @@ Experience total privacy with military-grade encryption and a direct, peer-to-pe
       Get.snackbar(
         'Share Failed',
         'Unable to share the app. Please try again.',
-        snackPosition: SnackPosition.BOTTOM,
+        snackPosition: SnackPosition.TOP,
       );
     }
   }

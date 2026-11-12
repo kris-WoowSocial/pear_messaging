@@ -339,7 +339,7 @@ class IdentityAnnouncementService extends GetxService {
             Get.snackbar(
               'Contact security reset?',
               'Their secure-call state rolled back. Verify again to clear this warning.',
-              snackPosition: SnackPosition.BOTTOM,
+              snackPosition: SnackPosition.TOP,
               duration: const Duration(seconds: 6),
             );
           }

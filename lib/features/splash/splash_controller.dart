@@ -307,7 +307,7 @@ class SplashController extends GetxController {
       Get.snackbar(
         'Error',
         'Failed to continue. Please try again.',
-        snackPosition: SnackPosition.BOTTOM,
+        snackPosition: SnackPosition.TOP,
       );
     }
   }
@@ -333,7 +333,7 @@ class SplashController extends GetxController {
           Get.snackbar(
             'Microphone Access Required',
             'Please enable microphone in Settings to make calls.',
-            snackPosition: SnackPosition.BOTTOM,
+            snackPosition: SnackPosition.TOP,
             duration: const Duration(seconds: 8),
             mainButton: TextButton(
               onPressed: () => openAppSettings(),
@@ -404,7 +404,7 @@ class SplashController extends GetxController {
         Get.snackbar(
           'Error',
           'Could not open Terms of Service. No browser available.',
-          snackPosition: SnackPosition.BOTTOM,
+          snackPosition: SnackPosition.TOP,
           backgroundColor: Colors.red.shade100,
           colorText: Colors.red.shade800,
         );
@@ -414,7 +414,7 @@ class SplashController extends GetxController {
       Get.snackbar(
         'Error',
         'Could not open Terms of Service',
-        snackPosition: SnackPosition.BOTTOM,
+        snackPosition: SnackPosition.TOP,
         backgroundColor: Colors.red.shade100,
         colorText: Colors.red.shade800,
       );
@@ -448,7 +448,7 @@ class SplashController extends GetxController {
         Get.snackbar(
           'Error',
           'Could not open Privacy Policy. No browser available.',
-          snackPosition: SnackPosition.BOTTOM,
+          snackPosition: SnackPosition.TOP,
           backgroundColor: Colors.red.shade100,
           colorText: Colors.red.shade800,
         );
@@ -458,7 +458,7 @@ class SplashController extends GetxController {
       Get.snackbar(
         'Error',
         'Could not open Privacy Policy',
-        snackPosition: SnackPosition.BOTTOM,
+        snackPosition: SnackPosition.TOP,
         backgroundColor: Colors.red.shade100,
         colorText: Colors.red.shade800,
       );
@@ -488,7 +488,7 @@ class SplashController extends GetxController {
         Get.snackbar(
           'Authentication Failed',
           'Tap to retry authentication',
-          snackPosition: SnackPosition.BOTTOM,
+          snackPosition: SnackPosition.TOP,
           duration: const Duration(seconds: 5),
           onTap: (_) => _initializeApp(),
         );
@@ -499,7 +499,7 @@ class SplashController extends GetxController {
       Get.snackbar(
         'Error',
         'Failed to initialize app: $e',
-        snackPosition: SnackPosition.BOTTOM,
+        snackPosition: SnackPosition.TOP,
         duration: const Duration(seconds: 5),
       );
     }

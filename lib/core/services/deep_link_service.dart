@@ -118,7 +118,7 @@ class DeepLinkService extends GetxService {
         Get.snackbar(
           'Connection Request',
           'Check your chat list for the new connection request',
-          snackPosition: SnackPosition.BOTTOM,
+          snackPosition: SnackPosition.TOP,
           backgroundColor: Colors.blue.shade100,
           colorText: Colors.blue.shade800,
         );

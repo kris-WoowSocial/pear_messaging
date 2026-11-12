@@ -47,7 +47,7 @@ class _ContactUsScreenState extends State<ContactUsScreen> {
         Get.snackbar(
           'Message Sent',
           'Your message has been sent. We\'ll get back to you.',
-          snackPosition: SnackPosition.BOTTOM,
+          snackPosition: SnackPosition.TOP,
           backgroundColor: Colors.green.shade100,
           colorText: Colors.green.shade800,
           icon: Icon(Icons.check_circle, color: Colors.green.shade600),
@@ -57,7 +57,7 @@ class _ContactUsScreenState extends State<ContactUsScreen> {
         Get.snackbar(
           'Error',
           'Failed to send message. Please try again.',
-          snackPosition: SnackPosition.BOTTOM,
+          snackPosition: SnackPosition.TOP,
           backgroundColor: Colors.red.shade100,
           colorText: Colors.red.shade800,
           icon: Icon(Icons.error, color: Colors.red.shade600),
@@ -67,7 +67,7 @@ class _ContactUsScreenState extends State<ContactUsScreen> {
       Get.snackbar(
         'Error',
         'Something went wrong. Please try again.',
-        snackPosition: SnackPosition.BOTTOM,
+        snackPosition: SnackPosition.TOP,
       );
     } finally {
       setState(() => _isSubmitting = false);

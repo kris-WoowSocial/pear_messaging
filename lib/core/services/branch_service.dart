@@ -516,7 +516,7 @@ Experience total privacy with military-grade encryption and a direct, peer-to-pe
       Get.snackbar(
         'Share Failed',
         'Unable to share the app. Please try again.',
-        snackPosition: SnackPosition.BOTTOM,
+        snackPosition: SnackPosition.TOP,
       );
     }
   }
@@ -834,7 +834,7 @@ Experience total privacy with military-grade encryption and a direct, peer-to-pe
         Get.snackbar(
           'Connection Request',
           'Connection request already pending for $userName',
-          snackPosition: SnackPosition.BOTTOM,
+          snackPosition: SnackPosition.TOP,
           backgroundColor: Colors.orange.shade100,
           colorText: Colors.orange.shade800,
         );
@@ -869,7 +869,7 @@ Experience total privacy with military-grade encryption and a direct, peer-to-pe
           Get.snackbar(
             'Connection Request',
             'New connection request from $userName',
-            snackPosition: SnackPosition.BOTTOM,
+            snackPosition: SnackPosition.TOP,
             backgroundColor: Colors.blue.shade100,
             colorText: Colors.blue.shade800,
           );
@@ -957,7 +957,7 @@ Experience total privacy with military-grade encryption and a direct, peer-to-pe
         Get.snackbar(
           'New Chat',
           'Started conversation with $userName',
-          snackPosition: SnackPosition.BOTTOM,
+          snackPosition: SnackPosition.TOP,
           duration: const Duration(seconds: 2),
         );
       }

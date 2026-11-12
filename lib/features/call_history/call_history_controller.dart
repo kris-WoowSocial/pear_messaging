@@ -61,7 +61,7 @@ class CallHistoryController extends GetxController {
     Get.snackbar(
       'Deleted',
       'Call removed from history',
-      snackPosition: SnackPosition.BOTTOM,
+      snackPosition: SnackPosition.TOP,
       duration: const Duration(seconds: 2),
     );
   }
@@ -92,7 +92,7 @@ class CallHistoryController extends GetxController {
       Get.snackbar(
         'Cleared',
         'All call history deleted',
-        snackPosition: SnackPosition.BOTTOM,
+        snackPosition: SnackPosition.TOP,
         duration: const Duration(seconds: 2),
       );
     }

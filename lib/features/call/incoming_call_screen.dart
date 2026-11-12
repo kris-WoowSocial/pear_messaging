@@ -391,7 +391,7 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
       Get.snackbar(
         'Connection Error',
         'Please check your internet connection',
-        snackPosition: SnackPosition.BOTTOM,
+        snackPosition: SnackPosition.TOP,
       );
       setState(() {
         _isAccepting = false;

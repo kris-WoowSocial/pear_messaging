@@ -31,7 +31,7 @@ class _RatingDialogState extends State<RatingDialog> {
       Get.snackbar(
         'Rating Required',
         'Please select a rating before submitting.',
-        snackPosition: SnackPosition.BOTTOM,
+        snackPosition: SnackPosition.TOP,
       );
       return;
     }

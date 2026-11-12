@@ -783,7 +783,7 @@ class _StripeSubscriptionScreenState extends State<StripeSubscriptionScreen> {
       Get.snackbar(
         'Unavailable',
         'Card/Apple Pay/Google Pay checkout is not configured on this build yet.',
-        snackPosition: SnackPosition.BOTTOM,
+        snackPosition: SnackPosition.TOP,
         backgroundColor: Colors.orange.shade100,
         colorText: Colors.orange.shade800,
       );
@@ -804,7 +804,7 @@ class _StripeSubscriptionScreenState extends State<StripeSubscriptionScreen> {
       Get.snackbar(
         'Membership Activated',
         'Your membership has been activated successfully.',
-        snackPosition: SnackPosition.BOTTOM,
+        snackPosition: SnackPosition.TOP,
         backgroundColor: Colors.green.shade100,
         colorText: Colors.green.shade800,
       );
@@ -812,7 +812,7 @@ class _StripeSubscriptionScreenState extends State<StripeSubscriptionScreen> {
       Get.snackbar(
         'Payment Failed',
         result.error ?? 'Something went wrong. Please try again.',
-        snackPosition: SnackPosition.BOTTOM,
+        snackPosition: SnackPosition.TOP,
         backgroundColor: Colors.red.shade100,
         colorText: Colors.red.shade800,
       );
@@ -1329,7 +1329,7 @@ class _CryptoPaymentScreenState extends State<CryptoPaymentScreen> {
       Get.snackbar(
         'Error',
         'Failed to start crypto checkout. Please try again.',
-        snackPosition: SnackPosition.BOTTOM,
+        snackPosition: SnackPosition.TOP,
         backgroundColor: Colors.red.shade100,
         colorText: Colors.red.shade800,
       );
@@ -1403,7 +1403,7 @@ class _CryptoPaymentScreenState extends State<CryptoPaymentScreen> {
           Get.snackbar(
             'Payment Confirmed!',
             'Your Premium membership is now active.',
-            snackPosition: SnackPosition.BOTTOM,
+            snackPosition: SnackPosition.TOP,
             backgroundColor: Colors.green.shade100,
             colorText: Colors.green.shade800,
           );

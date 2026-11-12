@@ -171,7 +171,7 @@ class _VerifyContactScreenState extends State<VerifyContactScreen> {
                   ok
                       ? 'Identity key verified for $scannerId'
                       : 'Could not save verification',
-                  snackPosition: SnackPosition.BOTTOM,
+                  snackPosition: SnackPosition.TOP,
                 );
               }
             },
@@ -190,17 +190,17 @@ class _VerifyContactScreenState extends State<VerifyContactScreen> {
     switch (result) {
       case IdentityVerificationService.scanVerified:
         Get.snackbar('Verified', 'Identity key verified.',
-            snackPosition: SnackPosition.BOTTOM);
+            snackPosition: SnackPosition.TOP);
         Get.back();
       case IdentityVerificationService.scanPinnedNew:
         Get.snackbar('Verified', 'Identity key pinned and verified.',
-            snackPosition: SnackPosition.BOTTOM);
+            snackPosition: SnackPosition.TOP);
         Get.back();
       case IdentityVerificationService.scanMismatch:
         await _showMismatchDialog(scannedId!);
       default:
         Get.snackbar('Invalid code', 'This is not a Vant verification code.',
-            snackPosition: SnackPosition.BOTTOM);
+            snackPosition: SnackPosition.TOP);
         _scanned = false;
     }
   }
@@ -240,7 +240,7 @@ class _VerifyContactScreenState extends State<VerifyContactScreen> {
                 Get.snackbar(
                   ok ? 'Key replaced' : 'Failed',
                   ok ? 'New identity key verified.' : 'Could not save',
-                  snackPosition: SnackPosition.BOTTOM,
+                  snackPosition: SnackPosition.TOP,
                 );
                 if (ok) Get.back();
               }

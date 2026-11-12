@@ -941,7 +941,7 @@ class _ChatMessageBubbleState extends State<ChatMessageBubble> {
           Get.snackbar(
             'Unavailable',
             'This file is no longer available.',
-            snackPosition: SnackPosition.BOTTOM,
+            snackPosition: SnackPosition.TOP,
           );
           return;
         }
@@ -962,7 +962,7 @@ class _ChatMessageBubbleState extends State<ChatMessageBubble> {
           Get.snackbar(
             'Unavailable',
             'This file has expired or was already downloaded.',
-            snackPosition: SnackPosition.BOTTOM,
+            snackPosition: SnackPosition.TOP,
           );
           return;
         }
@@ -983,7 +983,7 @@ class _ChatMessageBubbleState extends State<ChatMessageBubble> {
         Get.snackbar(
           'Error',
           'Could not read the file contents.',
-          snackPosition: SnackPosition.BOTTOM,
+          snackPosition: SnackPosition.TOP,
         );
         return;
       }
@@ -1002,7 +1002,7 @@ class _ChatMessageBubbleState extends State<ChatMessageBubble> {
         Get.snackbar(
           'Cannot Open File',
           'No app found to open this file type.',
-          snackPosition: SnackPosition.BOTTOM,
+          snackPosition: SnackPosition.TOP,
         );
       }
     } catch (e) {
@@ -1011,7 +1011,7 @@ class _ChatMessageBubbleState extends State<ChatMessageBubble> {
       Get.snackbar(
         'Error',
         'Failed to open file. Please try again.',
-        snackPosition: SnackPosition.BOTTOM,
+        snackPosition: SnackPosition.TOP,
       );
     }
   }
@@ -1173,7 +1173,7 @@ class _ChatMessageBubbleState extends State<ChatMessageBubble> {
                       Get.snackbar(
                         'Error',
                         'Could not start call',
-                        snackPosition: SnackPosition.BOTTOM,
+                        snackPosition: SnackPosition.TOP,
                       );
                     }
                   },
@@ -1654,7 +1654,7 @@ class _ChatMessageBubbleState extends State<ChatMessageBubble> {
       saved
           ? 'Image saved to the Vant Chat gallery folder'
           : 'Allow photo access in Settings and try again',
-      snackPosition: SnackPosition.BOTTOM,
+      snackPosition: SnackPosition.TOP,
       colorText: Colors.white,
       backgroundColor: saved ? Colors.green : Colors.red,
     );
@@ -2177,7 +2177,7 @@ class _ChatMessageBubbleState extends State<ChatMessageBubble> {
                         Get.snackbar(
                           'Error',
                           'Could not reply to message',
-                          snackPosition: SnackPosition.BOTTOM,
+                          snackPosition: SnackPosition.TOP,
                           backgroundColor: Colors.red.shade100,
                         );
                       }
@@ -2311,7 +2311,7 @@ class _ChatMessageBubbleState extends State<ChatMessageBubble> {
         Get.snackbar(
           'Cannot Open Link',
           'Link copied to clipboard. Please open it manually in your browser.',
-          snackPosition: SnackPosition.BOTTOM,
+          snackPosition: SnackPosition.TOP,
           duration: const Duration(seconds: 3),
           backgroundColor: Colors.orange.shade100,
           colorText: Colors.orange.shade800,
@@ -2324,7 +2324,7 @@ class _ChatMessageBubbleState extends State<ChatMessageBubble> {
       Get.snackbar(
         'Error Opening Link',
         'Link copied to clipboard. Please open it manually in your browser.',
-        snackPosition: SnackPosition.BOTTOM,
+        snackPosition: SnackPosition.TOP,
         duration: const Duration(seconds: 3),
         backgroundColor: Colors.red.shade100,
         colorText: Colors.red.shade800,
@@ -2358,7 +2358,7 @@ class _ChatMessageBubbleState extends State<ChatMessageBubble> {
     Get.snackbar(
       'Copied',
       'Link copied to clipboard',
-      snackPosition: SnackPosition.BOTTOM,
+      snackPosition: SnackPosition.TOP,
       duration: const Duration(seconds: 2),
     );
   }
@@ -2368,7 +2368,7 @@ class _ChatMessageBubbleState extends State<ChatMessageBubble> {
     Get.snackbar(
       'Copied',
       'Text copied to clipboard',
-      snackPosition: SnackPosition.BOTTOM,
+      snackPosition: SnackPosition.TOP,
       duration: const Duration(seconds: 2),
     );
   }

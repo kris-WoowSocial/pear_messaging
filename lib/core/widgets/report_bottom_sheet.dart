@@ -69,7 +69,7 @@ class _ReportBottomSheetState extends State<ReportBottomSheet> {
       Get.snackbar(
         'Select a Reason',
         'Please select a reason for your report',
-        snackPosition: SnackPosition.BOTTOM,
+        snackPosition: SnackPosition.TOP,
         backgroundColor: Colors.orange.shade100,
         colorText: Colors.orange.shade800,
       );
@@ -97,7 +97,7 @@ class _ReportBottomSheetState extends State<ReportBottomSheet> {
           Get.snackbar(
             'Report Submitted',
             'Thank you. Our team will review this report.',
-            snackPosition: SnackPosition.BOTTOM,
+            snackPosition: SnackPosition.TOP,
             backgroundColor: Colors.green.shade100,
             colorText: Colors.green.shade800,
             icon: Icon(Icons.check_circle, color: Colors.green.shade600),
@@ -108,7 +108,7 @@ class _ReportBottomSheetState extends State<ReportBottomSheet> {
         Get.snackbar(
           'Error',
           'Failed to submit report. Please try again.',
-          snackPosition: SnackPosition.BOTTOM,
+          snackPosition: SnackPosition.TOP,
           backgroundColor: Colors.red.shade100,
           colorText: Colors.red.shade800,
           icon: Icon(Icons.error, color: Colors.red.shade600),
@@ -119,7 +119,7 @@ class _ReportBottomSheetState extends State<ReportBottomSheet> {
       Get.snackbar(
         'Error',
         'Something went wrong. Please try again.',
-        snackPosition: SnackPosition.BOTTOM,
+        snackPosition: SnackPosition.TOP,
       );
     }
   }
@@ -274,7 +274,7 @@ class _ReportBottomSheetState extends State<ReportBottomSheet> {
       Get.snackbar(
         'User Blocked',
         'You have blocked this user. They can no longer send you messages.',
-        snackPosition: SnackPosition.BOTTOM,
+        snackPosition: SnackPosition.TOP,
         backgroundColor: Colors.orange.shade100,
         colorText: Colors.orange.shade800,
         icon: Icon(Icons.block, color: Colors.orange.shade600),
@@ -284,7 +284,7 @@ class _ReportBottomSheetState extends State<ReportBottomSheet> {
       Get.snackbar(
         'Error',
         'Failed to block user. Please try again.',
-        snackPosition: SnackPosition.BOTTOM,
+        snackPosition: SnackPosition.TOP,
         backgroundColor: Colors.red.shade100,
         colorText: Colors.red.shade800,
       );

@@ -157,7 +157,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
       Get.snackbar(
         'Share Failed',
         'Unable to share the app. Please try again.',
-        snackPosition: SnackPosition.BOTTOM,
+        snackPosition: SnackPosition.TOP,
       );
     }
   }

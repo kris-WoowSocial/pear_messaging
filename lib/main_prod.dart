@@ -325,7 +325,7 @@ Future<void> _repairInvalidDeviceId(
       'Device identity reset',
       'Your device ID was reset because the stored ID was invalid. '
           'You are reachable again.',
-      snackPosition: SnackPosition.BOTTOM,
+      snackPosition: SnackPosition.TOP,
       duration: const Duration(seconds: 5),
     );
   } finally {

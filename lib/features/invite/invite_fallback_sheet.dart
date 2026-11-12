@@ -53,7 +53,7 @@ class InviteFallbackSheet {
                 Get.snackbar(
                   'Connecting',
                   'Checking your invite…',
-                  snackPosition: SnackPosition.BOTTOM,
+                  snackPosition: SnackPosition.TOP,
                   duration: const Duration(seconds: 3),
                 );
               } else {

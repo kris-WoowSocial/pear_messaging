@@ -86,7 +86,7 @@ class ProfileScreen extends GetView<ProfileController> {
         Get.snackbar(
           'Error',
           'Could not open Terms of Service. No browser available.',
-          snackPosition: SnackPosition.BOTTOM,
+          snackPosition: SnackPosition.TOP,
           backgroundColor: Colors.red.shade100,
           colorText: Colors.red.shade800,
         );
@@ -96,7 +96,7 @@ class ProfileScreen extends GetView<ProfileController> {
       Get.snackbar(
         'Error',
         'Could not open Terms of Service',
-        snackPosition: SnackPosition.BOTTOM,
+        snackPosition: SnackPosition.TOP,
         backgroundColor: Colors.red.shade100,
         colorText: Colors.red.shade800,
       );

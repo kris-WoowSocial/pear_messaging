@@ -295,7 +295,7 @@
 //       Get.snackbar(
 //         'Processing',
 //         'Compressing and sending image...',
-//         snackPosition: SnackPosition.BOTTOM,
+//         snackPosition: SnackPosition.TOP,
 //         showProgressIndicator: true,
 //         isDismissible: false,
 //         duration: const Duration(seconds: 30),
@@ -316,7 +316,7 @@
 //         Get.snackbar(
 //           'Sent',
 //           'Image sent successfully',
-//           snackPosition: SnackPosition.BOTTOM,
+//           snackPosition: SnackPosition.TOP,
 //           backgroundColor: Colors.green.shade100,
 //           colorText: Colors.green.shade800,
 //         );
@@ -324,7 +324,7 @@
 //         Get.snackbar(
 //           'Failed',
 //           'Failed to send image',
-//           snackPosition: SnackPosition.BOTTOM,
+//           snackPosition: SnackPosition.TOP,
 //           backgroundColor: Colors.red.shade100,
 //           colorText: Colors.red.shade800,
 //         );
@@ -334,7 +334,7 @@
 //       Get.snackbar(
 //         'Error',
 //         'Failed to process image: $e',
-//         snackPosition: SnackPosition.BOTTOM,
+//         snackPosition: SnackPosition.TOP,
 //         backgroundColor: Colors.red.shade100,
 //         colorText: Colors.red.shade800,
 //       );
@@ -504,7 +504,7 @@
 //                         Get.snackbar(
 //                           'User Blocked',
 //                           'You have blocked this user',
-//                           snackPosition: SnackPosition.BOTTOM,
+//                           snackPosition: SnackPosition.TOP,
 //                           backgroundColor: Colors.orange.shade100,
 //                           colorText: Colors.orange.shade800,
 //                           icon: Icon(
@@ -813,7 +813,7 @@
 //     Get.snackbar(
 //       'Success',
 //       'All messages have been cleared',
-//       snackPosition: SnackPosition.BOTTOM,
+//       snackPosition: SnackPosition.TOP,
 //       backgroundColor: Colors.green.shade100,
 //       colorText: Colors.green.shade800,
 //       icon: Icon(Icons.check_circle, color: Colors.green.shade600),
@@ -1257,7 +1257,7 @@
 //       Get.snackbar(
 //         'Processing',
 //         'Compressing and sending image...',
-//         snackPosition: SnackPosition.BOTTOM,
+//         snackPosition: SnackPosition.TOP,
 //         showProgressIndicator: true,
 //         isDismissible: false,
 //         duration: const Duration(seconds: 30),
@@ -1285,7 +1285,7 @@
 //         Get.snackbar(
 //           'Sent',
 //           'Image sent successfully',
-//           snackPosition: SnackPosition.BOTTOM,
+//           snackPosition: SnackPosition.TOP,
 //           backgroundColor: Colors.green[100],
 //           colorText: Colors.green[800],
 //           duration: const Duration(seconds: 2),
@@ -1294,7 +1294,7 @@
 //         Get.snackbar(
 //           'Error',
 //           'Failed to send image. Please try again.',
-//           snackPosition: SnackPosition.BOTTOM,
+//           snackPosition: SnackPosition.TOP,
 //           backgroundColor: Colors.red[100],
 //           colorText: Colors.red[800],
 //         );
@@ -1304,7 +1304,7 @@
 //       Get.snackbar(
 //         'Error',
 //         'Failed to process image: $e',
-//         snackPosition: SnackPosition.BOTTOM,
+//         snackPosition: SnackPosition.TOP,
 //         backgroundColor: Colors.red[100],
 //         colorText: Colors.red[800],
 //       );

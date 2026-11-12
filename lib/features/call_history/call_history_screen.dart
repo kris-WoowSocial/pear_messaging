@@ -377,7 +377,7 @@ class CallHistoryScreen extends GetView<CallHistoryController> {
       Get.snackbar(
         'Error',
         'Could not start call',
-        snackPosition: SnackPosition.BOTTOM,
+        snackPosition: SnackPosition.TOP,
       );
     }
   }

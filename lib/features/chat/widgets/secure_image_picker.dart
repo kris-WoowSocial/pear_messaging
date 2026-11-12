@@ -361,7 +361,7 @@ class _SecureImageViewerState extends State<SecureImageViewer> {
         Get.snackbar(
           'Success',
           'Image saved to gallery',
-          snackPosition: SnackPosition.BOTTOM,
+          snackPosition: SnackPosition.TOP,
           backgroundColor: Colors.green.withOpacity(0.8),
           colorText: Colors.white,
           margin: const EdgeInsets.all(16),
@@ -371,7 +371,7 @@ class _SecureImageViewerState extends State<SecureImageViewer> {
         Get.snackbar(
           'Error',
           'Failed to save image. Please check permissions.',
-          snackPosition: SnackPosition.BOTTOM,
+          snackPosition: SnackPosition.TOP,
           backgroundColor: Colors.red.withOpacity(0.8),
           colorText: Colors.white,
           margin: const EdgeInsets.all(16),
@@ -387,7 +387,7 @@ class _SecureImageViewerState extends State<SecureImageViewer> {
       Get.snackbar(
         'Error',
         'Failed to download image: $e',
-        snackPosition: SnackPosition.BOTTOM,
+        snackPosition: SnackPosition.TOP,
         backgroundColor: Colors.red.withOpacity(0.8),
         colorText: Colors.white,
         margin: const EdgeInsets.all(16),

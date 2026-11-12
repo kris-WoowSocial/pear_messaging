@@ -59,7 +59,7 @@ class ProfileController extends GetxController {
         Get.snackbar(
           'Not Available',
           'Biometric authentication is not available on this device',
-          snackPosition: SnackPosition.BOTTOM,
+          snackPosition: SnackPosition.TOP,
         );
         return;
       }
@@ -70,7 +70,7 @@ class ProfileController extends GetxController {
         Get.snackbar(
           'Setup Failed',
           'Please verify your biometric authentication to enable app lock',
-          snackPosition: SnackPosition.BOTTOM,
+          snackPosition: SnackPosition.TOP,
         );
         return;
       }
@@ -83,7 +83,7 @@ class ProfileController extends GetxController {
     Get.snackbar(
       'App Lock',
       enabled ? 'App lock enabled' : 'App lock disabled',
-      snackPosition: SnackPosition.BOTTOM,
+      snackPosition: SnackPosition.TOP,
     );
   }
 
@@ -92,7 +92,7 @@ class ProfileController extends GetxController {
     Get.snackbar(
       'Copied',
       'Device ID copied to clipboard',
-      snackPosition: SnackPosition.BOTTOM,
+      snackPosition: SnackPosition.TOP,
       duration: const Duration(seconds: 2),
     );
   }
@@ -122,7 +122,7 @@ class ProfileController extends GetxController {
         Get.snackbar(
           'Success',
           'Chat history cleared successfully',
-          snackPosition: SnackPosition.BOTTOM,
+          snackPosition: SnackPosition.TOP,
         );
       },
     );
@@ -148,7 +148,7 @@ class ProfileController extends GetxController {
       Get.snackbar(
         'Share Failed',
         'Unable to share the app. Please try again.',
-        snackPosition: SnackPosition.BOTTOM,
+        snackPosition: SnackPosition.TOP,
       );
     }
   }
@@ -159,13 +159,13 @@ class ProfileController extends GetxController {
       Get.snackbar(
         'Success',
         'Authentication successful',
-        snackPosition: SnackPosition.BOTTOM,
+        snackPosition: SnackPosition.TOP,
       );
     } else {
       Get.snackbar(
         'Failed',
         'Authentication failed',
-        snackPosition: SnackPosition.BOTTOM,
+        snackPosition: SnackPosition.TOP,
       );
     }
   }
@@ -194,7 +194,7 @@ class ProfileController extends GetxController {
       Get.snackbar(
         'Success',
         'Name updated successfully',
-        snackPosition: SnackPosition.BOTTOM,
+        snackPosition: SnackPosition.TOP,
       );
     }
     // Always close editing mode, even if name didn't change
@@ -214,7 +214,7 @@ class ProfileController extends GetxController {
       Get.snackbar(
         'Error',
         'Please enter a token',
-        snackPosition: SnackPosition.BOTTOM,
+        snackPosition: SnackPosition.TOP,
       );
       return;
     }
@@ -228,13 +228,13 @@ class ProfileController extends GetxController {
       Get.snackbar(
         'Success',
         'Influencer account linked: ${result['influencer']['name']}',
-        snackPosition: SnackPosition.BOTTOM,
+        snackPosition: SnackPosition.TOP,
       );
     } catch (e) {
       Get.snackbar(
         'Link Failed',
         e.toString(),
-        snackPosition: SnackPosition.BOTTOM,
+        snackPosition: SnackPosition.TOP,
         backgroundColor: Colors.red.shade100,
         colorText: Colors.red.shade800,
       );

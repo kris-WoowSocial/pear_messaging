@@ -419,7 +419,7 @@ class AppUpdateService extends GetxService {
                                                     BorderRadius.circular(16),
                                                 onTap: () {
                                                   Get.back(); // Close dialog
-                                                  _openStoreForUpdate();
+                                                  openStoreForUpdate();
                                                 },
                                                 child: Center(
                                                   child: Row(
@@ -576,7 +576,7 @@ class AppUpdateService extends GetxService {
   }
 
   /// Open app store for update (Play Store or App Store)
-  Future<void> _openStoreForUpdate() async {
+  Future<void> openStoreForUpdate() async {
     try {
       Uri url;
 

@@ -100,7 +100,7 @@ class ReviewService extends GetxService {
     //   Get.snackbar(
     //     'Thank You',
     //     'You have already submitted your feedback.',
-    //     snackPosition: SnackPosition.BOTTOM,
+    //     snackPosition: SnackPosition.TOP,
     //   );
     //   return;
     // }
@@ -140,7 +140,7 @@ class ReviewService extends GetxService {
       Get.snackbar(
         'Opening Store',
         'Taking you to the store to rate our app...',
-        snackPosition: SnackPosition.BOTTOM,
+        snackPosition: SnackPosition.TOP,
         duration: const Duration(seconds: 2),
         backgroundColor: Colors.blue.shade100,
         colorText: Colors.blue.shade800,
@@ -161,7 +161,7 @@ class ReviewService extends GetxService {
       Get.snackbar(
         'Store Opened',
         'Please rate us on the store page to help improve our app!',
-        snackPosition: SnackPosition.BOTTOM,
+        snackPosition: SnackPosition.TOP,
         duration: const Duration(seconds: 3),
         backgroundColor: Colors.green.shade100,
         colorText: Colors.green.shade800,
@@ -182,7 +182,7 @@ class ReviewService extends GetxService {
       Get.snackbar(
         'Error',
         'Could not open store. Please try again later.',
-        snackPosition: SnackPosition.BOTTOM,
+        snackPosition: SnackPosition.TOP,
         duration: const Duration(seconds: 3),
         backgroundColor: Colors.red.shade100,
         colorText: Colors.red.shade800,
@@ -293,14 +293,14 @@ class ReviewService extends GetxService {
         Get.snackbar(
           'Thank You',
           'Your feedback has been submitted. We appreciate your input!',
-          snackPosition: SnackPosition.BOTTOM,
+          snackPosition: SnackPosition.TOP,
         );
       } else {
         debugPrint('❌ Failed to submit feedback');
         Get.snackbar(
           'Error',
           'Failed to submit feedback. Please try again later.',
-          snackPosition: SnackPosition.BOTTOM,
+          snackPosition: SnackPosition.TOP,
         );
       }
     } catch (e) {
@@ -308,7 +308,7 @@ class ReviewService extends GetxService {
       Get.snackbar(
         'Error',
         'An error occurred. Please try again later.',
-        snackPosition: SnackPosition.BOTTOM,
+        snackPosition: SnackPosition.TOP,
       );
     }
   }
