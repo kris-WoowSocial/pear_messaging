@@ -70,20 +70,31 @@ class _ActiveCallScreenState extends State<ActiveCallScreen> {
       },
       child: Scaffold(
         backgroundColor: Colors.black,
-        body: Obx(() {
-          // Dim screen when near ear (proximity sensor)
-          final isDimmed =
-              controller.isNearEar.value && !controller.isSpeakerOn.value;
+        body: Stack(
+          children: [
+            Obx(() {
+              // Dim screen when near ear (proximity sensor)
+              final isDimmed =
+                  controller.isNearEar.value && !controller.isSpeakerOn.value;
 
-          return AnimatedOpacity(
-            opacity: isDimmed ? 0.1 : 1.0,
-            duration: const Duration(milliseconds: 300),
-            child: IgnorePointer(
-              ignoring: isDimmed,
-              child: _buildCallUI(controller, context),
+              return AnimatedOpacity(
+                opacity: isDimmed ? 0.1 : 1.0,
+                duration: const Duration(milliseconds: 300),
+                child: IgnorePointer(
+                  ignoring: isDimmed,
+                  child: _buildCallUI(controller, context),
+                ),
+              );
+            }),
+            // Incoming video-upgrade consent prompt — lives outside the
+            // proximity-dimmed layer so it stays interactive near the ear.
+            Obx(
+              () => controller.hasIncomingVideoUpgradeRequest.value
+                  ? _buildVideoUpgradePrompt(controller)
+                  : const SizedBox.shrink(),
             ),
-          );
-        }),
+          ],
+        ),
       ),
     );
   }
@@ -156,6 +167,65 @@ class _ActiveCallScreenState extends State<ActiveCallScreen> {
                     onTap: () => controller.minimizeCallScreen(context),
                   ),
                   const SizedBox(height: 24),
+                  // "Requesting video call…" pill while a consent request
+                  // is in flight — tap Cancel to withdraw it.
+                  Obx(
+                    () => controller.isVideoUpgradePending.value
+                        ? Padding(
+                            padding: const EdgeInsets.only(bottom: 16),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 16,
+                                vertical: 10,
+                              ),
+                              decoration: BoxDecoration(
+                                color: Colors.grey[850],
+                                borderRadius: BorderRadius.circular(24),
+                                border: Border.all(
+                                  color: Colors.white.withOpacity(0.15),
+                                ),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  const SizedBox(
+                                    width: 14,
+                                    height: 14,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                      color: Colors.white70,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 10),
+                                  const Text(
+                                    'Requesting video call…',
+                                    style: TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.w500,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 12),
+                                  GestureDetector(
+                                    onTap: () {
+                                      HapticFeedback.lightImpact();
+                                      controller.cancelVideoUpgradeRequest();
+                                    },
+                                    child: const Text(
+                                      'Cancel',
+                                      style: TextStyle(
+                                        color: Color(0xFF25D366),
+                                        fontSize: 13,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          )
+                        : const SizedBox.shrink(),
+                  ),
                   // Second row: Mute and Speaker (Obx for reactive updates)
                   Obx(
                     () => Row(
@@ -180,7 +250,11 @@ class _ActiveCallScreenState extends State<ActiveCallScreen> {
                             icon: Icons.videocam,
                             label: 'Video',
                             isActive: false,
-                            onTap: () => controller.setCameraEnabled(true),
+                            // Consent handshake — camera only turns on
+                            // after the peer accepts.
+                            onTap: controller.isVideoUpgradePending.value
+                                ? () {}
+                                : controller.requestVideoUpgrade,
                           ),
                       ],
                     ),
@@ -278,6 +352,118 @@ class _ActiveCallScreenState extends State<ActiveCallScreen> {
           ),
         ),
       ],
+    );
+  }
+
+  /// WhatsApp-style consent card shown when the peer asks to switch the
+  /// audio call to video — Decline keeps the voice call untouched.
+  Widget _buildVideoUpgradePrompt(CallController controller) {
+    return Container(
+      color: Colors.black.withOpacity(0.55),
+      alignment: Alignment.bottomCenter,
+      child: SafeArea(
+        child: Container(
+          margin: const EdgeInsets.fromLTRB(24, 0, 24, 32),
+          padding: const EdgeInsets.fromLTRB(24, 22, 24, 18),
+          decoration: BoxDecoration(
+            color: const Color(0xFF1F2C34),
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(color: Colors.white.withOpacity(0.08)),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 52,
+                height: 52,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: const Color(0xFF25D366).withOpacity(0.15),
+                ),
+                child: const Icon(
+                  Icons.videocam,
+                  color: Color(0xFF25D366),
+                  size: 26,
+                ),
+              ),
+              const SizedBox(height: 14),
+              const Text(
+                'Switch to video call?',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 17,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                '${controller.remoteDisplayLabel} wants to switch to a video call',
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  color: Colors.white70,
+                  fontSize: 14,
+                ),
+              ),
+              const SizedBox(height: 20),
+              Row(
+                children: [
+                  Expanded(
+                    child: GestureDetector(
+                      onTap: () {
+                        HapticFeedback.lightImpact();
+                        controller.respondToVideoUpgrade(false);
+                      },
+                      child: Container(
+                        height: 46,
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(23),
+                          border: Border.all(color: Colors.white38),
+                        ),
+                        child: const Center(
+                          child: Text(
+                            'Decline',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 15,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: GestureDetector(
+                      onTap: () {
+                        HapticFeedback.mediumImpact();
+                        controller.respondToVideoUpgrade(true);
+                      },
+                      child: Container(
+                        height: 46,
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF25D366),
+                          borderRadius: BorderRadius.circular(23),
+                        ),
+                        child: const Center(
+                          child: Text(
+                            'Switch',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 15,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 

@@ -64,6 +64,9 @@ class SocketService extends GetxService {
   Function(Map<String, dynamic>)? onPeerRinging;
   Function(Map<String, dynamic>)? onIceRestart;
   Function(Map<String, dynamic>)? onCallMediaUpdate;
+  Function(Map<String, dynamic>)? onVideoUpgradeRequest;
+  Function(Map<String, dynamic>)? onVideoUpgradeResponse;
+  Function(Map<String, dynamic>)? onVideoUpgradeCancel;
   Function(Map<String, dynamic>)? onCallResync;
   Function(Map<String, dynamic>)? onCalleeConnecting;
   Function(Map<String, dynamic>)? onCallStatusResponse;
@@ -611,6 +614,26 @@ class SocketService extends GetxService {
       debugPrint('📞 Call media update: $data');
       if (onCallMediaUpdate != null && data != null) {
         onCallMediaUpdate!(Map<String, dynamic>.from(data));
+      }
+    });
+
+    // WebRTC Call: mid-call audio→video upgrade consent handshake
+    _socket?.on('video_upgrade_request', (data) {
+      debugPrint('📞 Video upgrade request: $data');
+      if (onVideoUpgradeRequest != null && data != null) {
+        onVideoUpgradeRequest!(Map<String, dynamic>.from(data));
+      }
+    });
+    _socket?.on('video_upgrade_response', (data) {
+      debugPrint('📞 Video upgrade response: $data');
+      if (onVideoUpgradeResponse != null && data != null) {
+        onVideoUpgradeResponse!(Map<String, dynamic>.from(data));
+      }
+    });
+    _socket?.on('video_upgrade_cancel', (data) {
+      debugPrint('📞 Video upgrade cancel: $data');
+      if (onVideoUpgradeCancel != null && data != null) {
+        onVideoUpgradeCancel!(Map<String, dynamic>.from(data));
       }
     });
 
@@ -1866,6 +1889,44 @@ class SocketService extends GetxService {
       'call_media_update',
       CallMediaHelper.mediaUpdatePayload(callId: callId, video: video),
     );
+  }
+
+  /// Mid-call audio→video upgrade: ask the peer to switch to video.
+  void sendVideoUpgradeRequest({
+    required String callId,
+    required String recipientId,
+  }) {
+    if (!isConnected.value) return;
+    _socket?.emit('video_upgrade_request', {
+      'callId': callId,
+      'recipientId': recipientId,
+    });
+  }
+
+  /// Peer answered a video upgrade request — accepted or declined.
+  void sendVideoUpgradeResponse({
+    required String callId,
+    required String recipientId,
+    required bool accepted,
+  }) {
+    if (!isConnected.value) return;
+    _socket?.emit('video_upgrade_response', {
+      'callId': callId,
+      'recipientId': recipientId,
+      'accepted': accepted,
+    });
+  }
+
+  /// Requester cancelled its pending video upgrade request.
+  void sendVideoUpgradeCancel({
+    required String callId,
+    required String recipientId,
+  }) {
+    if (!isConnected.value) return;
+    _socket?.emit('video_upgrade_cancel', {
+      'callId': callId,
+      'recipientId': recipientId,
+    });
   }
 
   /// Memoized ICE list — TURN creds stay valid for their server TTL, so a

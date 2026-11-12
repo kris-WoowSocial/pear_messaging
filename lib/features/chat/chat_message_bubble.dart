@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
@@ -427,7 +428,10 @@ class _ChatMessageBubbleState extends State<ChatMessageBubble> {
             _buildMessageContent(),
             if (hasLinks) _buildLinkPreview(),
             const SizedBox(height: 4),
-            Row(
+            // Call cards and view-once tiles render their timestamp inline
+            // (WhatsApp style) — the shared row is suppressed for them.
+            if (!widget.message.isCall && !widget.message.isViewOnce)
+              Row(
               mainAxisSize: MainAxisSize.min,
               children: [
                 if (widget.message.isExpiring) ...[
@@ -517,7 +521,10 @@ class _ChatMessageBubbleState extends State<ChatMessageBubble> {
               _buildMessageContent(),
               if (hasLinks) _buildLinkPreview(),
               const SizedBox(height: 4),
-              Row(
+              // Call cards and view-once tiles render their timestamp
+              // inline (WhatsApp style) — the shared row is suppressed.
+              if (!widget.message.isCall && !widget.message.isViewOnce)
+                Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   if (widget.message.isExpiring) ...[
@@ -1055,40 +1062,68 @@ class _ChatMessageBubbleState extends State<ChatMessageBubble> {
 
     return GestureDetector(
       onTap: _showCallBackSheet,
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(
-            isMissed
-                ? (isVideo ? Icons.missed_video_call : Icons.phone_missed)
-                : (isVideo ? Icons.videocam : Icons.call),
-            size: 22,
-            color: iconColor,
-          ),
-          const SizedBox(width: 8),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                title,
-                style: TextStyle(
-                  color: Colors.black,
-                  fontSize: AppSizes.fontM,
-                  fontWeight: FontWeight.w500,
-                ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 2),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            // WhatsApp-style circular icon with a light tint backdrop
+            Container(
+              width: 40,
+              height: 40,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: iconColor.withValues(alpha: 0.12),
               ),
-              const SizedBox(height: 1),
-              Text(
-                subtitle,
+              child: Icon(
+                isMissed
+                    ? (isVideo ? Icons.missed_video_call : Icons.phone_missed)
+                    : (isVideo ? Icons.videocam : Icons.call),
+                size: 20,
+                color: iconColor,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  title,
+                  style: const TextStyle(
+                    color: Colors.black,
+                    fontSize: AppSizes.fontM,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 1),
+                Text(
+                  subtitle,
+                  style: TextStyle(
+                    color: isMissed
+                        ? iconColor
+                        : Colors.black.withValues(alpha: 0.55),
+                    fontSize: AppSizes.fontXS,
+                  ),
+                ),
+              ],
+            ),
+            // Timestamp lives on the title row like WhatsApp — the outer
+            // bubble suppresses its own timestamp row for call cards.
+            const SizedBox(width: 18),
+            Padding(
+              padding: const EdgeInsets.only(top: 2),
+              child: Text(
+                TimeUtils.formatMessageTime(widget.message.timestamp),
                 style: TextStyle(
-                  color: isMissed ? iconColor : Colors.black.withOpacity(0.5),
+                  color: Colors.black.withValues(alpha: 0.45),
                   fontSize: AppSizes.fontXS,
                 ),
               ),
-            ],
-          ),
-        ],
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -1212,44 +1247,72 @@ class _ChatMessageBubbleState extends State<ChatMessageBubble> {
   Widget _buildViewOnceContent() {
     final opened = widget.message.isViewOnceOpened;
     final canOpen = !widget.message.isMe && !opened;
+    const accent = Color(0xFF25D366);
+    final iconColor = opened ? Colors.grey[400]! : accent;
     final textColor = opened ? Colors.grey[500] : Colors.black87;
 
     return GestureDetector(
       onTap: canOpen ? _openViewOnce : null,
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Container(
-            width: 36,
-            height: 36,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              border: Border.all(
-                color: opened ? Colors.grey[400]! : Colors.black87,
-                width: 2,
-              ),
-            ),
-            child: Center(
-              child: Text(
-                '1',
-                style: TextStyle(
-                  color: opened ? Colors.grey[500] : Colors.black87,
-                  fontSize: 16,
-                  fontWeight: FontWeight.bold,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 4),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            SizedBox(
+              width: 34,
+              height: 34,
+              child: CustomPaint(
+                painter: _ViewOnceRingPainter(
+                  color: iconColor,
+                  // Opened ring is rotated so the gap faces down —
+                  // mirrors WhatsApp's "unwrapped" visual state.
+                  gapAtTop: !opened,
+                ),
+                child: Center(
+                  child: Text(
+                    '1',
+                    style: TextStyle(
+                      color: iconColor,
+                      fontSize: 15,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
                 ),
               ),
             ),
-          ),
-          const SizedBox(width: 10),
-          Text(
-            opened ? 'Opened' : 'Photo',
-            style: TextStyle(
-              color: textColor,
-              fontSize: 15,
-              fontWeight: FontWeight.w500,
+            const SizedBox(width: 10),
+            Text(
+              opened ? 'Opened' : 'Photo',
+              style: TextStyle(
+                color: textColor,
+                fontSize: 15,
+                fontWeight: FontWeight.w500,
+              ),
             ),
-          ),
-        ],
+            // Timestamp + ticks inline on the same row like WhatsApp —
+            // the outer bubble suppresses its own row for view-once.
+            const SizedBox(width: 14),
+            Padding(
+              padding: const EdgeInsets.only(top: 2),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    TimeUtils.formatMessageTime(widget.message.timestamp),
+                    style: TextStyle(
+                      color: Colors.black.withValues(alpha: 0.45),
+                      fontSize: AppSizes.fontXS,
+                    ),
+                  ),
+                  if (widget.message.isMe) ...[
+                    const SizedBox(width: 4),
+                    _buildStatusIcon(widget.message.status),
+                  ],
+                ],
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -2435,4 +2498,40 @@ Uint8List _gunzipBytes(Uint8List bytes) {
   } catch (_) {
     return bytes;
   }
+}
+
+/// Draws the WhatsApp-style view-once ring: a circle outline with a small
+/// gap (like an unwound wrapper). [gapAtTop] places the gap at 12 o'clock;
+/// opened tiles flip it to the bottom for the "unwrapped" look.
+class _ViewOnceRingPainter extends CustomPainter {
+  final Color color;
+  final bool gapAtTop;
+
+  _ViewOnceRingPainter({required this.color, this.gapAtTop = true});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    const gap = math.pi * 0.28; // ~50° opening
+    final paint = Paint()
+      ..color = color
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.4
+      ..strokeCap = StrokeCap.round;
+    final rect = Offset.zero & size;
+    final center = rect.center;
+    final radius = (size.shortestSide / 2) - paint.strokeWidth;
+    final top = -math.pi / 2;
+    final start = gapAtTop ? top + gap / 2 : top + math.pi + gap / 2;
+    canvas.drawArc(
+      Rect.fromCircle(center: center, radius: radius),
+      start,
+      math.pi * 2 - gap,
+      false,
+      paint,
+    );
+  }
+
+  @override
+  bool shouldRepaint(_ViewOnceRingPainter old) =>
+      old.color != color || old.gapAtTop != gapAtTop;
 }

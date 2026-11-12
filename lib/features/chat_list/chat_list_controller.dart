@@ -503,6 +503,9 @@ class ChatListController extends GetxController {
       isMe: false,
       type: messageType,
       replyTo: replyToEntity,
+      // View-once flag — the "[1] Photo" tile must render (and never
+      // pre-fetch) even when this message is saved outside an open chat.
+      isViewOnce: data['isViewOnce'] == true,
     );
 
     // Save message to storage
@@ -519,9 +522,12 @@ class ChatListController extends GetxController {
         debugPrint('📝 Found existing chat in storage for sender: $senderId');
 
         final actualUnreadCount = await _calculateUnreadCount(senderId);
+        final isViewOnceMessage = data['isViewOnce'] == true;
         final displayMessage = isAudioMessage
             ? '🎤 Voice message'
-            : (isImageMessage ? '📷 Photo' : content);
+            : (isImageMessage
+                ? (isViewOnceMessage ? '📷 View once photo' : '📷 Photo')
+                : content);
 
         // Update in storage
         final updatedChat = existingChat.copyWith(

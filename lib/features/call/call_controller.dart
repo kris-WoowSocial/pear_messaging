@@ -253,6 +253,10 @@ class CallController extends GetxController {
   final RxBool isCameraOn = false.obs;
   final RxBool isFrontCamera = true.obs;
   final RxBool peerCameraOff = false.obs;
+  // Mid-call audio→video upgrade consent handshake state
+  final RxBool isVideoUpgradePending = false.obs;
+  final RxBool hasIncomingVideoUpgradeRequest = false.obs;
+  Timer? _videoUpgradeTimeoutTimer;
   final RxBool isReconnecting = false.obs;
   final RxBool hasPoorConnection = false.obs;
   final Rxn<MediaStream> localVideoStream = Rxn<MediaStream>();
@@ -1459,6 +1463,18 @@ class CallController extends GetxController {
       _handleCallMediaUpdate(data);
     };
 
+    _socketService.onVideoUpgradeRequest = (data) {
+      _handleVideoUpgradeRequest(data);
+    };
+
+    _socketService.onVideoUpgradeResponse = (data) {
+      _handleVideoUpgradeResponse(data);
+    };
+
+    _socketService.onVideoUpgradeCancel = (data) {
+      _handleVideoUpgradeCancel(data);
+    };
+
     _socketService.onCallResync = (data) {
       _handleCallResync(data);
     };
@@ -1878,8 +1894,13 @@ class CallController extends GetxController {
     final videoOn = data['video'] == 'on';
     peerCameraOff.value = !videoOn;
     // Remote side upgraded an audio call to video mid-call — switch this
-    // device to the video surface too.
-    if (videoOn && !isVideoCall.value && _videoUpgradeEnabled) {
+    // device to the video surface too. Skipped while a video-upgrade
+    // consent prompt is on screen: the user's explicit accept is the only
+    // allowed path into video during the handshake.
+    if (videoOn &&
+        !isVideoCall.value &&
+        _videoUpgradeEnabled &&
+        !hasIncomingVideoUpgradeRequest.value) {
       isVideoCall.value = true;
       _videoRequested = true;
       _stopProximitySensor();
@@ -3464,6 +3485,118 @@ class CallController extends GetxController {
   bool get canUpgradeToVideo =>
       _videoUpgradeEnabled && callState.value == CallState.connected;
 
+  // ─── WhatsApp-style mid-call audio→video consent handshake ───
+
+  /// Step 1: ask the peer to switch to video. Enters a "Requesting…"
+  /// pending state; the camera only turns on after the peer accepts.
+  void requestVideoUpgrade() {
+    if (!_videoUpgradeEnabled ||
+        callState.value != CallState.connected ||
+        isVideoCall.value ||
+        isVideoUpgradePending.value ||
+        remoteDeviceId.value.isEmpty) {
+      return;
+    }
+    isVideoUpgradePending.value = true;
+    _socketService.sendVideoUpgradeRequest(
+      callId: currentCallId.value,
+      recipientId: remoteDeviceId.value,
+    );
+    _videoUpgradeTimeoutTimer?.cancel();
+    _videoUpgradeTimeoutTimer = Timer(const Duration(seconds: 20), () {
+      if (!isVideoUpgradePending.value) return;
+      cancelVideoUpgradeRequest();
+      Get.snackbar(
+        'Video call',
+        'No response to video call request',
+        snackPosition: SnackPosition.TOP,
+        duration: const Duration(seconds: 3),
+      );
+    });
+  }
+
+  /// Requester cancels a pending upgrade request — clears the peer's
+  /// incoming prompt via video_upgrade_cancel.
+  void cancelVideoUpgradeRequest() {
+    _videoUpgradeTimeoutTimer?.cancel();
+    _videoUpgradeTimeoutTimer = null;
+    if (!isVideoUpgradePending.value) return;
+    isVideoUpgradePending.value = false;
+    if (remoteDeviceId.value.isNotEmpty) {
+      _socketService.sendVideoUpgradeCancel(
+        callId: currentCallId.value,
+        recipientId: remoteDeviceId.value,
+      );
+    }
+  }
+
+  /// Step 2 (receiver side): an upgrade request arrived — surface the
+  /// accept/decline prompt while the audio call keeps running.
+  void _handleVideoUpgradeRequest(Map<String, dynamic> data) {
+    if ((data['callId'] as String?) != currentCallId.value) return;
+    if (isVideoCall.value || callState.value != CallState.connected) return;
+    // Glare: both sides tapped Video simultaneously. Resolve by accepting
+    // on this end — the peer's own request handler does the same.
+    if (isVideoUpgradePending.value) {
+      _videoUpgradeTimeoutTimer?.cancel();
+      _videoUpgradeTimeoutTimer = null;
+      isVideoUpgradePending.value = false;
+      hasIncomingVideoUpgradeRequest.value = true;
+      respondToVideoUpgrade(true);
+      return;
+    }
+    hasIncomingVideoUpgradeRequest.value = true;
+    HapticFeedback.mediumImpact();
+  }
+
+  /// Step 3 (receiver side): accept or decline the incoming request.
+  /// Also invoked from the simultaneous-request glare path.
+  Future<void> respondToVideoUpgrade(bool accepted) async {
+    if (!hasIncomingVideoUpgradeRequest.value) return;
+    hasIncomingVideoUpgradeRequest.value = false;
+    _socketService.sendVideoUpgradeResponse(
+      callId: currentCallId.value,
+      recipientId: remoteDeviceId.value,
+      accepted: accepted,
+    );
+    if (accepted) {
+      unawaited(setCameraEnabled(true));
+    }
+  }
+
+  /// Step 4 (requester side): peer answered — upgrade on accept, notify
+  /// on decline. The audio call is never touched either way.
+  void _handleVideoUpgradeResponse(Map<String, dynamic> data) {
+    if ((data['callId'] as String?) != currentCallId.value) return;
+    if (!isVideoUpgradePending.value) return;
+    _videoUpgradeTimeoutTimer?.cancel();
+    _videoUpgradeTimeoutTimer = null;
+    isVideoUpgradePending.value = false;
+    if (data['accepted'] == true) {
+      unawaited(setCameraEnabled(true));
+    } else {
+      Get.snackbar(
+        'Video call',
+        '$remoteDisplayLabel declined the video call',
+        snackPosition: SnackPosition.TOP,
+        duration: const Duration(seconds: 3),
+      );
+    }
+  }
+
+  /// Peer withdrew their upgrade request — dismiss the prompt.
+  void _handleVideoUpgradeCancel(Map<String, dynamic> data) {
+    if ((data['callId'] as String?) != currentCallId.value) return;
+    hasIncomingVideoUpgradeRequest.value = false;
+  }
+
+  void _resetVideoUpgradeState() {
+    _videoUpgradeTimeoutTimer?.cancel();
+    _videoUpgradeTimeoutTimer = null;
+    isVideoUpgradePending.value = false;
+    hasIncomingVideoUpgradeRequest.value = false;
+  }
+
   void _sendCallMediaUpdate({required bool video, required String reason}) {
     debugPrint(
       '📹 sendCallMediaUpdate(video=$video, callId=${currentCallId.value}, '
@@ -4729,6 +4862,7 @@ class CallController extends GetxController {
     isCameraOn.value = false;
     isFrontCamera.value = true;
     peerCameraOff.value = false;
+    _resetVideoUpgradeState();
     isReconnecting.value = false;
     hasPoorConnection.value = false;
     localVideoStream.value = null;
