@@ -4,12 +4,18 @@ class CallMediaHelper {
   static const String videoCapability = 'video_call';
   static const int videoBitrateCapBps = 1200000;
 
-  static Map<String, dynamic> mediaConstraints({required bool video}) => {
-        'audio': {
-          'echoCancellation': true,
-          'noiseSuppression': true,
-          'autoGainControl': true,
-        },
+  static Map<String, dynamic> mediaConstraints({
+    required bool video,
+    bool audio = true,
+  }) =>
+      {
+        'audio': audio
+            ? {
+                'echoCancellation': true,
+                'noiseSuppression': true,
+                'autoGainControl': true,
+              }
+            : false,
         'video': video
             ? {
                 'facingMode': 'user',

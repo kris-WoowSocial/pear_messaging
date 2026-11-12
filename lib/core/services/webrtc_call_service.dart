@@ -836,8 +836,13 @@ class WebRTCCallService {
         await onEnsureMediaForegroundService!();
       }
 
+      // Video-only capture: requesting audio here spins up a second mic AND,
+      // on iOS, makes RTCAudioSession re-configure the live voiceChat session
+      // mid-upgrade — that churn is what made the acceptor's getUserMedia slow
+      // enough to race the peer's renegotiation offer (and can fail outright).
+      // Call audio already lives on _localStream.
       final stream = await navigator.mediaDevices.getUserMedia(
-        CallMediaHelper.mediaConstraints(video: true),
+        CallMediaHelper.mediaConstraints(video: true, audio: false),
       );
       final videoTrack = stream.getVideoTracks().firstOrNull;
       if (videoTrack == null) {
@@ -845,14 +850,17 @@ class WebRTCCallService {
         await stream.dispose();
         return false;
       }
-      // This capture produced a second mic track we don't need — the call's
-      // audio already lives on _localStream.
       stream.getAudioTracks().forEach((t) => t.stop());
       await _localStream!.addTrack(videoTrack);
       _isFrontCamera = true;
 
       // Attach to the pre-allocated transceiver (sender.track == null) or any
       // existing video transceiver; fall back to addTrack if neither exists.
+      // replaceTrack on a transceiver already negotiated sendrecv needs NO
+      // renegotiation — RTP starts on the existing m-line/SSRC immediately.
+      // Only re-offer when a new m-line was added or the negotiated direction
+      // still isn't sendrecv.
+      bool needsRenegotiation = false;
       final transceivers = await _peerConnection!.getTransceivers();
       RTCRtpTransceiver? videoTx;
       for (final t in transceivers) {
@@ -865,11 +873,18 @@ class WebRTCCallService {
       }
       if (videoTx == null) {
         await _peerConnection!.addTrack(videoTrack, _localStream!);
+        needsRenegotiation = true;
       } else {
         await videoTx.sender.replaceTrack(videoTrack);
         try {
-          await videoTx.setDirection(TransceiverDirection.SendRecv);
-        } catch (_) {}
+          final direction = await videoTx.getCurrentDirection();
+          if (direction != TransceiverDirection.SendRecv) {
+            await videoTx.setDirection(TransceiverDirection.SendRecv);
+            needsRenegotiation = true;
+          }
+        } catch (_) {
+          needsRenegotiation = true;
+        }
       }
 
       _isVideoCall = true;
@@ -879,8 +894,12 @@ class WebRTCCallService {
       await _configureAudioSession(speakerOn: true, preferBluetooth: true);
       // Re-fire so the UI binds the new track to the self-view renderer.
       onLocalStream?.call(_localStream!);
-      final renegotiated = await _sendRenegotiationOffer();
-      _logMirrorState('upgradeToVideo', extra: 'renegotiated=$renegotiated');
+      final renegotiated =
+          needsRenegotiation ? await _sendRenegotiationOffer() : true;
+      _logMirrorState(
+        'upgradeToVideo',
+        extra: 'renegotiated=$renegotiated needs=$needsRenegotiation',
+      );
       return true;
     } catch (e) {
       debugPrint('❌ upgradeToVideo failed: $e');
@@ -1314,7 +1333,11 @@ class WebRTCCallService {
         for (final report in stats) {
           if ((report.type == 'outbound-rtp' || report.type == 'inbound-rtp') &&
               (report.values['kind'] == 'video')) {
-            final id = report.values['id'];
+            final id = report.values['id'] ??
+                report.values['trackIdentifier'] ??
+                report.values['mid'] ??
+                report.values['ssrc'] ??
+                report.id;
             final bytesSent = report.values['bytesSent'];
             final bytesReceived = report.values['bytesReceived'];
             final framesSent = report.values['framesSent'];

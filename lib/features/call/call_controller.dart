@@ -302,6 +302,11 @@ class CallController extends GetxController {
   bool _cryptoAnswerInFlight = false;
   bool _videoRequested = false;
 
+  /// True while upgradeToVideo() is mid-flight (getUserMedia/replaceTrack).
+  /// Guards _handleIceRestart from emitting a false video:'off' when the
+  /// peer's renegotiation offer lands before our camera has finished.
+  bool _videoUpgradeInFlight = false;
+
   /// Whether the current call was initiated or accepted as a video call.
   /// Exposed so the video screen can fall back to the audio UI when the
   /// camera permission is denied.
@@ -1406,8 +1411,10 @@ class CallController extends GetxController {
     };
 
     _webrtcService.onCameraPermissionDenied = () {
-      _videoRequested = false;
-      isVideoCall.value = false;
+      // Fires only from upgradeToVideo() — which only runs after the peer
+      // consented to the video upgrade. Do NOT bounce back to /call/active:
+      // the peer may still be sending video. Keep the video surface and let
+      // call_media_update(video:false) show "Camera off" for our self-view.
       isCameraOn.value = false;
       Get.snackbar(
         'Camera unavailable',
@@ -1415,9 +1422,6 @@ class CallController extends GetxController {
         snackPosition: SnackPosition.TOP,
         duration: const Duration(seconds: 4),
       );
-      if (Get.currentRoute == '/call/video') {
-        Get.offNamed('/call/active');
-      }
     };
   }
 
@@ -1849,13 +1853,18 @@ class CallController extends GetxController {
               if (Get.currentRoute == '/call/active') {
                 Get.offNamed('/call/video');
               }
-            } else {
+            } else if (!_videoUpgradeInFlight) {
               _videoRequested = false;
               _sendCallMediaUpdate(
                 video: false,
                 reason: 'camera not available during ICE restart',
               );
             }
+            // else: local upgrade is mid-flight — our camera isn't attached
+            // yet, so isCameraEnabled is legitimately false. Emitting
+            // video:'off' here told the peer our camera failed and cleared
+            // _videoRequested, which is what bounced us back to audio. The
+            // upgrade path reports the true state when it completes.
           }
         } else if (decoded['type'] == 'answer') {
           await _webrtcService.handleIceRestartAnswer(decoded['sdp'] as String);
@@ -3450,8 +3459,16 @@ class CallController extends GetxController {
   Future<void> setCameraEnabled(bool enabled) async {
     _webrtcService.videoUpgradeEnabled = _videoUpgradeEnabled;
     if (enabled && !_webrtcService.isVideoCall && _videoUpgradeEnabled) {
-      // Audio call → camera on: upgrade path (replaceTrack + renegotiation)
-      final upgraded = await _webrtcService.upgradeToVideo();
+      // Audio call → camera on: upgrade path (replaceTrack + renegotiation).
+      // While this is in flight, a peer renegotiation offer must not make us
+      // emit a false video:'off' — the camera simply isn't attached yet.
+      bool upgraded;
+      _videoUpgradeInFlight = true;
+      try {
+        upgraded = await _webrtcService.upgradeToVideo();
+      } finally {
+        _videoUpgradeInFlight = false;
+      }
       isCameraOn.value = _webrtcService.isCameraEnabled;
       if (upgraded) {
         _videoRequested = true;
@@ -3560,7 +3577,29 @@ class CallController extends GetxController {
       accepted: accepted,
     );
     if (accepted) {
-      unawaited(setCameraEnabled(true));
+      unawaited(
+        setCameraEnabled(true).then((_) => _enterVideoSurface()),
+      );
+    }
+  }
+
+  /// Stay on (or enter) the video surface after an accepted upgrade — even
+  /// when the local camera failed, because the peer may still be sending
+  /// video. call_media_update keeps the peer's "Camera off" state honest.
+  void _enterVideoSurface() {
+    _videoRequested = true;
+    isVideoCall.value = true;
+    _stopProximitySensor();
+    unawaited(_refreshAndroidOngoingCallNotification());
+    if (Get.currentRoute == '/call/active') {
+      Get.offNamed('/call/video');
+    }
+    if (callState.value == CallState.connected &&
+        !_webrtcService.isCameraEnabled) {
+      _sendCallMediaUpdate(
+        video: false,
+        reason: 'camera unavailable after accepted video upgrade',
+      );
     }
   }
 
@@ -3573,7 +3612,9 @@ class CallController extends GetxController {
     _videoUpgradeTimeoutTimer = null;
     isVideoUpgradePending.value = false;
     if (data['accepted'] == true) {
-      unawaited(setCameraEnabled(true));
+      unawaited(
+        setCameraEnabled(true).then((_) => _enterVideoSurface()),
+      );
     } else {
       Get.snackbar(
         'Video call',
