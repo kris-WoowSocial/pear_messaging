@@ -243,7 +243,24 @@ class ChatSettingsScreen extends GetView<ChatController> {
           //   },
           // ),
           // const Divider(height: 1, indent: 56),
-          if (!controller.isGroup) ...[
+          Obx(
+            () => _buildSettingsTile(
+              icon: controller.isChatLocked.value
+                  ? Icons.lock_open_outlined
+                  : Icons.lock_outline,
+              title: 'Chat lock',
+              subtitle: controller.isChatLocked.value
+                  ? 'Hidden in Locked chats — unlock to restore'
+                  : 'Hide this chat behind device authentication',
+              iconColor: controller.isChatLocked.value
+                  ? AppColors.info
+                  : AppColors.messageText,
+              onTap: controller.toggleChatLock,
+            ),
+          ),
+          const Divider(height: 1, indent: 56),
+          if (!controller.isGroup ||
+              controller.canChangeDisappearingTimer) ...[
             Obx(
               () => _buildSettingsTile(
                 icon: Icons.timer_outlined,

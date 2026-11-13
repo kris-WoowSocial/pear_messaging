@@ -8,6 +8,7 @@ import 'package:uuid/uuid.dart';
 import '../../core/constants/app_colors.dart';
 import '../../core/services/api_service.dart';
 import '../../core/services/fcm_service.dart';
+import '../../core/services/local_auth_service.dart';
 import '../../core/services/local_storage_service.dart';
 import '../../core/services/socket_service.dart';
 import '../../core/services/block_service.dart';
@@ -82,6 +83,19 @@ class ChatController extends GetxController with WidgetsBindingObserver {
   /// Disappearing-messages timer for this chat (seconds; 0 = off).
   /// Mirror of `ChatEntity.disappearingAfterSeconds` for reactive UI.
   final RxInt disappearingAfterSeconds = 0.obs;
+
+  /// Mirror of `ChatEntity.isLocked` — driving the chat-lock toggle in
+  /// settings. Locked chats are hidden from the main list behind auth.
+  final RxBool isChatLocked = false.obs;
+
+  /// Who may change this chat's disappearing timer: anyone in 1:1; in
+  /// groups, admins only when the admins list is populated (otherwise
+  /// every member).
+  bool get canChangeDisappearingTimer {
+    if (!isGroup) return true;
+    final admins = _storageService.getChat(chatId)?.admins ?? const [];
+    return admins.isEmpty || admins.contains(myDeviceId);
+  }
   Timer? _expiryPurgeTimer;
 
   // Reply state management
@@ -215,6 +229,7 @@ class ChatController extends GetxController with WidgetsBindingObserver {
     // Disappearing messages: hydrate the timer and start the purge worker.
     disappearingAfterSeconds.value =
         _storageService.getChat(chatId)?.disappearingAfterSeconds ?? 0;
+    isChatLocked.value = _storageService.getChat(chatId)?.isLocked ?? false;
     _expiryPurgeTimer = Timer.periodic(
       const Duration(minutes: 1),
       (_) => _purgeExpiredFromUi(),
@@ -2735,12 +2750,13 @@ class ChatController extends GetxController with WidgetsBindingObserver {
     }
     await _applyReactionUpdate(message.id, reactions);
 
-    // Reactions relay 1:1 only — group fanout is a server-side follow-up.
-    if (!isGroup && recipientDeviceId.isNotEmpty) {
+    // 1:1 → direct relay to the peer. Group → server fans out to all
+    // other members (chatId is the group's id).
+    if (isGroup || recipientDeviceId.isNotEmpty) {
       _socketService.sendReaction(
         messageId: message.id,
         chatId: chatId,
-        recipientId: recipientDeviceId,
+        recipientId: isGroup ? '' : recipientDeviceId,
         emoji: emoji,
         action: action,
       );
@@ -2756,7 +2772,12 @@ class ChatController extends GetxController with WidgetsBindingObserver {
     final emoji = data['emoji'] as String?;
     final action = data['action'] as String?;
     if (messageId == null || reactorId == null || emoji == null) return;
-    if (reactorId != recipientDeviceId) return;
+    if (isGroup) {
+      // Group fanout — match on groupId, skip our own relayed echo.
+      if (data['chatId'] != chatId || reactorId == myDeviceId) return;
+    } else if (reactorId != recipientDeviceId) {
+      return;
+    }
 
     final idx = _allMessageEntities.indexWhere((m) => m.id == messageId);
     if (idx >= 0) {
@@ -2849,6 +2870,40 @@ class ChatController extends GetxController with WidgetsBindingObserver {
     return DateTime.now().millisecondsSinceEpoch + seconds * 1000;
   }
 
+  /// Chat lock toggle — auth-gated both directions so a borrowed unlocked
+  /// phone can't expose a hidden chat. Locking hides the chat from the main
+  /// list behind the "Locked chats" gate.
+  Future<void> toggleChatLock() async {
+    final newValue = !isChatLocked.value;
+    try {
+      final auth = Get.find<LocalAuthService>();
+      if (!await auth.isAvailable()) {
+        Get.snackbar(
+          'Not Available',
+          'Set up device biometrics or a PIN to lock chats',
+          snackPosition: SnackPosition.TOP,
+        );
+        return;
+      }
+      if (!await auth.authenticate()) return;
+    } catch (e) {
+      debugPrint('⚠️ Chat-lock auth failed: $e');
+      return;
+    }
+    await _storageService.setChatLocked(chatId, newValue);
+    isChatLocked.value = newValue;
+    if (Get.isRegistered<ChatListController>()) {
+      Get.find<ChatListController>().loadChats();
+    }
+    Get.snackbar(
+      newValue ? 'Chat locked' : 'Chat unlocked',
+      newValue
+          ? 'Find it under "Locked chats" on the chats screen'
+          : 'Chat restored to the main list',
+      snackPosition: SnackPosition.TOP,
+    );
+  }
+
   /// Change this chat's disappearing-messages timer: persist, notify the
   /// peer, and insert a system bubble. `seconds == 0` turns it off.
   Future<void> setDisappearingTimer(int seconds) async {
@@ -2858,10 +2913,10 @@ class ChatController extends GetxController with WidgetsBindingObserver {
       await _storageService
           .saveChat(chat.copyWith(disappearingAfterSeconds: seconds));
     }
-    if (!isGroup && recipientDeviceId.isNotEmpty) {
+    if (isGroup || recipientDeviceId.isNotEmpty) {
       _socketService.sendDisappearingTimer(
         chatId: chatId,
-        recipientId: recipientDeviceId,
+        recipientId: isGroup ? '' : recipientDeviceId,
         seconds: seconds,
       );
     }
@@ -2874,7 +2929,13 @@ class ChatController extends GetxController with WidgetsBindingObserver {
   void _handleDisappearTimerSet(Map<String, dynamic> data) {
     final seconds = (data['disappearingAfterSeconds'] as num?)?.toInt();
     final senderId = data['senderDeviceId'] as String?;
-    if (seconds == null || senderId != recipientDeviceId) return;
+    if (seconds == null) return;
+    if (isGroup) {
+      // Group fanout — match on groupId, skip our own relayed echo.
+      if (data['chatId'] != chatId || senderId == myDeviceId) return;
+    } else if (senderId != recipientDeviceId) {
+      return;
+    }
 
     disappearingAfterSeconds.value = seconds;
     final chat = _storageService.getChat(chatId);

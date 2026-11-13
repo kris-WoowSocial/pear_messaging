@@ -28,6 +28,7 @@ class LocalStorageService extends GetxService {
   static const String _prefsDeviceIdKey = 'device_id';
   static const String _prefsAuthEnabledKey = 'auth_enabled';
   static const String _prefsUserNameKey = 'user_name';
+  static const String _prefsProtectCallIpKey = 'protect_call_ip_address';
 
   late Box _chatsBox;
   late Box _messagesBox;
@@ -191,6 +192,15 @@ class LocalStorageService extends GetxService {
     await _prefs.setBool(_prefsAuthEnabledKey, enabled);
   }
 
+  // "Protect IP address in calls" — when on, WebRTC gathers only relayed
+  // (TURN) candidates so the peer never sees the device's real IP.
+  bool get protectCallIpAddress =>
+      _prefs.getBool(_prefsProtectCallIpKey) ?? false;
+
+  Future<void> setProtectCallIpAddress(bool enabled) async {
+    await _prefs.setBool(_prefsProtectCallIpKey, enabled);
+  }
+
   // User name preference
   String? getUserName() {
     return _prefs.getString(_prefsUserNameKey);
@@ -346,6 +356,14 @@ class LocalStorageService extends GetxService {
       debugPrint('Error getting chat: $e');
       return null;
     }
+  }
+
+  /// Flip a chat's locked flag (biometric-gated "Locked chats" feature).
+  /// No-op when the chat row doesn't exist.
+  Future<void> setChatLocked(String chatId, bool locked) async {
+    final chat = getChat(chatId);
+    if (chat == null || chat.isLocked == locked) return;
+    await saveChat(chat.copyWith(isLocked: locked));
   }
 
   Future<void> saveChat(ChatEntity chat) async {
