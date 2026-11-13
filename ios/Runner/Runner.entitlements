@@ -9,8 +9,6 @@
 		<string>applinks:vantchatting.app.link</string>
 		<string>applinks:vantchatting-alternate.app.link</string>
 	</array>
-	<key>com.apple.developer.avfoundation.multitasking-camera-access</key>
-	<true/>
 	<key>com.apple.developer.in-app-payments</key>
 	<array>
 		<string>merchant.com.vant.chatting</string>
