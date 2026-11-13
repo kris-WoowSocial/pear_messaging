@@ -10,6 +10,7 @@ import 'package:flutter_webrtc/flutter_webrtc.dart' hide MessageType;
 import 'package:get/get.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:uuid/uuid.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import '../../core/services/call_breadcrumbs.dart';
 import '../../core/services/caller_name_resolver.dart';
@@ -351,6 +352,10 @@ class CallController extends GetxController {
   final PipService _pipService = PipService();
   PipService get pipService => _pipService; // exposed for the call screen
   final RxBool isInPip = false.obs;
+
+  /// Self-view tile collapsed on the video call screen. Purely visual —
+  /// the outbound camera stream keeps running (isCameraOn stays true).
+  final RxBool isSelfViewHidden = false.obs;
   AppLifecycleState _lastLifecycleState = AppLifecycleState.resumed;
   Timer? _pipPauseDebounce;
   Timer? _pipCameraCutWatcher;
@@ -580,6 +585,17 @@ class CallController extends GetxController {
           _handleNativeAnswer(data.cast<String, dynamic>());
         } else if (action == 'com.vant.chat.DECLINE_CALL' && data != null) {
           _handleNativeDecline(data.cast<String, dynamic>());
+        } else if (action == 'com.vant.chat.DECLINE_WITH_MESSAGE' &&
+            data != null) {
+          final castData = data.cast<String, dynamic>();
+          _handleNativeDecline(castData).then((_) {
+            final templateText =
+                castData['template_text'] as String? ?? '';
+            final callerId = castData['caller_id'] as String? ?? '';
+            if (templateText.isNotEmpty) {
+              unawaited(_sendDeclineQuickMessage(templateText, callerId));
+            }
+          });
         }
       }
     } catch (e) {
@@ -850,12 +866,12 @@ class CallController extends GetxController {
     }
     final prevState = _lastLifecycleState;
     _lastLifecycleState = state;
-    // Android + PiP-eligible: on `paused` wait ~250ms and ask native whether
-    // we're entering/inside PiP before cutting the camera. Flag-off calls
-    // (pipEligible == false) keep the original synchronous pause.
-    if (Platform.isAndroid &&
-        state == AppLifecycleState.paused &&
-        _pipService.pipEligible) {
+    // Android + iOS PiP-eligible: on `paused` wait ~250ms and ask native
+    // whether we're entering/inside PiP before cutting the camera. Flag-off
+    // calls (pipEligible == false) keep the original synchronous pause.
+    if (state == AppLifecycleState.paused &&
+        _pipService.pipEligible &&
+        (Platform.isAndroid || Platform.isIOS)) {
       _pipPauseDebounce?.cancel();
       final entering = _pipService.pipEntering;
       _pipPauseDebounce = Timer(const Duration(milliseconds: 250), () async {
@@ -919,9 +935,12 @@ class CallController extends GetxController {
   /// onUserLeaveHint path). Called on connect, when the video-call screen
   /// opens/closes, and when call_video state changes.
   Future<void> _syncPipEligibility() async {
-    if (!Platform.isAndroid) return;
-    final flagOn = Get.isRegistered<FeatureFlagService>() &&
-        Get.find<FeatureFlagService>().pipAndroidEnabled;
+    if (!Platform.isAndroid && !Platform.isIOS) return;
+    final flagService =
+        Get.isRegistered<FeatureFlagService>() ? Get.find<FeatureFlagService>() : null;
+    final flagOn = Platform.isAndroid
+        ? (flagService?.pipAndroidEnabled ?? false)
+        : (flagService?.pipIosEnabled ?? false);
     final cameraPerm = await Permission.camera.isGranted;
     final incomingRinging = Get.currentRoute == '/call/incoming' ||
         callState.value == CallState.ringing ||
@@ -931,17 +950,23 @@ class CallController extends GetxController {
       isVideoCall: isVideoCall.value,
       callConnected: callState.value == CallState.connected,
       flagOn: flagOn,
-      apiLevel: 26, // conservative floor — native also gates on SDK_INT
+      apiLevel: 26, // conservative floor — native also gates (SDK / iOS 15)
       cameraPermission: cameraPerm,
       inCallUiVisible: _videoCallUiVisible,
       incomingRinging: incomingRinging,
     );
+    // iOS attaches PiP to the remote track — ship the current trackId so
+    // native can (re)bind the frame sink whenever eligibility re-syncs.
+    final trackId = Platform.isIOS
+        ? remoteVideoStream.value?.getVideoTracks().firstOrNull?.id
+        : null;
     debugPrint(
       '📺 VantPip: eligibility=$allowed (flag=$flagOn video=${isVideoCall.value} '
       'connected=${callState.value == CallState.connected} camPerm=$cameraPerm '
-      'uiVisible=$_videoCallUiVisible ringing=$incomingRinging)',
+      'uiVisible=$_videoCallUiVisible ringing=$incomingRinging '
+      'track=${trackId ?? 'none'})',
     );
-    await _pipService.setPipEligible(allowed);
+    await _pipService.setPipEligible(allowed, trackId: trackId);
   }
 
   /// VideoCallScreen reports its visibility so Home during a connected video
@@ -958,22 +983,32 @@ class CallController extends GetxController {
     unawaited(_pipService.setPipEligible(true, width: width, height: height));
   }
 
+  /// iOS: the PiP frame sink binds to the remote RTCVideoTrack — re-push it
+  /// whenever the remote stream changes (track replace/renegotiation) while
+  /// PiP stays eligible. Native attach is idempotent.
+  void _syncIosPipTrack() {
+    if (!Platform.isIOS || !_pipService.pipEligible) return;
+    final trackId =
+        remoteVideoStream.value?.getVideoTracks().firstOrNull?.id;
+    if (trackId == null || trackId.isEmpty) return;
+    unawaited(_pipService.setPipEligible(true, trackId: trackId));
+  }
+
   /// Native reports a PiP transition. Expanded-vs-dismissed is NOT decided
   /// here — pip_changed lands before the lifecycle 'resumed' event, so a
   /// Dart-side lifecycle check misclassifies expand as dismiss. MainActivity
   /// classifies the exit and sends a separate 'pip_outcome' event.
   void _onPipChanged(bool inPip) {
-    if (!Platform.isAndroid) return;
     _pipService.onPipChanged(inPip);
     if (isInPip.value == inPip) return;
     isInPip.value = inPip;
 
     if (inPip) {
       debugPrint('📺 VantPip: entered PiP');
-      _startPipCameraCutWatcher();
+      if (Platform.isAndroid) _startPipCameraCutWatcher();
     } else {
       debugPrint('📺 VantPip: exited PiP');
-      _stopPipCameraCutWatcher();
+      if (Platform.isAndroid) _stopPipCameraCutWatcher();
     }
   }
 
@@ -983,7 +1018,7 @@ class CallController extends GetxController {
   ///  - 'dismissed': user tapped the PiP X — the call CONTINUES on audio;
   ///    pause the camera and signal camera-off to the peer.
   void _onPipOutcome(String outcome) {
-    if (!Platform.isAndroid) return;
+    if (!Platform.isAndroid && !Platform.isIOS) return;
     if (outcome == 'expanded') {
       debugPrint('📺 VantPip: expanded to full screen');
       if (_cameraCutInPip && isInCall && isVideoCall.value) {
@@ -1363,6 +1398,7 @@ class CallController extends GetxController {
     _webrtcService.onRemoteStream = (stream) {
       remoteVideoStream.value = stream;
       unawaited(ensureVideoRenderers());
+      _syncIosPipTrack();
     };
 
     _webrtcService.onCallStateChange = (state, {reason}) {
@@ -2119,12 +2155,42 @@ class CallController extends GetxController {
               'caller_id': callerId ?? '',
               'caller_name': callerName ?? 'Incoming Call',
             });
+          } else if (action == 'decline_with_message') {
+            // Lock-screen quick reply: reject the call, then send the
+            // template text as a normal encrypted message.
+            final templateText =
+                call.arguments['templateText'] as String? ?? '';
+            await _handleNativeDecline({
+              'call_id': callId ?? '',
+              'caller_id': callerId ?? '',
+              'caller_name': callerName ?? 'Incoming Call',
+            });
+            if (templateText.isNotEmpty) {
+              unawaited(_sendDeclineQuickMessage(
+                templateText,
+                callerId ?? '',
+              ));
+            }
           } else if (action == 'end' &&
               callId != null &&
               callId.isNotEmpty &&
               currentCallId.value == callId) {
             endCall();
           }
+        }
+        if (call.method == 'pipChanged') {
+          // iOS PiP state sync (Android PiP arrives via the call_events
+          // broadcast stream instead — same _onPipChanged entry point).
+          final inPip =
+              (call.arguments as Map?)?['isPip'] == true;
+          _onPipChanged(inPip);
+          return null;
+        }
+        if (call.method == 'pipOutcome') {
+          final outcome =
+              (call.arguments as Map?)?['outcome'] as String? ?? '';
+          _onPipOutcome(outcome);
+          return null;
         }
         if (call.method == 'callPushWake') {
           // iOS PushKit wake on the locked path: mark the call push-owned
@@ -3102,6 +3168,82 @@ class CallController extends GetxController {
   }
 
   /// Reject an incoming call
+  /// Decline an incoming call and immediately send a quick-reply text
+  /// message to the caller (WhatsApp-style "Decline with message").
+  /// Rejects through the normal rejectCall flow, then persists + emits the
+  /// message so it lands in the 1:1 thread right away.
+  Future<void> declineCallWithMessage(String templateText) async {
+    final callData = Map<String, dynamic>.from(
+      _latestIncomingCallData ?? const {},
+    );
+    if ((callData['callId'] as String? ?? '').isEmpty) {
+      callData['callId'] = currentCallId.value;
+      callData['callerId'] =
+          callData['callerId'] ?? remoteDeviceId.value;
+    }
+    rejectCall(callData);
+    unawaited(_sendDeclineQuickMessage(
+      templateText,
+      callData['callerId'] as String? ?? '',
+    ));
+  }
+
+  /// Persist + emit the decline quick-reply as a normal encrypted 1:1 text
+  /// message — same write path ChatController.sendMessage uses, minus the
+  /// input field. Refreshes the chat list and an open chat if registered.
+  Future<void> _sendDeclineQuickMessage(
+    String text,
+    String callerId,
+  ) async {
+    try {
+      final myId = _storageService.deviceId ?? '';
+      if (callerId.isEmpty || myId.isEmpty) return;
+      final messageId = const Uuid().v4();
+      final now = DateTime.now();
+      await _storageService.saveMessage(
+        MessageEntity(
+          id: messageId,
+          chatId: callerId,
+          senderId: myId,
+          receiverId: callerId,
+          content: text,
+          timestamp: now,
+          status: MessageStatus.sending,
+          isMe: true,
+        ),
+      );
+      final existing = _storageService.getChat(callerId);
+      await _storageService.saveChat(
+        existing?.copyWith(lastMessage: text, lastMessageTime: now) ??
+            ChatEntity(
+              id: callerId,
+              userName: remoteDisplayName.value.isNotEmpty
+                  ? remoteDisplayName.value
+                  : callerId,
+              lastMessage: text,
+              lastMessageTime: now,
+            ),
+      );
+      if (Get.isRegistered<ChatListController>()) {
+        Get.find<ChatListController>().loadChats();
+      }
+      if (Get.isRegistered<ChatController>()) {
+        final chatController = Get.find<ChatController>();
+        if (chatController.chatId == callerId) {
+          unawaited(chatController.refreshMessagesFromStorage());
+        }
+      }
+      await _socketService.sendMessage(
+        messageId: messageId,
+        recipientDeviceId: callerId,
+        content: text,
+      );
+      debugPrint('💬 Decline quick-reply sent to $callerId: $messageId');
+    } catch (e) {
+      debugPrint('💬 Decline quick-reply failed: $e');
+    }
+  }
+
   void rejectCall(Map<String, dynamic> callData) {
     final callId = callData['callId'] as String;
     if (Platform.isIOS) {
@@ -4948,6 +5090,7 @@ class CallController extends GetxController {
     _cameraCutInPip = false;
     _videoCallUiVisible = false;
     isInPip.value = false;
+    isSelfViewHidden.value = false;
     unawaited(_pipService.onCallEnded());
     // Dismiss the sticky ongoing call notification
     try {
