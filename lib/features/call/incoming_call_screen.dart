@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
@@ -8,6 +9,8 @@ import 'call_controller.dart';
 import 'call_encryption_indicator.dart';
 import '../../core/services/ringtone_service.dart';
 import '../../core/services/callkit_service.dart';
+import '../../core/services/local_storage_service.dart';
+import '../chat/chat_controller.dart';
 
 /// Incoming Call Screen - Full-screen overlay for incoming audio calls
 class IncomingCallScreen extends StatefulWidget {
@@ -181,13 +184,26 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
                   ),
                 ),
               ),
+              // Quick-reply chip above the action buttons
+              TextButton.icon(
+                onPressed: () => _showDeclineMessageSheet(callData),
+                icon: const Icon(
+                  Icons.chat_bubble_outline,
+                  color: Colors.white70,
+                  size: 18,
+                ),
+                label: const Text(
+                  'Message',
+                  style: TextStyle(color: Colors.white70, fontSize: 15),
+                ),
+              ),
               // Bottom section - Action buttons
               Expanded(
                 flex: 1,
                 child: Padding(
                   padding: const EdgeInsets.symmetric(
                     horizontal: 48,
-                    vertical: 32,
+                    vertical: 24,
                   ),
                   child: Row(
                     mainAxisAlignment: MainAxisAlignment.spaceEvenly,
@@ -339,6 +355,120 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
       });
       Get.back();
     }
+  }
+
+  static const _declineQuickReplies = [
+    "Can't talk right now, call you later.",
+    "I'm in a meeting, will call you back.",
+    "On my way, talk soon.",
+  ];
+
+  /// Dark-mode quick-reply sheet — a template declines the call and sends it
+  /// as a chat message; "Custom message..." declines and opens the thread.
+  void _showDeclineMessageSheet(Map<String, dynamic>? callData) {
+    if (callData == null) return;
+    final controller = Get.find<CallController>();
+    Get.bottomSheet(
+      Container(
+        decoration: const BoxDecoration(
+          color: Color(0xFF1F2C34),
+          borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
+        ),
+        padding: const EdgeInsets.fromLTRB(20, 12, 20, 28),
+        child: SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Center(
+                child: Container(
+                  width: 36,
+                  height: 4,
+                  margin: const EdgeInsets.only(bottom: 16),
+                  decoration: BoxDecoration(
+                    color: Colors.white24,
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+              ),
+              const Text(
+                'Decline with message',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 17,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const SizedBox(height: 12),
+              for (final text in _declineQuickReplies)
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: Text(
+                    text,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 15,
+                    ),
+                  ),
+                  onTap: () {
+                    Get.back();
+                    unawaited(controller.declineCallWithMessage(text));
+                  },
+                ),
+              const Divider(color: Colors.white24, height: 20),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(
+                  Icons.edit_outlined,
+                  color: Colors.white70,
+                  size: 20,
+                ),
+                title: const Text(
+                  'Custom message...',
+                  style: TextStyle(color: Colors.white70, fontSize: 15),
+                ),
+                onTap: () {
+                  Get.back();
+                  _declineAndOpenChat(callData, controller);
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
+      isDismissible: true,
+      enableDrag: true,
+    );
+  }
+
+  /// Custom-message path: reject the call, then open the caller's chat so the
+  /// user can type — the input bar lands focused for immediate typing.
+  Future<void> _declineAndOpenChat(
+    Map<String, dynamic> callData,
+    CallController controller,
+  ) async {
+    final callerId = callData['callerId'] as String? ?? '';
+    final callerName = callData['callerName'] as String? ?? '';
+    final myDeviceId =
+        Get.isRegistered<LocalStorageService>()
+            ? Get.find<LocalStorageService>().deviceId ?? ''
+            : '';
+    await _declineCall(callData);
+    if (callerId.isEmpty) return;
+    Get.toNamed('/chat', arguments: {
+      'chatId': callerId,
+      'userName': callerName.isNotEmpty ? callerName : callerId,
+      'recipientDeviceId': callerId,
+      'myDeviceId': myDeviceId,
+      'isGroup': false,
+    });
+    // Land with the keyboard open — ChatController registers during the
+    // route's first frame, so focus on the next frame after that.
+    unawaited(Future<void>.delayed(const Duration(milliseconds: 450), () {
+      if (Get.isRegistered<ChatController>()) {
+        Get.find<ChatController>().messageFocusNode.requestFocus();
+      }
+    }));
   }
 
   Future<void> _declineCall(Map<String, dynamic>? callData) async {

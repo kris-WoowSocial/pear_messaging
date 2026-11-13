@@ -20,6 +20,7 @@ import os.log
   private var isAppForeground = false
   private var isInCall = false
   private var callStateChannel: FlutterMethodChannel?
+  private var pipManager: IosCallPipManager?
   private var audioSessionObserversRegistered = false
   // Re-activation safety: only re-activate the audio session after an
   // interruption that actually began during a call, and never within the
@@ -959,8 +960,39 @@ import os.log
       name: "com.pear.messaging/call",
       binaryMessenger: controller.binaryMessenger
     )
+    pipManager = IosCallPipManager(channel: callStateChannel!)
 
     callStateChannel?.setMethodCallHandler { [weak self] (call, result) in
+      // Video-call PiP surface — same method names the Android side answers
+      // on this channel so PipService stays platform-agnostic.
+      if let pip = self?.pipManager {
+        switch call.method {
+        case "setPipParams":
+          let args = call.arguments as? [String: Any]
+          pip.setPipParams(
+            enabled: args?["enabled"] as? Bool ?? false,
+            trackId: args?["trackId"] as? String
+          )
+          result(nil)
+          return
+        case "isInPipMode":
+          result(pip.isInPip)
+          return
+        case "isPipEntering":
+          result(false)
+          return
+        case "exitPipIfActive":
+          pip.exitPipIfActive()
+          result(nil)
+          return
+        case "pipCallEnded":
+          pip.callEnded()
+          result(nil)
+          return
+        default:
+          break
+        }
+      }
       switch call.method {
       case "endGhostCallKitForCall":
         guard let args = call.arguments as? [String: Any],

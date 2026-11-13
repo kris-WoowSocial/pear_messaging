@@ -12,7 +12,9 @@ import android.os.PowerManager
 import android.telecom.CallAudioState
 import android.util.Log
 import android.view.WindowManager
+import android.view.View
 import android.widget.ImageView
+import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import com.bumptech.glide.Glide
@@ -115,6 +117,23 @@ class IncomingCallActivity : AppCompatActivity() {
         btnAnswer.setOnClickListener { answerCall() }
         btnDecline.setOnClickListener { declineCall() }
 
+        // "Message" — WhatsApp-style decline-with-quick-reply on the
+        // lock-screen overlay. Tapping reveals the template panel; a template
+        // rejects the Telecom call and forwards the text to Dart, which sends
+        // it as a normal encrypted chat message.
+        val btnMessage = findViewById<TextView>(R.id.btnMessage)
+        val quickReplyPanel = findViewById<LinearLayout>(R.id.quickReplyPanel)
+        btnMessage.setOnClickListener {
+            quickReplyPanel.visibility =
+                if (quickReplyPanel.visibility == View.VISIBLE) View.GONE
+                else View.VISIBLE
+        }
+        for (id in intArrayOf(R.id.tvQuickReply1, R.id.tvQuickReply2, R.id.tvQuickReply3)) {
+            findViewById<TextView>(id).setOnClickListener { v ->
+                declineCallWithMessage((v as TextView).text.toString())
+            }
+        }
+
         // Listen for caller cancelling the call so we can close the native UI automatically.
         cancelReceiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context?, intent: Intent?) {
@@ -192,6 +211,20 @@ class IncomingCallActivity : AppCompatActivity() {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
             putExtra("call_id", callId)
             putExtra("caller_id", callerId)
+        }
+        startActivity(intent)
+        finish()
+    }
+
+    private fun declineCallWithMessage(templateText: String) {
+        Log.d("IncomingCallActivity", "💬 Decline with message: $templateText")
+        cancelCallNotification()
+        val intent = Intent(this, MainActivity::class.java).apply {
+            action = "com.vant.chat.DECLINE_WITH_MESSAGE"
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra("call_id", callId)
+            putExtra("caller_id", callerId)
+            putExtra("template_text", templateText)
         }
         startActivity(intent)
         finish()

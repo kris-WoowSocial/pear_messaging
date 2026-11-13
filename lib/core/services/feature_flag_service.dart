@@ -41,7 +41,7 @@ class FeatureFlagService extends GetxService {
   final RxBool encryptedSignaling = false.obs;
   final RxBool videoCalling = false.obs;
   final RxBool pipAndroid = true.obs;
-  final RxBool pipIos = false.obs;
+  final RxBool pipIos = true.obs;
   final RxBool iosPushWakeReconnect = true.obs;
   final RxBool callRingback = true.obs;
   final RxBool callNoAnswerScreen = true.obs;
@@ -90,7 +90,7 @@ class FeatureFlagService extends GetxService {
         kEncryptedSignaling: false,
         kVideoCalling: false,
         kPipAndroid: true,
-        kPipIos: false,
+        kPipIos: true,
         kIosPushWakeReconnect: true,
         kCallRingback: true,
         kCallNoAnswerScreen: true,

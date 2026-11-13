@@ -297,6 +297,42 @@ class _VideoCallScreenState extends State<VideoCallScreen>
       }
       final padding = MediaQuery.of(context).padding;
       final offset = _previewOffset ?? _initialPreviewOffset(size, padding);
+
+      // Hidden: the tile collapses into a low-profile restore pill pinned to
+      // the top-right corner — outbound video keeps streaming either way.
+      if (_controller.isSelfViewHidden.value) {
+        return Positioned(
+          right: _previewMargin + padding.right,
+          top: _previewMargin + padding.top,
+          child: GestureDetector(
+            onTap: () {
+              HapticFeedback.lightImpact();
+              _controller.isSelfViewHidden.value = false;
+            },
+            child: Container(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+              decoration: BoxDecoration(
+                color: Colors.black.withValues(alpha: 0.62),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: Colors.white24),
+              ),
+              child: const Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.videocam, size: 14, color: Colors.white70),
+                  SizedBox(width: 5),
+                  Text(
+                    'Show self-view',
+                    style: TextStyle(color: Colors.white70, fontSize: 12),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      }
+
       return Positioned(
         left: offset.dx,
         top: offset.dy,
@@ -311,22 +347,52 @@ class _VideoCallScreenState extends State<VideoCallScreen>
             });
           },
           onPanEnd: (_) => _snapPreview(size, padding),
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(14),
-            child: SizedBox(
-              width: _previewSize.width,
-              height: _previewSize.height,
-              child: Container(
-                color: Colors.black,
-                child: Obx(
-                  () => LocalCallVideoView(
-                    localRenderer,
-                    isFrontCamera: _controller.isFrontCamera.value,
-                    objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitContain,
+          child: Stack(
+            children: [
+              ClipRRect(
+                borderRadius: BorderRadius.circular(14),
+                child: SizedBox(
+                  width: _previewSize.width,
+                  height: _previewSize.height,
+                  child: Container(
+                    color: Colors.black,
+                    child: Obx(
+                      () => LocalCallVideoView(
+                        localRenderer,
+                        isFrontCamera: _controller.isFrontCamera.value,
+                        objectFit:
+                            RTCVideoViewObjectFit.RTCVideoViewObjectFitContain,
+                      ),
+                    ),
                   ),
                 ),
               ),
-            ),
+              // Hide self-view — collapse button in the tile's corner.
+              Positioned(
+                top: 4,
+                right: 4,
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: () {
+                    HapticFeedback.lightImpact();
+                    _controller.isSelfViewHidden.value = true;
+                  },
+                  child: Container(
+                    width: 26,
+                    height: 26,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: Colors.black.withValues(alpha: 0.55),
+                    ),
+                    child: const Icon(
+                      Icons.visibility_off_outlined,
+                      size: 15,
+                      color: Colors.white70,
+                    ),
+                  ),
+                ),
+              ),
+            ],
           ),
         ),
       );

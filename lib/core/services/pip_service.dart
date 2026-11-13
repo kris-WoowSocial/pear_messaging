@@ -5,16 +5,17 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:get/get.dart';
 
-/// Android Picture-in-Picture bridge for video calls.
+/// Android + iOS Picture-in-Picture bridge for video calls.
 ///
-/// Wraps the `com.pear.messaging/call` method channel and the
+/// Wraps the `com.pear.messaging/call` method channel and, on Android, the
 /// `com.vant.chat/call_events` event channel (PiP changes arrive as
 /// `{type: 'pip_changed', is_pip: 'true'|'false'}` broadcasts from
-/// MainActivity). All methods no-op off Android and when the
-/// `ff_pip_android` flag is off — the flag-off path must behave exactly like
-/// the pre-PiP build.
+/// MainActivity). On iOS, AppDelegate's IosCallPipManager answers the same
+/// method surface and reports state via `pipChanged`/`pipOutcome` channel
+/// invokes. All methods no-op off mobile and when the platform's ff_pip_*
+/// flag is off — the flag-off path must behave exactly like the pre-PiP build.
 ///
-/// Logcat tag used natively and mirrored in debugPrint: `VantPip` / `📺`.
+/// Logcat/os_log tag used natively and mirrored in debugPrint: `VantPip` / `📺`.
 class PipService {
   PipService._();
   static final PipService _instance = PipService._();
@@ -47,10 +48,12 @@ class PipService {
     debugPrint('📺 VantPip: pip_changed -> isInPip=$inPip');
   }
 
+  static bool get _supported => Platform.isAndroid || Platform.isIOS;
+
   /// Synchronous query — always asks native (source of truth for the
   /// activity-level PiP flag). Used by the camera-pause debounce.
   Future<bool> isInPipMode() async {
-    if (!Platform.isAndroid) return false;
+    if (!_supported) return false;
     try {
       final result = await _callChannel.invokeMethod<bool>('isInPipMode');
       return result ?? false;
@@ -75,9 +78,15 @@ class PipService {
   }
 
   /// Tell native whether the current state allows PiP entry, plus the aspect
-  /// ratio for the PiP window (remote video dims, 9:16 fallback).
-  Future<void> setPipEligible(bool enabled, {int width = 9, int height = 16}) async {
-    if (!Platform.isAndroid) return;
+  /// ratio for the PiP window (remote video dims, 9:16 fallback). On iOS the
+  /// remote video [trackId] rides along so native can attach its frame sink.
+  Future<void> setPipEligible(
+    bool enabled, {
+    int width = 9,
+    int height = 16,
+    String? trackId,
+  }) async {
+    if (!_supported) return;
     if (_pipEligible == enabled && !enabled) return;
     _pipEligible = enabled;
     try {
@@ -85,6 +94,7 @@ class PipService {
         'enabled': enabled,
         'width': width,
         'height': height,
+        if (Platform.isIOS && trackId != null) 'trackId': trackId,
       });
       debugPrint(
         '📺 VantPip: setPipEligible=$enabled ratio=$width:$height',
@@ -99,7 +109,7 @@ class PipService {
   /// Instead native runs moveTaskToBack(true): the PiP window closes and the
   /// app process/socket stay alive exactly like pressing Home.
   Future<void> onCallEnded() async {
-    if (!Platform.isAndroid) return;
+    if (!_supported) return;
     _pipEligible = false;
     try {
       await _callChannel.invokeMethod('pipCallEnded');
@@ -114,7 +124,7 @@ class PipService {
   /// User dismissed the PiP window with the system close (X) control — the
   /// call continues on audio. Native just leaves PiP if somehow still active.
   Future<void> onPipDismissed() async {
-    if (!Platform.isAndroid) return;
+    if (!_supported) return;
     try {
       await _callChannel.invokeMethod('exitPipIfActive');
     } catch (e) {

@@ -724,6 +724,29 @@ class MainActivity : FlutterFragmentActivity() {
         }
     }
 
+    /** API 31+: fires during the PiP TRANSITION, before
+     * onPictureInPictureModeChanged completes. Forwarding is_pip=true here
+     * lets Dart swap to the bare remote-video layout while the window is
+     * still animating, so the PiP surface never frames a control button. */
+    override fun onPictureInPictureUiStateChanged(
+        pipState: android.app.PictureInPictureUiState
+    ) {
+        super.onPictureInPictureUiStateChanged(pipState)
+        if (Build.VERSION.SDK_INT >= 31 && pipState.isTransitioningToPip) {
+            Log.i(PIP_TAG, "pip transition start -> early is_pip=true")
+            pipEntering = true
+            try {
+                sendBroadcast(
+                    Intent("com.vant.chat.PIP_CHANGED")
+                        .setPackage(packageName)
+                        .putExtra("is_pip", true.toString())
+                )
+            } catch (e: Exception) {
+                Log.w(PIP_TAG, "pip transition broadcast failed: ${e.message}")
+            }
+        }
+    }
+
     override fun onPictureInPictureModeChanged(
         isInPictureInPictureMode: Boolean,
         newConfig: Configuration
@@ -811,6 +834,7 @@ class MainActivity : FlutterFragmentActivity() {
             val intentAction = intent.action
             val isAnswerDecline = intentAction == "com.vant.chat.ANSWER_CALL" ||
                                   intentAction == "com.vant.chat.DECLINE_CALL" ||
+                                  intentAction == "com.vant.chat.DECLINE_WITH_MESSAGE" ||
                                   intentAction == "com.vant.chat.END_CALL"
             val isOpenOngoing = intentAction == "com.vant.chat.OPEN_ONGOING_CALL"
             val callId = intent.getStringExtra("call_id") ?: ""
@@ -824,6 +848,7 @@ class MainActivity : FlutterFragmentActivity() {
                 isAnswerDecline -> when (intentAction) {
                     "com.vant.chat.ANSWER_CALL" -> "answer"
                     "com.vant.chat.DECLINE_CALL" -> "decline"
+                    "com.vant.chat.DECLINE_WITH_MESSAGE" -> "decline_with_message"
                     else -> "end"
                 }
                 isOpenOngoing -> "open_ongoing_call"
@@ -834,7 +859,8 @@ class MainActivity : FlutterFragmentActivity() {
             
             if (action != null) {
                 println("Call intent received: action=$action, callId=$callId")
-                if (action == "end" || action == "decline") {
+                if (action == "end" || action == "decline" ||
+                    action == "decline_with_message") {
                     teardownAndroidCall(callId)
                 }
                 
@@ -865,7 +891,8 @@ class MainActivity : FlutterFragmentActivity() {
                         "roomId" to roomId,
                         "avatarUrl" to avatarUrl,
                         "isVideo" to isVideo,
-                        "answeredFromBackground" to intent.getBooleanExtra("answered_from_background", false)
+                        "answeredFromBackground" to intent.getBooleanExtra("answered_from_background", false),
+                        "templateText" to (intent.getStringExtra("template_text") ?: "")
                     )
                     channel.invokeMethod("onCallAction", arguments)
                     println("Call action sent to Flutter successfully: $action, answeredFromBackground=${intent.getBooleanExtra("answered_from_background", false)}")
@@ -1537,7 +1564,9 @@ class MainActivity : FlutterFragmentActivity() {
 
     private fun handleCallIntent(intent: Intent) {
         val action = intent.action
-        if (action == "com.vant.chat.ANSWER_CALL" || action == "com.vant.chat.DECLINE_CALL") {
+        if (action == "com.vant.chat.ANSWER_CALL" ||
+            action == "com.vant.chat.DECLINE_CALL" ||
+            action == "com.vant.chat.DECLINE_WITH_MESSAGE") {
             pendingCallAction = action
             pendingCallData = mapOf(
                 "call_id" to (intent.getStringExtra("call_id") ?: ""),
@@ -1546,7 +1575,8 @@ class MainActivity : FlutterFragmentActivity() {
                 "caller_id" to (intent.getStringExtra("caller_id") ?: ""),
                 "is_video" to (intent.getBooleanExtra("is_video", false)).toString(),
                 "from_native" to (intent.getBooleanExtra("from_native", false)).toString(),
-                "answered_from_background" to (intent.getBooleanExtra("answered_from_background", false)).toString()
+                "answered_from_background" to (intent.getBooleanExtra("answered_from_background", false)).toString(),
+                "template_text" to (intent.getStringExtra("template_text") ?: "")
             )
             
             // If answered from native screen (or system UI while in background),
@@ -1573,7 +1603,8 @@ class MainActivity : FlutterFragmentActivity() {
             cancelCallNotification()
             println("Pending call action captured: $pendingCallAction, from_native: $fromNative, answeredFromBackground: $answeredFromBackground")
 
-            if (action == "com.vant.chat.DECLINE_CALL") {
+            if (action == "com.vant.chat.DECLINE_CALL" ||
+                action == "com.vant.chat.DECLINE_WITH_MESSAGE") {
                 // Paranoid cleanup — the overlay only ever shows for ANSWER,
                 // but never leave it up if state got crossed.
                 removeCallTransitionOverlay("decline")
