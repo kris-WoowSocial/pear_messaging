@@ -1290,6 +1290,18 @@ class MainActivity : FlutterFragmentActivity() {
     /// cadence itself) through the voice-call stream for ~3 seconds, then
     /// release. Shared with the ringback cleanup path.
     private fun playBusyTone(): Boolean {
+        // Background audio cues are only permitted while the app is in the
+        // foreground or a call foreground service is running — otherwise the
+        // platform may suppress the tone (and an unattended busy beep from a
+        // backgrounded app is wrong UX anyway).
+        val appForeground =
+            lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.STARTED)
+        val callFgsActive =
+            CallForegroundService.isRinging || CallForegroundService.isOngoingCallActive
+        if (!appForeground && !callFgsActive) {
+            Log.d("MainActivity", "playBusyTone skipped: backgrounded, no call FGS")
+            return false
+        }
         stopRingback()
         return try {
             val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
