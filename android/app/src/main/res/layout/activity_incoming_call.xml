@@ -78,6 +78,23 @@
             android:text="On my way, talk soon."
             android:textColor="#FFFFFF"
             android:textSize="15sp" />
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:layout_marginTop="4dp"
+            android:layout_marginBottom="4dp"
+            android:background="#33FFFFFF" />
+
+        <TextView
+            android:id="@+id/tvQuickReplyCustom"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingTop="10dp"
+            android:paddingBottom="10dp"
+            android:text="Custom message..."
+            android:textColor="#B3FFFFFF"
+            android:textSize="15sp" />
     </LinearLayout>
 
     <TextView

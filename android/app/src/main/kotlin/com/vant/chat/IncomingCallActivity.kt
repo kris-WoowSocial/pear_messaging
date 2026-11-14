@@ -1,5 +1,6 @@
 package com.vant.chat
 
+import android.app.KeyguardManager
 import android.app.NotificationManager
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -133,6 +134,9 @@ class IncomingCallActivity : AppCompatActivity() {
                 declineCallWithMessage((v as TextView).text.toString())
             }
         }
+        findViewById<TextView>(R.id.tvQuickReplyCustom).setOnClickListener {
+            declineCallWithCustomMessage()
+        }
 
         // Listen for caller cancelling the call so we can close the native UI automatically.
         cancelReceiver = object : BroadcastReceiver() {
@@ -224,7 +228,36 @@ class IncomingCallActivity : AppCompatActivity() {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
             putExtra("call_id", callId)
             putExtra("caller_id", callerId)
+            putExtra("caller_name", callerName)
             putExtra("template_text", templateText)
+        }
+        startActivity(intent)
+        finish()
+    }
+
+    /**
+     * "Custom message..." — decline without a template and bring MainActivity
+     * to the foreground; Dart opens the caller's chat with the input focused.
+     * Dismiss the keyguard so the chat is actually usable without a second
+     * unlock step (user already interacted with the call UI).
+     */
+    private fun declineCallWithCustomMessage() {
+        Log.d("IncomingCallActivity", "💬 Decline with custom message")
+        cancelCallNotification()
+        val keyguard = getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
+        if (keyguard.isKeyguardLocked) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                keyguard.requestDismissKeyguard(this, null)
+            }
+        }
+        val intent = Intent(this, MainActivity::class.java).apply {
+            action = "com.vant.chat.DECLINE_WITH_MESSAGE"
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra("call_id", callId)
+            putExtra("caller_id", callerId)
+            putExtra("caller_name", callerName)
+            putExtra("template_text", "")
+            putExtra("open_custom_chat", true)
         }
         startActivity(intent)
         finish()
