@@ -15,7 +15,6 @@ class ProfileController extends GetxController {
 
   final RxString deviceId = ''.obs;
   final RxBool isAuthEnabled = false.obs;
-  final RxBool protectCallIpAddress = false.obs;
   final RxString userName = ''.obs;
   final RxBool isEditingName = false.obs;
   final Rx<TextEditingController> nameController = TextEditingController().obs;
@@ -26,7 +25,6 @@ class ProfileController extends GetxController {
     super.onInit();
     deviceId.value = _storageService.deviceId ?? 'Unknown';
     isAuthEnabled.value = _storageService.isAuthEnabled;
-    protectCallIpAddress.value = _storageService.protectCallIpAddress;
 
     // Initialize user name - use saved name or generate friendly name
     final savedName = _storageService.getUserName();
@@ -87,13 +85,6 @@ class ProfileController extends GetxController {
       enabled ? 'App lock enabled' : 'App lock disabled',
       snackPosition: SnackPosition.TOP,
     );
-  }
-
-  /// "Protect IP address in calls" — persists immediately; the next
-  /// peer-connection creation picks it up via WebRTCCallService's lazy read.
-  Future<void> toggleProtectCallIp(bool enabled) async {
-    await _storageService.setProtectCallIpAddress(enabled);
-    protectCallIpAddress.value = enabled;
   }
 
   void copyDeviceId() {

@@ -3,11 +3,6 @@ import 'dart:io';
 import 'package:flutter_image_compress/flutter_image_compress.dart';
 import 'package:path_provider/path_provider.dart';
 
-/// Send-time image quality selected on the media preview sheet.
-/// - [standard]: the existing ~150KB / 800px pipeline.
-/// - [hd]: high-resolution pipeline — long edge capped at 2560px, ~88% JPEG.
-enum MediaQuality { standard, hd }
-
 /// Image compression utility for optimizing images before encryption
 ///
 /// PRIVACY NOTES:

@@ -287,9 +287,7 @@ class ChatListScreen extends GetView<ChatListController> {
               final hasChats = controller.filteredChats.isNotEmpty;
               final hasConnectionRequests =
                   controller.pendingConnectionRequests.isNotEmpty;
-              final showLockedRow = controller.hasLockedChats;
-              final hasItems =
-                  hasChats || hasConnectionRequests || showLockedRow;
+              final hasItems = hasChats || hasConnectionRequests;
 
               if (!hasItems) {
                 return EmptyState(
@@ -314,17 +312,9 @@ class ChatListScreen extends GetView<ChatListController> {
               );
 
               return ListView.builder(
-                itemCount: (showLockedRow ? 1 : 0) +
-                    controller.pendingConnectionRequests.length +
+                itemCount: controller.pendingConnectionRequests.length +
                     controller.filteredChats.length,
                 itemBuilder: (context, index) {
-                  // "Locked chats" entry row pinned above everything else
-                  if (showLockedRow) {
-                    if (index == 0) {
-                      return _buildLockedChatsRow();
-                    }
-                    index -= 1;
-                  }
                   // First show connection requests, then chats
                   if (index < controller.pendingConnectionRequests.length) {
                     // Show connection request item
@@ -363,63 +353,6 @@ class ChatListScreen extends GetView<ChatListController> {
           ),
         ],
       ),
-    );
-  }
-
-  /// "Locked chats" row pinned at the top of the list — biometric gate
-  /// into LockedChatsScreen. Rendered only when at least one chat is locked.
-  Widget _buildLockedChatsRow() {
-    return Column(
-      children: [
-        InkWell(
-          onTap: controller.openLockedChats,
-          child: Container(
-            height: AppSizes.chatItemHeight,
-            padding: const EdgeInsets.symmetric(
-              horizontal: AppSizes.paddingM,
-              vertical: AppSizes.paddingS,
-            ),
-            child: Row(
-              children: [
-                Container(
-                  width: AppSizes.avatarSize,
-                  height: AppSizes.avatarSize,
-                  decoration: const BoxDecoration(
-                    color: AppColors.senderBubble,
-                    shape: BoxShape.circle,
-                  ),
-                  child: const Icon(
-                    Icons.lock,
-                    color: AppColors.textPrimary,
-                    size: AppSizes.fontXL,
-                  ),
-                ),
-                const SizedBox(width: AppSizes.paddingM),
-                const Expanded(
-                  child: Text(
-                    'Locked chats',
-                    style: TextStyle(
-                      fontSize: AppSizes.fontL,
-                      fontWeight: FontWeight.w600,
-                      color: AppColors.textPrimary,
-                    ),
-                  ),
-                ),
-                const Icon(
-                  Icons.chevron_right,
-                  color: AppColors.textPrimary,
-                ),
-              ],
-            ),
-          ),
-        ),
-        const Divider(
-          height: 1,
-          indent:
-              AppSizes.paddingM + AppSizes.avatarSize + AppSizes.paddingM,
-          color: AppColors.divider,
-        ),
-      ],
     );
   }
 

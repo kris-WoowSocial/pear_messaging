@@ -3,13 +3,11 @@ import 'dart:io' show Platform;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
-import 'package:get/get.dart' hide navigator;
 import 'call_diag.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'call_foreground_service.dart';
 import 'call_media_helper.dart';
 import 'call_phase_logger.dart';
-import 'local_storage_service.dart';
 
 /// WebRTC Call Service - Manages peer-to-peer audio calls with E2EE
 class WebRTCCallService {
@@ -140,50 +138,6 @@ class WebRTCCallService {
     return '[${list.join(',')}]${hasCreds ? '+creds' : ''}';
   }
 
-  /// "Protect IP address in calls" (Settings → Privacy → Calls). When on,
-  /// the peer connection only gathers relayed TURN candidates — no host or
-  /// srflx candidates are ever produced, so the peer can't infer the
-  /// device's real IP. Applies to every creation path via
-  /// [_resolveIceServers]. Read lazily so unit tests without GetX fall back
-  /// to off.
-  bool get _ipProtectionEnabled {
-    try {
-      if (Get.isRegistered<LocalStorageService>()) {
-        return Get.find<LocalStorageService>().protectCallIpAddress;
-      }
-    } catch (_) {}
-    return false;
-  }
-
-  /// Keep only TURN entries (turn:/turns:) and force relay policy. Handles
-  /// `urls` as String or List. If filtering would leave zero TURN servers,
-  /// the caller's list is kept — a relay-capable config with a STUN entry is
-  /// still privacy-safe because 'relay' policy never gathers host/srflx
-  /// candidates anyway.
-  Map<String, dynamic> _applyRelayPolicy(Map<String, dynamic> config) {
-    final servers = config['iceServers'];
-    if (servers is! List) return config;
-    final turnOnly = servers.where((s) {
-      if (s is! Map) return false;
-      final urls = s['urls'];
-      bool isTurn(Object? u) =>
-          u.toString().startsWith('turn:') || u.toString().startsWith('turns:');
-      if (urls is List) return urls.any(isTurn);
-      return isTurn(urls);
-    }).toList();
-    if (turnOnly.isEmpty) {
-      debugPrint(
-        '⚠️ IP protection on but no TURN servers resolved — relay policy '
-        'will gather no candidates and the call cannot connect.',
-      );
-    }
-    return {
-      ...config,
-      'iceServers': turnOnly.isNotEmpty ? turnOnly : servers,
-      'iceTransportPolicy': 'relay',
-    };
-  }
-
   Future<Map<String, dynamic>> _resolveIceServers() async {
     try {
       final primed = _pendingIceServers;
@@ -192,29 +146,23 @@ class WebRTCCallService {
         debugPrint(
           '📞 Using primed ICE servers: ${primed.map(_describeIceServer).toList()}',
         );
-        final config = {..._fallbackIceServers, 'iceServers': primed};
-        return _ipProtectionEnabled ? _applyRelayPolicy(config) : config;
+        return {..._fallbackIceServers, 'iceServers': primed};
       }
       final servers = await iceServersProvider?.call();
       if (servers == null || servers.isEmpty) {
         debugPrint('📞 No ICE servers from server — STUN-only fallback');
-        return _ipProtectionEnabled
-            ? _applyRelayPolicy(_fallbackIceServers)
-            : _fallbackIceServers;
+        return _fallbackIceServers;
       }
       debugPrint(
         '📞 Using server ICE list: ${servers.map(_describeIceServer).toList()}',
       );
-      final config = {
+      return {
         ..._fallbackIceServers,
         'iceServers': servers,
       };
-      return _ipProtectionEnabled ? _applyRelayPolicy(config) : config;
     } catch (e) {
       debugPrint('⚠️ Failed to fetch ICE servers, using STUN fallback: $e');
-      return _ipProtectionEnabled
-          ? _applyRelayPolicy(_fallbackIceServers)
-          : _fallbackIceServers;
+      return _fallbackIceServers;
     }
   }
 
