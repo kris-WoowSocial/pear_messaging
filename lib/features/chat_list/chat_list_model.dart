@@ -23,10 +23,7 @@ class ChatListModel {
     this.isReply = false,
     this.replyContent,
     this.isGroup = false,
-<<<<<<< HEAD
     this.avatarUrl,
-=======
     this.isLocked = false,
->>>>>>> 51192e7cf6cb901dd0980044599411cd33aa30f8
   }) : avatarLetter = userName.isNotEmpty ? userName[0].toUpperCase() : 'U';
 }

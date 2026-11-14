@@ -1001,20 +1001,6 @@ class ChatListController extends GetxController {
       chats.clear();
       lockedChats.clear();
       for (final chat in allChats) {
-<<<<<<< HEAD
-        chats.add(
-          ChatListModel(
-            id: chat.id,
-            userName: chat.isGroupChat
-                ? (chat.groupName ?? chat.userName)
-                : chat.userName,
-            lastMessage: chat.lastMessage ?? '',
-            lastMessageTime: chat.lastMessageTime ?? DateTime.now(),
-            unreadCount: chat.unreadCount,
-            isGroup: chat.isGroupChat,
-            avatarUrl: chat.avatarUrl,
-          ),
-=======
         final model = ChatListModel(
           id: chat.id,
           userName: chat.isGroupChat
@@ -1024,8 +1010,8 @@ class ChatListController extends GetxController {
           lastMessageTime: chat.lastMessageTime ?? DateTime.now(),
           unreadCount: chat.unreadCount,
           isGroup: chat.isGroupChat,
+          avatarUrl: chat.avatarUrl,
           isLocked: chat.isLocked,
->>>>>>> 51192e7cf6cb901dd0980044599411cd33aa30f8
         );
         if (chat.isLocked) {
           lockedChats.add(model);
