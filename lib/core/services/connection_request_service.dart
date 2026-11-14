@@ -288,7 +288,10 @@ class ConnectionRequestService extends GetxService {
     String? messageContent;
     final encryptedPayload = data['encryptedPayload'] as String?;
     if (encryptedPayload != null && encryptedPayload.isNotEmpty) {
-      messageContent = SocketService.decryptMessage(encryptedPayload);
+      messageContent = await SocketService.decryptMessage(
+        encryptedPayload,
+        senderPublicKey: data['senderPublicKey'] as String?,
+      );
       debugPrint('🔍 DEBUG: Decrypted message content: $messageContent');
     }
 

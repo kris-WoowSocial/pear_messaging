@@ -227,7 +227,7 @@ class MainActivity : FlutterFragmentActivity() {
                 }
             }
         }
-        
+
         // Setup audio routing method channel for reliable speakerphone control during WebRTC calls
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, SECURITY_CHANNEL).setMethodCallHandler { call, result ->
             when (call.method) {

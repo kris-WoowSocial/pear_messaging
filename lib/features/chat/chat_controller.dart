@@ -12,6 +12,7 @@ import '../../core/services/local_storage_service.dart';
 import '../../core/services/socket_service.dart';
 import '../../core/services/block_service.dart';
 import '../../core/services/encryption_service.dart';
+import '../../core/services/e2ee_service.dart';
 import '../../core/services/image_cache_service.dart';
 import '../../core/services/media_upload_service.dart';
 import '../../core/services/url_preview_service.dart';
@@ -692,8 +693,21 @@ class ChatController extends GetxController with WidgetsBindingObserver {
           return;
         }
 
-        var decryptedContent =
-            SocketService.decryptMessage(data['encryptedPayload'] ?? '');
+        // Cache sender's public key if present (for E2EE)
+        final senderPublicKey = data['senderPublicKey'] as String?;
+        if (senderPublicKey != null && senderPublicKey.isNotEmpty) {
+          try {
+            final e2ee = Get.find<E2EEService>();
+            e2ee.cacheContactPublicKey(senderId, senderPublicKey);
+          } catch (e) {
+            debugPrint('⚠️ Could not cache sender public key: $e');
+          }
+        }
+
+        var decryptedContent = await SocketService.decryptMessage(
+          data['encryptedPayload'] ?? '',
+          senderPublicKey: senderPublicKey,
+        );
         final timestamp =
             DateTime.fromMillisecondsSinceEpoch(data['timestamp'] ?? 0);
 
@@ -950,7 +964,10 @@ class ChatController extends GetxController with WidgetsBindingObserver {
       }
 
       final cipherText = data['encryptedPayload']?.toString() ?? '';
-      final decryptedContent = SocketService.decryptMessage(cipherText);
+      final decryptedContent = await SocketService.decryptMessage(
+        cipherText,
+        senderPublicKey: data['senderPublicKey'] as String?,
+      );
       final timestamp = DateTime.fromMillisecondsSinceEpoch(
           data['timestamp'] ?? DateTime.now().millisecondsSinceEpoch);
 

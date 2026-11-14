@@ -523,7 +523,10 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
           debugPrint(
             '📱 Background: Attempting to decrypt encrypted content...',
           );
-          contentToStore = SocketService.decryptMessage(encryptedContent);
+          contentToStore = await SocketService.decryptMessage(
+            encryptedContent,
+            senderPublicKey: message.data['senderPublicKey'] as String?,
+          );
           debugPrint(
             '📱 Background: Decryption successful, content length: ${contentToStore.length}',
           );
@@ -1195,7 +1198,10 @@ class FCMService extends GetxService {
             debugPrint(
               '📱 Foreground: Attempting to decrypt encrypted content...',
             );
-            contentToStore = SocketService.decryptMessage(encryptedContent);
+            contentToStore = await SocketService.decryptMessage(
+              encryptedContent,
+              senderPublicKey: message.data['senderPublicKey'] as String?,
+            );
             debugPrint(
               '📱 Foreground: Decryption successful, content length: ${contentToStore.length}',
             );

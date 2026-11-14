@@ -13,6 +13,7 @@ import 'call_diag.dart';
 import 'call_phase_logger.dart';
 import 'encryption_service.dart';
 import 'feature_flag_service.dart';
+import 'e2ee_service.dart';
 import 'fcm_service.dart';
 import 'block_service.dart';
 import 'connection_request_service.dart';
@@ -571,6 +572,7 @@ class SocketService extends GetxService {
       }
     });
 
+
     // WebRTC Call: Call accepted
     _socket?.on('call_accepted', (data) {
       debugPrint(
@@ -799,6 +801,16 @@ class SocketService extends GetxService {
       '(nonce=${nonce != null})',
     );
 
+    // Include the E2EE public key so peers can derive shared secrets.
+    String? e2eePublicKey;
+    try {
+      if (Get.isRegistered<E2EEService>()) {
+        e2eePublicKey = Get.find<E2EEService>().myPublicKeyBase64;
+      }
+    } catch (e) {
+      debugPrint('⚠️ Could not get E2EE public key: $e');
+    }
+
     // Sign the identity bundle + login when we have keys and a nonce.
     // identitySig proves possession of the bundle's key ("vant-bind");
     // registerSig is the login signature ("vant-reg").
@@ -832,6 +844,7 @@ class SocketService extends GetxService {
       'identityBundle': bundle,
       'identitySig': identitySig,
       'registerSig': registerSig,
+      if (e2eePublicKey != null) 'publicKey': e2eePublicKey,
     });
     _registerWatch
       ..reset()
@@ -1025,8 +1038,35 @@ class SocketService extends GetxService {
 
     final timestamp = DateTime.now().millisecondsSinceEpoch;
 
-    // ✅ Encrypt content using EncryptionService
-    final encryptedContent = EncryptionService.encryptMessage(content);
+    // Try E2EE encryption if recipient's public key is known, otherwise XOR fallback
+    String? e2eeEncrypted;
+    String? senderPublicKey;
+
+    try {
+      if (Get.isRegistered<E2EEService>()) {
+        final e2ee = Get.find<E2EEService>();
+        senderPublicKey = e2ee.myPublicKeyBase64;
+        final recipientPublicKey = e2ee.getContactPublicKey(recipientDeviceId);
+        if (recipientPublicKey != null && recipientPublicKey.isNotEmpty) {
+          e2eeEncrypted = await e2ee.encryptFor(recipientPublicKey, content);
+          debugPrint('🔐 E2EE encryption used for $recipientDeviceId');
+        }
+      }
+    } catch (e) {
+      debugPrint('⚠️ E2EE encryption failed, falling back to XOR: $e');
+    }
+
+    final encryptedContent =
+        e2eeEncrypted ?? EncryptionService.encryptMessage(content);
+    if (e2eeEncrypted == null) {
+      debugPrint('🔓 Legacy XOR encryption used for $recipientDeviceId');
+    }
+
+    // Determine message type hint (no content exposed — server uses silent FCM push)
+    final String messageType =
+        (content.startsWith('MEDIA:') || content.startsWith('IMAGE:'))
+        ? 'media'
+        : 'text';
 
     // Notification body policy: text messages send a truncated preview of
     // the content (intended product feature); media sends only its type
@@ -1052,11 +1092,14 @@ class SocketService extends GetxService {
       'messageId': messageId,
       'senderDeviceId': _deviceId,
       'receiverDeviceId': recipientDeviceId,
-      'encryptedPayload': encryptedContent, // ✅ Now encrypted
+      'encryptedPayload': encryptedContent,
       'timestamp': timestamp,
       "body":
           notificationBody, // Generic notification label (never actual content)
       // Don't include sender name - recipient will determine from their local storage
+      'messageType': messageType,
+      // Include sender's public key so the recipient can derive the E2EE shared secret
+      if (senderPublicKey != null) 'senderPublicKey': senderPublicKey,
       // Add replyTo if present
       if (replyTo != null) 'replyTo': replyTo,
       // File metadata so receiver can render file bubble
@@ -1075,7 +1118,7 @@ class SocketService extends GetxService {
 
     _socket?.emit('send_message', messageData);
     debugPrint(
-      '📤 Message sent: $messageId to $recipientDeviceId (hasReply: ${replyTo != null})',
+      '📤 Message sent: $messageId to $recipientDeviceId (type: $messageType, hasReply: ${replyTo != null})',
     );
     return true;
   }
@@ -1524,9 +1567,28 @@ class SocketService extends GetxService {
     }
   }
 
-  /// Decrypt message content
-  static String decryptMessage(String content) {
-    return EncryptionService.decryptMessage(content);
+  /// Decrypt message content.
+  /// Tries E2EE first (if payload starts with 'E2:' and sender public key is
+  /// known), falls back to legacy XOR decryption for backward compatibility.
+  static Future<String> decryptMessage(
+    String encryptedPayload, {
+    String? senderPublicKey,
+  }) async {
+    if (E2EEService.isE2EEPayload(encryptedPayload)) {
+      if (senderPublicKey != null && senderPublicKey.isNotEmpty) {
+        try {
+          final e2ee = Get.find<E2EEService>();
+          return await e2ee.decryptFrom(senderPublicKey, encryptedPayload);
+        } catch (e) {
+          debugPrint('⚠️ E2EE decryption failed, falling back to XOR: $e');
+        }
+      } else {
+        debugPrint(
+          '⚠️ E2EE payload but no sender public key, falling back to XOR',
+        );
+      }
+    }
+    return EncryptionService.decryptMessage(encryptedPayload);
   }
 
   /// Send a connection request to another device

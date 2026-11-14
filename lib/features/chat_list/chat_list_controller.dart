@@ -468,7 +468,10 @@ class ChatListController extends GetxController {
     _processedMessageIds.add(messageId);
 
     // Decrypt message content
-    final decryptedContent = SocketService.decryptMessage(cipherText);
+    final decryptedContent = await SocketService.decryptMessage(
+      cipherText,
+      senderPublicKey: data['senderPublicKey'] as String?,
+    );
     final messageTime = DateTime.fromMillisecondsSinceEpoch(timestamp);
 
     // Check if this is an image/audio/file message
@@ -853,7 +856,10 @@ class ChatListController extends GetxController {
       }
     }
 
-    final decryptedContent = SocketService.decryptMessage(cipherText);
+    final decryptedContent = await SocketService.decryptMessage(
+      cipherText,
+      senderPublicKey: data['senderPublicKey'] as String?,
+    );
     final messageTime = DateTime.fromMillisecondsSinceEpoch(timestamp);
     final isImageMessage = decryptedContent.startsWith('MEDIA:') ||
         decryptedContent.startsWith('IMAGE:');

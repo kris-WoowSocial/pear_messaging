@@ -19,6 +19,7 @@ import 'core/services/fcm_service.dart';
 import 'core/services/url_preview_service.dart';
 import 'core/services/local_storage_service.dart';
 import 'core/services/socket_service.dart';
+import 'core/services/e2ee_service.dart';
 import 'core/services/local_auth_service.dart';
 import 'core/services/block_service.dart';
 import 'core/services/connection_request_service.dart';
@@ -149,6 +150,10 @@ Future<void> initializeCriticalServices() async {
   // still runs in non-critical startup, but the reactive OFF state lets
   // screens subscribe and update as soon as remote values arrive.
   Get.put(FeatureFlagService(), permanent: true);
+
+  // E2EE keypair must exist before socket registration so the register
+  // payload can carry our public key for peer secret derivation.
+  await Get.putAsync(() => E2EEService().init());
 
   final earlySocketService = Get.put(SocketService());
   earlySocketService.init(deviceId);
