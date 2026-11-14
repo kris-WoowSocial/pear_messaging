@@ -18,6 +18,8 @@ import 'block_service.dart';
 import 'connection_request_service.dart';
 import 'ice_servers_cache.dart';
 import 'identity_service.dart';
+import 'local_storage_service.dart';
+import '../../storage/models/message_entity.dart';
 import '../constants/network_constants.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 
@@ -465,11 +467,28 @@ class SocketService extends GetxService {
     // Message status updates
     _socket?.on('message_status', (data) {
       debugPrint('📊 Message status: $data');
-      if (onMessageStatus != null && data != null) {
+      if (data != null) {
         final id = data['id']?.toString();
         final status = data['status']?.toString();
         if (id != null && status != null) {
-          onMessageStatus!(id, status);
+          // Persist to Hive unconditionally — onMessageStatus only reaches
+          // an open ChatController, so messages sent without one (e.g. the
+          // lock-screen decline quick reply) would otherwise sit on the
+          // sending clock forever. 'failed' is skipped here: it bypasses
+          // the regression guard and a stale failed must never regress a
+          // delivered/read row (ChatController applies the same filter).
+          final parsed = switch (status) {
+            'sent' || 'stored' => MessageStatus.sent,
+            'delivered' => MessageStatus.delivered,
+            'read' => MessageStatus.read,
+            _ => null,
+          };
+          if (parsed != null && Get.isRegistered<LocalStorageService>()) {
+            unawaited(
+              Get.find<LocalStorageService>().updateMessageStatus(id, parsed),
+            );
+          }
+          onMessageStatus?.call(id, status);
         }
       }
     });
