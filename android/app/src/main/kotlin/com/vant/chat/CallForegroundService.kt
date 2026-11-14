@@ -27,8 +27,9 @@ import androidx.core.content.ContextCompat
 /**
  * Foreground service for incoming call ringing.
  *
- * Uses `shortService` foreground type on Android 14+ because:
- * - `phoneCall` requires MANAGE_OWN_CALLS or ROLE_DIALER
+ * Uses `phoneCall` foreground type on Android 14+ for ringing (correct type
+ * for a live call — MANAGE_OWN_CALLS is declared), falling back to
+ * `shortService` on SecurityException:
  * - `microphone` requires RECORD_AUDIO runtime permission AND app must be in foreground
  * - `shortService` has no special permission requirements, can run ~3 min (enough for ringing),
  *   and can be started from background (FCM message handler)
@@ -53,6 +54,14 @@ class CallForegroundService : Service() {
         const val ACTION_STOP_RINGING = "com.vant.chat.STOP_RINGING"
         const val ACTION_START_ONGOING_CALL = "com.vant.chat.START_ONGOING_CALL"
         const val ACTION_STOP_ONGOING_CALL = "com.vant.chat.STOP_ONGOING_CALL"
+
+        // Read-only liveness flags for MainActivity's audio-cue guards —
+        // backgrounded audio playback is only permitted while a call FGS
+        // context exists. Written on the main thread, read from any.
+        @Volatile var isRinging: Boolean = false
+            private set
+        @Volatile var isOngoingCallActive: Boolean = false
+            private set
 
         /**
          * Create the call notification channels. Called from
@@ -146,16 +155,39 @@ class CallForegroundService : Service() {
 
                 try {
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                        // phoneCall is the correct type for a ringing call —
+                        // MANAGE_OWN_CALLS is declared and the Telecom
+                        // connection is registered before this fires. It also
+                        // keeps background audio (the ringtone) permitted
+                        // under stricter background-execution rules.
                         ServiceCompat.startForeground(
                             this,
                             NOTIFICATION_ID,
                             notification,
-                            ServiceInfo.FOREGROUND_SERVICE_TYPE_SHORT_SERVICE
+                            ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL
                         )
-                        Log.d(TAG, "Started foreground with SHORT_SERVICE type")
+                        Log.d(TAG, "Started ringing foreground with PHONE_CALL type")
                     } else {
                         startForeground(NOTIFICATION_ID, notification)
-                        Log.d(TAG, "Started foreground (pre-API 34)")
+                        Log.d(TAG, "Started ringing foreground (pre-API 34)")
+                    }
+                } catch (e: SecurityException) {
+                    Log.w(TAG, "PHONE_CALL FGS rejected, falling back to SHORT_SERVICE: ${e.message}")
+                    try {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                            ServiceCompat.startForeground(
+                                this,
+                                NOTIFICATION_ID,
+                                notification,
+                                ServiceInfo.FOREGROUND_SERVICE_TYPE_SHORT_SERVICE
+                            )
+                        } else {
+                            startForeground(NOTIFICATION_ID, notification)
+                        }
+                    } catch (e2: Exception) {
+                        Log.e(TAG, "SHORT_SERVICE fallback also failed: ${e2.message}", e2)
+                        stopSelf()
+                        return START_NOT_STICKY
                     }
                 } catch (e: Exception) {
                     Log.e(TAG, "Failed to start foreground: ${e.message}", e)
@@ -193,6 +225,7 @@ class CallForegroundService : Service() {
             return
         }
         ringingCallId = callId
+        isRinging = true
         // Stop/release any previous instance before creating a new one —
         // Ringtone.play is async and an abandoned instance keeps sounding.
         try { ringtone?.stop() } catch (_: Exception) {}
@@ -241,6 +274,7 @@ class CallForegroundService : Service() {
 
     private fun stopRinging() {
         ringingCallId = null
+        isRinging = false
         try { ringtone?.stop() } catch (_: Exception) {}
         try { vibrator?.cancel() } catch (_: Exception) {}
         try { wakeLock?.let { if (it.isHeld) it.release() } } catch (_: Exception) {}
@@ -261,6 +295,7 @@ class CallForegroundService : Service() {
             System.currentTimeMillis()
         }
         isOngoingCall = true
+        isOngoingCallActive = true
         ongoingCallId = nextCallId
         ongoingCallerName = intent?.getStringExtra("caller_name") ?: "Unknown"
         ongoingIsVideo = intent?.getBooleanExtra("is_video", false) ?: false
@@ -322,6 +357,7 @@ class CallForegroundService : Service() {
 
     private fun stopOngoingCall() {
         isOngoingCall = false
+        isOngoingCallActive = false
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
