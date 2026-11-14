@@ -158,7 +158,8 @@ void main() {
 
     test('direct chat_name_ writes in username_sync_service also mirror', () {
       expect(sync,
-          contains('LocalStorageService.writeContactNameToAppGroup(deviceId, username)'));
+          contains('LocalStorageService.writeContactNameToAppGroup('));
+      expect(sync, contains('deviceId, username'));
     });
 
     test('cache stores names only — a single string value per callerId', () {

@@ -51,6 +51,17 @@ class VantFirebaseMessagingService : FirebaseMessagingService() {
         private var prewarmTimeoutRunnable: Runnable? = null
 
         /**
+         * Mirrors FlutterFirebaseMessagingBackgroundExecutor's queue: the
+         * Dart isolate announces readiness via MessagingBackground#initialized
+         * — messages arriving before then must be parked, not fired into a
+         * channel whose Dart-side handler isn't registered yet.
+         */
+        private var backgroundChannel: MethodChannel? = null
+        private val backgroundChannelReady = AtomicBoolean(false)
+        private val pendingBackgroundMessages =
+            java.util.concurrent.CopyOnWriteArrayList<Map<String, Any?>>()
+
+        /**
          * Remove + destroy the ringing-time pre-warm engine. Safe to call from
          * any thread; no-op once MainActivity has attached it (the engine is
          * removed from the cache on attach, so get() returns null).
@@ -103,8 +114,9 @@ class VantFirebaseMessagingService : FirebaseMessagingService() {
                 Context.MODE_PRIVATE
             )
             val callbackHandle = prefs.getLong("callback_handle", 0L)
+            val userCallbackHandle = prefs.getLong("user_callback_handle", 0L)
 
-            if (callbackHandle == 0L) {
+            if (callbackHandle == 0L || userCallbackHandle == 0L) {
                 Log.w(TAG, "No Flutter background callback registered. Message dropped.")
                 return
             }
@@ -130,32 +142,37 @@ class VantFirebaseMessagingService : FirebaseMessagingService() {
                     if (!flutterEngineStarted.get()) {
                         startFlutterBackgroundEngine(callbackHandle)
                     }
-                    val engine = backgroundFlutterEngine
-                    if (engine != null) {
-                        val channel = MethodChannel(
-                            engine.dartExecutor.binaryMessenger,
-                            "plugins.flutter.io/firebase_messaging_background"
+                    val messageMap = mutableMapOf<String, Any?>(
+                        "data" to remoteMessage.data,
+                        "messageId" to remoteMessage.messageId,
+                        "sentTime" to remoteMessage.sentTime,
+                        "from" to remoteMessage.from,
+                        "ttl" to remoteMessage.ttl
+                    )
+                    remoteMessage.notification?.let { notification ->
+                        messageMap["notification"] = mapOf(
+                            "title" to notification.title,
+                            "body" to notification.body
                         )
-
-                        val messageMap = mutableMapOf<String, Any?>(
-                            "data" to remoteMessage.data,
-                            "messageId" to remoteMessage.messageId,
-                            "sentTime" to remoteMessage.sentTime,
-                            "from" to remoteMessage.from,
-                            "ttl" to remoteMessage.ttl
+                    }
+                    // The plugin contract: Dart resolves the user's handler
+                    // via arguments['userCallbackHandle'] and the RemoteMessage
+                    // via arguments['message'] — a bare map would throw on
+                    // CallbackHandle.fromRawHandle(null) and drop the push.
+                    val args = mapOf(
+                        "userCallbackHandle" to userCallbackHandle,
+                        "message" to messageMap
+                    )
+                    if (backgroundChannelReady.get()) {
+                        backgroundChannel?.invokeMethod(
+                            "MessagingBackground#onMessage", args
                         )
-
-                        remoteMessage.notification?.let { notification ->
-                            messageMap["notification"] = mapOf(
-                                "title" to notification.title,
-                                "body" to notification.body
-                            )
-                        }
-
-                        channel.invokeMethod("MessagingBackground#onMessage", messageMap)
                         Log.d(TAG, "Message forwarded to Flutter background handler")
                     } else {
-                        Log.w(TAG, "Background engine unavailable, message dropped")
+                        // Engine still booting — the initialized callback in
+                        // startFlutterBackgroundEngine flushes the queue.
+                        pendingBackgroundMessages.add(args)
+                        Log.d(TAG, "Background handler not ready — message queued")
                     }
                 } catch (e: Exception) {
                     Log.e(TAG, "Error forwarding to Flutter on main thread: ${e.message}", e)
@@ -194,6 +211,31 @@ class VantFirebaseMessagingService : FirebaseMessagingService() {
             engine.dartExecutor.executeDartCallback(args)
             backgroundFlutterEngine = engine
             flutterEngineStarted.set(true)
+
+            // The Dart callback dispatcher announces readiness via
+            // MessagingBackground#initialized and expects the native side to
+            // answer (FlutterFirebaseMessagingBackgroundExecutor does this in
+            // the stock path). Without a handler the invoke throws
+            // MissingPluginException in the isolate; answering also lets us
+            // flush messages queued while the isolate was booting.
+            val channel = MethodChannel(
+                engine.dartExecutor.binaryMessenger,
+                "plugins.flutter.io/firebase_messaging_background"
+            )
+            backgroundChannel = channel
+            channel.setMethodCallHandler { call, result ->
+                if (call.method == "MessagingBackground#initialized") {
+                    result.success(null)
+                    backgroundChannelReady.set(true)
+                    for (queued in pendingBackgroundMessages) {
+                        channel.invokeMethod("MessagingBackground#onMessage", queued)
+                    }
+                    pendingBackgroundMessages.clear()
+                    Log.d(TAG, "Background handler initialized — queue flushed")
+                } else {
+                    result.notImplemented()
+                }
+            }
 
             Log.d(TAG, "Flutter background engine started for message forwarding")
         } catch (e: Exception) {

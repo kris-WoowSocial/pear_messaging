@@ -857,11 +857,27 @@ class MainActivity : FlutterFragmentActivity() {
                 else -> null
             }
             
+            // ANSWER/DECLINE/DECLINE_WITH_MESSAGE are ALWAYS captured by
+            // handleCallIntent (which runs before handleIntent in every
+            // path — onCreate, onNewIntent, pendingIntent replay) and are
+            // delivered to Dart via pendingCallData + onPendingCallAction.
+            // Pushing onCallAction here too would double-deliver the same
+            // intent — observed as two identical quick-reply messages for
+            // a single decline-with-message tap. Only END_CALL and the
+            // extra/deep-link actions flow through onCallAction.
+            val capturedByPendingPath =
+                intentAction == "com.vant.chat.ANSWER_CALL" ||
+                intentAction == "com.vant.chat.DECLINE_CALL" ||
+                intentAction == "com.vant.chat.DECLINE_WITH_MESSAGE"
+            
             if (action != null) {
                 println("Call intent received: action=$action, callId=$callId")
-                if (action == "end" || action == "decline" ||
-                    action == "decline_with_message") {
+                if (action == "end") {
                     teardownAndroidCall(callId)
+                }
+                if (capturedByPendingPath) {
+                    println("Call intent $action already captured by pending path — skipping onCallAction push")
+                    return
                 }
                 
                 // Check if Flutter engine is available
@@ -1588,7 +1604,8 @@ class MainActivity : FlutterFragmentActivity() {
                 "is_video" to (intent.getBooleanExtra("is_video", false)).toString(),
                 "from_native" to (intent.getBooleanExtra("from_native", false)).toString(),
                 "answered_from_background" to (intent.getBooleanExtra("answered_from_background", false)).toString(),
-                "template_text" to (intent.getStringExtra("template_text") ?: "")
+                "template_text" to (intent.getStringExtra("template_text") ?: ""),
+                "open_custom_chat" to (intent.getBooleanExtra("open_custom_chat", false)).toString()
             )
             
             // If answered from native screen (or system UI while in background),
@@ -1617,6 +1634,12 @@ class MainActivity : FlutterFragmentActivity() {
 
             if (action == "com.vant.chat.DECLINE_CALL" ||
                 action == "com.vant.chat.DECLINE_WITH_MESSAGE") {
+                // Telecom teardown moved here from handleIntent — declines
+                // now reach Dart exclusively through the pending path, so
+                // this is the single place the native connection dies.
+                teardownAndroidCall(
+                    intent.getStringExtra("call_id") ?: ""
+                )
                 // Paranoid cleanup — the overlay only ever shows for ANSWER,
                 // but never leave it up if state got crossed.
                 removeCallTransitionOverlay("decline")
