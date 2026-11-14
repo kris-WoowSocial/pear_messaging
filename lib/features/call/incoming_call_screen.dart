@@ -9,8 +9,6 @@ import 'call_controller.dart';
 import 'call_encryption_indicator.dart';
 import '../../core/services/ringtone_service.dart';
 import '../../core/services/callkit_service.dart';
-import '../../core/services/local_storage_service.dart';
-import '../chat/chat_controller.dart';
 
 /// Incoming Call Screen - Full-screen overlay for incoming audio calls
 class IncomingCallScreen extends StatefulWidget {
@@ -442,33 +440,18 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
   }
 
   /// Custom-message path: reject the call, then open the caller's chat so the
-  /// user can type — the input bar lands focused for immediate typing.
+  /// user can type — the input bar lands focused for immediate typing. The
+  /// controller's offNamedUntil navigation replaces /call/incoming with /chat
+  /// so Back lands on the chat list.
   Future<void> _declineAndOpenChat(
     Map<String, dynamic> callData,
     CallController controller,
   ) async {
     final callerId = callData['callerId'] as String? ?? '';
     final callerName = callData['callerName'] as String? ?? '';
-    final myDeviceId =
-        Get.isRegistered<LocalStorageService>()
-            ? Get.find<LocalStorageService>().deviceId ?? ''
-            : '';
     await _declineCall(callData);
     if (callerId.isEmpty) return;
-    Get.toNamed('/chat', arguments: {
-      'chatId': callerId,
-      'userName': callerName.isNotEmpty ? callerName : callerId,
-      'recipientDeviceId': callerId,
-      'myDeviceId': myDeviceId,
-      'isGroup': false,
-    });
-    // Land with the keyboard open — ChatController registers during the
-    // route's first frame, so focus on the next frame after that.
-    unawaited(Future<void>.delayed(const Duration(milliseconds: 450), () {
-      if (Get.isRegistered<ChatController>()) {
-        Get.find<ChatController>().messageFocusNode.requestFocus();
-      }
-    }));
+    controller.openChatForCustomReply(callerId, callerName);
   }
 
   Future<void> _declineCall(Map<String, dynamic>? callData) async {

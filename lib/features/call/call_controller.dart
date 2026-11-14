@@ -518,6 +518,12 @@ class CallController extends GetxController {
   /// by callPushWake; cleared on every terminal/accept path for that call.
   final Set<String> _nativePushCallIds = {};
 
+  /// callIds that already dispatched a decline-with-message. The same
+  /// native DECLINE_WITH_MESSAGE can arrive via onCallAction, the pending
+  /// push, AND the getPendingCallAction poll — a callId may dispatch
+  /// exactly one quick reply regardless of delivery-path duplication.
+  final Set<String> _handledDeclineMessageCallIds = {};
+
   /// Read the ringing-call marker written natively when a pre-warm engine was
   /// started for an incoming call. No-op when absent (normal app launches).
   Future<void> _loadRingingCallMarker() async {
@@ -587,15 +593,9 @@ class CallController extends GetxController {
           _handleNativeDecline(data.cast<String, dynamic>());
         } else if (action == 'com.vant.chat.DECLINE_WITH_MESSAGE' &&
             data != null) {
-          final castData = data.cast<String, dynamic>();
-          _handleNativeDecline(castData).then((_) {
-            final templateText =
-                castData['template_text'] as String? ?? '';
-            final callerId = castData['caller_id'] as String? ?? '';
-            if (templateText.isNotEmpty) {
-              unawaited(_sendDeclineQuickMessage(templateText, callerId));
-            }
-          });
+          unawaited(
+            _handleNativeDeclineWithMessage(data.cast<String, dynamic>()),
+          );
         }
       }
     } catch (e) {
@@ -2156,21 +2156,17 @@ class CallController extends GetxController {
               'caller_name': callerName ?? 'Incoming Call',
             });
           } else if (action == 'decline_with_message') {
-            // Lock-screen quick reply: reject the call, then send the
-            // template text as a normal encrypted message.
-            final templateText =
-                call.arguments['templateText'] as String? ?? '';
-            await _handleNativeDecline({
+            // Lock-screen quick reply — same deduped handler as the
+            // pending-action path so push+poll+warm can't double-send.
+            await _handleNativeDeclineWithMessage({
               'call_id': callId ?? '',
               'caller_id': callerId ?? '',
               'caller_name': callerName ?? 'Incoming Call',
+              'template_text':
+                  call.arguments['templateText'] as String? ?? '',
+              'open_custom_chat':
+                  call.arguments['openCustomChat'] == true ? 'true' : 'false',
             });
-            if (templateText.isNotEmpty) {
-              unawaited(_sendDeclineQuickMessage(
-                templateText,
-                callerId ?? '',
-              ));
-            }
           } else if (action == 'end' &&
               callId != null &&
               callId.isNotEmpty &&
@@ -3181,11 +3177,101 @@ class CallController extends GetxController {
       callData['callerId'] =
           callData['callerId'] ?? remoteDeviceId.value;
     }
+    final callId = callData['callId'] as String? ?? '';
+    if (callId.isNotEmpty &&
+        !_handledDeclineMessageCallIds.add(callId)) {
+      debugPrint('📞 Decline-with-message already handled for $callId');
+      return;
+    }
     rejectCall(callData);
     unawaited(_sendDeclineQuickMessage(
       templateText,
       callData['callerId'] as String? ?? '',
     ));
+    // Land on the caller's chat showing the sent quick reply — Back must
+    // return to the chat list, so /chat replaces the call route rather than
+    // stacking on it.
+    openChatForCustomReply(
+      callData['callerId'] as String? ?? '',
+      callData['callerName'] as String? ?? '',
+      focusInput: false,
+    );
+  }
+
+  /// Single funnel for the native DECLINE_WITH_MESSAGE intent — reached via
+  /// onCallAction (warm), onPendingCallAction push, and the
+  /// getPendingCallAction poll. The callId guard makes all three paths
+  /// idempotent; the open_custom_chat flag declines then opens the chat
+  /// with a focused input instead of sending a template.
+  Future<void> _handleNativeDeclineWithMessage(
+    Map<String, dynamic> data,
+  ) async {
+    final callId = data['call_id'] as String? ?? '';
+    if (callId.isNotEmpty &&
+        !_handledDeclineMessageCallIds.add(callId)) {
+      debugPrint('📞 Duplicate decline_with_message ignored: $callId');
+      return;
+    }
+    await _handleNativeDecline(data);
+    final callerId = data['caller_id'] as String? ?? '';
+    if (callerId.isEmpty) return;
+    final templateText = data['template_text'] as String? ?? '';
+    final openCustom = data['open_custom_chat'] == 'true' ||
+        data['open_custom_chat'] == true;
+    if (openCustom || templateText.isEmpty) {
+      openChatForCustomReply(
+        callerId,
+        data['caller_name'] as String? ?? '',
+      );
+    } else {
+      unawaited(_sendDeclineQuickMessage(templateText, callerId));
+      // Same back-stack contract as the custom path — /chat opens showing
+      // the sent quick reply, Back lands on the chat list.
+      openChatForCustomReply(
+        callerId,
+        data['caller_name'] as String? ?? '',
+        focusInput: false,
+      );
+    }
+  }
+
+  /// "Custom message..." — the call is already declined; land the user in
+  /// the caller's chat. Uses offNamedUntil so /chat REPLACES any /call/*
+  /// routes instead of stacking on top of /call/incoming — Back then lands
+  /// on the chat list, never a dead incoming-call screen (the incoming
+  /// screen's reactive close pops by route name and would otherwise leave
+  /// /call/incoming buried under /chat).
+  void openChatForCustomReply(
+    String callerId,
+    String callerName, {
+    bool focusInput = true,
+  }) {
+    final myDeviceId = _storageService.deviceId ?? '';
+    Get.offNamedUntil(
+      '/chat',
+      (route) {
+        final name = route.settings.name ?? '';
+        // Never stop on a call route — even if /call/incoming is somehow the
+        // first route, keeping it would let Back resurface the dead screen.
+        if (name.startsWith('/call/')) return false;
+        return name == '/chat-list' || name == '/main' || route.isFirst;
+      },
+      arguments: {
+        'chatId': callerId,
+        'userName': callerName.isNotEmpty ? callerName : callerId,
+        'recipientDeviceId': callerId,
+        'myDeviceId': myDeviceId,
+        'isGroup': false,
+      },
+    );
+    if (!focusInput) return;
+    // ChatController registers during the route's first frame — focus the
+    // input on the next frame after that so the keyboard is up.
+    unawaited(Future<void>.delayed(const Duration(milliseconds: 450), () {
+      if (Get.isRegistered<ChatController>()) {
+        Get.find<ChatController>().messageFocusNode.requestFocus();
+      }
+    }));
   }
 
   /// Persist + emit the decline quick-reply as a normal encrypted 1:1 text
@@ -3233,12 +3319,37 @@ class CallController extends GetxController {
           unawaited(chatController.refreshMessagesFromStorage());
         }
       }
-      await _socketService.sendMessage(
-        messageId: messageId,
-        recipientDeviceId: callerId,
-        content: text,
+      // Cold-start from the lock screen can beat the socket's reconnect —
+      // wait for registration before emitting, like the call-accept path.
+      if (!_socketService.isConnected.value) {
+        await _waitForSocketConnection(
+          timeout: const Duration(seconds: 15),
+        );
+      }
+      var sent = false;
+      if (_socketService.isConnected.value) {
+        sent = await _socketService.sendMessage(
+          messageId: messageId,
+          recipientDeviceId: callerId,
+          content: text,
+        );
+      }
+      // Same status pipeline as ChatController.sendMessage: the emitted
+      // messageId is the Hive key, so server message_status events (now
+      // persisted globally in SocketService) advance the tick further.
+      await _storageService.updateMessageStatus(
+        messageId,
+        sent ? MessageStatus.sent : MessageStatus.failed,
       );
-      debugPrint('💬 Decline quick-reply sent to $callerId: $messageId');
+      if (Get.isRegistered<ChatController>()) {
+        final chatController = Get.find<ChatController>();
+        if (chatController.chatId == callerId) {
+          unawaited(chatController.refreshMessagesFromStorage());
+        }
+      }
+      debugPrint(
+        '💬 Decline quick-reply ${sent ? 'sent' : 'FAILED'} to $callerId: $messageId',
+      );
     } catch (e) {
       debugPrint('💬 Decline quick-reply failed: $e');
     }
