@@ -20,6 +20,7 @@ import 'package:flutter_image_compress/flutter_image_compress.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:file_picker/file_picker.dart';
 import '../../core/services/encryption_service.dart';
+import '../../core/services/image_compression.dart';
 import '../../core/services/media_upload_service.dart';
 import 'package:social_media_recorder/audio_encoder_type.dart';
 import 'package:social_media_recorder/screen/social_media_recorder.dart';
@@ -987,20 +988,30 @@ class ChatScreen extends GetView<ChatController> {
         return;
       }
 
-      // Step 2: Preview sheet — includes the "[1]" view-once toggle.
+      // Step 2: Preview sheet — view-once toggle + HD pill.
       // Returns null if the user cancelled.
-      final isViewOnce = await _showImageSendPreview([compressedBytes]);
-      if (isViewOnce == null) return;
+      final preview = await _showImageSendPreview([compressedBytes]);
+      if (preview == null) return;
+
+      // HD selected — re-compress from the source file at 2560px/~88%.
+      var sendBytes = compressedBytes;
+      if (preview.hd) {
+        final hdBytes = await _compressImageBytes(
+          pickedFile.path,
+          quality: MediaQuality.hd,
+        );
+        if (hdBytes.isNotEmpty) sendBytes = hdBytes;
+      }
 
       // Step 3: Add bubble immediately so user sees it with upload progress
       pendingMsgId = await controller.createPendingImageMessage(
-        compressedBytes,
-        isViewOnce: isViewOnce,
+        sendBytes,
+        isViewOnce: preview.viewOnce,
       );
       if (pendingMsgId == null) return;
 
       // Step 4: Encrypt + upload; progress goes directly into the bubble overlay
-      final base64Image = base64Encode(compressedBytes);
+      final base64Image = base64Encode(sendBytes);
       final encryptedBlob = EncryptionService.encryptMessage(base64Image);
 
       final token = await MediaUploadService.uploadImage(
@@ -1008,7 +1019,7 @@ class ChatScreen extends GetView<ChatController> {
         onProgress: (progress) {
           controller.uploadProgressMap[pendingMsgId]?.value = progress;
         },
-        isViewOnce: isViewOnce,
+        isViewOnce: preview.viewOnce,
       );
 
       // Step 4: Finalize bubble content + send token via socket
@@ -1047,11 +1058,14 @@ class ChatScreen extends GetView<ChatController> {
   }
 
   /// Media preview panel before image(s) are sent — preview, a "[1]"
-  /// view-once toggle (accent green when active), and the send button.
-  /// Returns `true`/`false` for the toggle state, `null` on cancel.
-  Future<bool?> _showImageSendPreview(List<Uint8List> images) {
+  /// view-once toggle (accent green when active), an "HD" quality pill in
+  /// the top corner, and the send button.
+  /// Returns the chosen options, `null` on cancel.
+  Future<({bool viewOnce, bool hd})?> _showImageSendPreview(
+      List<Uint8List> images) {
     final isViewOnce = false.obs;
-    return Get.bottomSheet<bool>(
+    final isHd = false.obs;
+    return Get.bottomSheet<({bool viewOnce, bool hd})>(
       SafeArea(
         child: Container(
           decoration: const BoxDecoration(
@@ -1073,28 +1087,70 @@ class ChatScreen extends GetView<ChatController> {
               ),
               SizedBox(
                 height: 260,
-                child: images.length == 1
-                    ? ClipRRect(
-                        borderRadius: BorderRadius.circular(12),
-                        child: Image.memory(
-                          images[0],
-                          height: 260,
-                          fit: BoxFit.contain,
-                        ),
-                      )
-                    : ListView.separated(
-                        scrollDirection: Axis.horizontal,
-                        itemCount: images.length,
-                        separatorBuilder: (_, __) => const SizedBox(width: 8),
-                        itemBuilder: (_, i) => ClipRRect(
-                          borderRadius: BorderRadius.circular(12),
-                          child: Image.memory(
-                            images[i],
-                            height: 260,
-                            fit: BoxFit.contain,
+                child: Stack(
+                  children: [
+                    Center(
+                      child: images.length == 1
+                          ? ClipRRect(
+                              borderRadius: BorderRadius.circular(12),
+                              child: Image.memory(
+                                images[0],
+                                height: 260,
+                                fit: BoxFit.contain,
+                              ),
+                            )
+                          : ListView.separated(
+                              scrollDirection: Axis.horizontal,
+                              itemCount: images.length,
+                              separatorBuilder: (_, __) =>
+                                  const SizedBox(width: 8),
+                              itemBuilder: (_, i) => ClipRRect(
+                                borderRadius: BorderRadius.circular(12),
+                                child: Image.memory(
+                                  images[i],
+                                  height: 260,
+                                  fit: BoxFit.contain,
+                                ),
+                              ),
+                            ),
+                    ),
+                    // HD quality pill — top-right of the preview. Sending
+                    // with HD on re-compresses the source at 2560px/~88%.
+                    Positioned(
+                      top: 6,
+                      right: 6,
+                      child: Obx(
+                        () => GestureDetector(
+                          onTap: () => isHd.value = !isHd.value,
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 10, vertical: 4),
+                            decoration: BoxDecoration(
+                              color: isHd.value
+                                  ? const Color(0xFF25D366)
+                                  : Colors.black45,
+                              borderRadius: BorderRadius.circular(10),
+                              border: Border.all(
+                                color: isHd.value
+                                    ? const Color(0xFF25D366)
+                                    : Colors.white54,
+                              ),
+                            ),
+                            child: Text(
+                              'HD',
+                              style: TextStyle(
+                                color: Colors.white
+                                    .withValues(alpha: isHd.value ? 1 : 0.7),
+                                fontSize: 12,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
                           ),
                         ),
                       ),
+                    ),
+                  ],
+                ),
               ),
               const SizedBox(height: 16),
               Row(
@@ -1153,7 +1209,9 @@ class ChatScreen extends GetView<ChatController> {
                     const SizedBox.shrink(),
                   // Send button
                   GestureDetector(
-                    onTap: () => Get.back(result: isViewOnce.value),
+                    onTap: () => Get.back(
+                      result: (viewOnce: isViewOnce.value, hd: isHd.value),
+                    ),
                     child: Container(
                       width: 52,
                       height: 52,
@@ -1213,6 +1271,10 @@ class ChatScreen extends GetView<ChatController> {
       // then hand the ordered byte list to the controller which creates a
       // bubble per image and uploads one by one.
       final compressed = <Uint8List>[];
+      // Source paths kept index-aligned with `compressed` so an HD send can
+      // re-compress the originals (skipped failures would break `picked[i]`
+      // alignment).
+      final sources = <String>[];
       for (final file in picked) {
         final bytes = await _compressImageBytes(file.path);
         if (bytes.isEmpty) {
@@ -1220,6 +1282,7 @@ class ChatScreen extends GetView<ChatController> {
           continue;
         }
         compressed.add(bytes);
+        sources.add(file.path);
       }
       if (compressed.isEmpty) {
         Get.snackbar(
@@ -1232,15 +1295,29 @@ class ChatScreen extends GetView<ChatController> {
         return;
       }
 
-      // Same preview sheet the single-image path uses — includes the "[1]"
-      // view-once toggle. Returns null if the user cancelled.
-      final isViewOnce = await _showImageSendPreview(compressed);
-      if (isViewOnce == null) return;
+      // Same preview sheet the single-image path uses — view-once toggle
+      // + HD pill. Returns null if the user cancelled.
+      final preview = await _showImageSendPreview(compressed);
+      if (preview == null) return;
+
+      // HD selected — re-compress each source file at 2560px/~88%.
+      var sendList = compressed;
+      if (preview.hd) {
+        final hdList = <Uint8List>[];
+        for (var i = 0; i < sources.length; i++) {
+          final hdBytes = await _compressImageBytes(
+            sources[i],
+            quality: MediaQuality.hd,
+          );
+          hdList.add(hdBytes.isNotEmpty ? hdBytes : compressed[i]);
+        }
+        if (hdList.isNotEmpty) sendList = hdList;
+      }
 
       await controller.sendImagesSequentially(
-        compressed,
+        sendList,
         maxPerBatch: _maxImagesPerSend,
-        isViewOnce: isViewOnce,
+        isViewOnce: preview.viewOnce,
       );
     } catch (e) {
       debugPrint('❌ Error in multi-image send: $e');
@@ -1599,8 +1676,36 @@ String _encryptFileBlob(Uint8List bytes) {
 
 /// Compresses image at [filePath] targeting ≤ 150 KB binary output (reduced from 250KB).
 /// Must run on the main isolate — FlutterImageCompress uses platform channels.
-Future<Uint8List> _compressImageBytes(String filePath) async {
+/// HD mode caps the long edge at 2560px and keeps JPEG quality ~88% —
+/// stepped down only if the output stays unreasonably large.
+Future<Uint8List> _compressImageBytes(String filePath,
+    {MediaQuality quality = MediaQuality.standard}) async {
   try {
+    if (quality == MediaQuality.hd) {
+      for (final q in [88, 78, 68]) {
+        final compressed = await FlutterImageCompress.compressWithFile(
+          filePath,
+          quality: q,
+          minWidth: 2560,
+          minHeight: 2560,
+        );
+        if (compressed != null) {
+          debugPrint('🔧 HD quality $q: ${compressed.length} bytes');
+          if (compressed.length <= 4 * 1024 * 1024) {
+            return compressed;
+          }
+        }
+      }
+      // HD last resort — still well above standard's 800px ceiling.
+      return await FlutterImageCompress.compressWithFile(
+            filePath,
+            quality: 60,
+            minWidth: 2048,
+            minHeight: 2048,
+          ) ??
+          Uint8List(0);
+    }
+
     debugPrint('🔧 Starting image compression for: $filePath');
 
     // More aggressive quality reduction: stop as soon as we hit the 150 KB target
