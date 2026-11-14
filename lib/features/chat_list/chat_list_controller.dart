@@ -37,11 +37,6 @@ class ChatListController extends GetxController {
   final TextEditingController userNameController = TextEditingController();
   final RxList<ChatListModel> chats = <ChatListModel>[].obs;
   final RxList<ChatListModel> filteredChats = <ChatListModel>[].obs;
-
-  /// Locked chats — hidden from `chats`/`filteredChats`, surfaced only via
-  /// the biometric-gated "Locked chats" entry point.
-  final RxList<ChatListModel> lockedChats = <ChatListModel>[].obs;
-  bool get hasLockedChats => lockedChats.isNotEmpty;
   final RxList<ConnectionRequestEntity> pendingConnectionRequests =
       <ConnectionRequestEntity>[].obs;
   final Uuid _uuid = const Uuid();
@@ -996,37 +991,29 @@ class ChatListController extends GetxController {
       debugPrint('📦 Loaded ${allChats.length} chats from storage');
 
       chats.clear();
-      lockedChats.clear();
       for (final chat in allChats) {
-        final model = ChatListModel(
-          id: chat.id,
-          userName: chat.isGroupChat
-              ? (chat.groupName ?? chat.userName)
-              : chat.userName,
-          lastMessage: chat.lastMessage ?? '',
-          lastMessageTime: chat.lastMessageTime ?? DateTime.now(),
-          unreadCount: chat.unreadCount,
-          isGroup: chat.isGroupChat,
-          isLocked: chat.isLocked,
+        chats.add(
+          ChatListModel(
+            id: chat.id,
+            userName: chat.isGroupChat
+                ? (chat.groupName ?? chat.userName)
+                : chat.userName,
+            lastMessage: chat.lastMessage ?? '',
+            lastMessageTime: chat.lastMessageTime ?? DateTime.now(),
+            unreadCount: chat.unreadCount,
+            isGroup: chat.isGroupChat,
+          ),
         );
-        if (chat.isLocked) {
-          lockedChats.add(model);
-        } else {
-          chats.add(model);
-        }
       }
 
       // Sort by last message time (most recent first)
-      int byTime(ChatListModel a, ChatListModel b) {
+      chats.sort((a, b) {
         final aTime =
             a.lastMessageTime ?? DateTime.fromMillisecondsSinceEpoch(0);
         final bTime =
             b.lastMessageTime ?? DateTime.fromMillisecondsSinceEpoch(0);
         return bTime.compareTo(aTime);
-      }
-
-      chats.sort(byTime);
-      lockedChats.sort(byTime);
+      });
 
       filteredChats.value = List.from(chats);
 
@@ -1125,42 +1112,6 @@ class ChatListController extends GetxController {
     } catch (e) {
       debugPrint('❌ Error creating group: $e');
       Get.snackbar('Error', 'Failed to create group: $e');
-    }
-  }
-
-  /// Biometric/PIN gate into the locked-chats view. On success refreshes
-  /// storage so the list shows latest previews, then opens the screen.
-  Future<void> openLockedChats() async {
-    try {
-      final authService = Get.find<LocalAuthService>();
-      if (!await authService.isAvailable()) {
-        Get.snackbar(
-          'Not Available',
-          'Set up device biometrics or a PIN to view locked chats',
-          snackPosition: SnackPosition.TOP,
-        );
-        return;
-      }
-      final authenticated = await authService.authenticate();
-      if (!authenticated) return;
-      loadChats();
-      Get.toNamed(AppRoutes.lockedChats);
-    } catch (e) {
-      debugPrint('⚠️ Locked-chats auth failed: $e');
-    }
-  }
-
-  /// Unlock a chat from the LockedChatsScreen (auth-gated) and move it
-  /// back into the main list.
-  Future<void> unlockChat(ChatListModel chat) async {
-    try {
-      final authService = Get.find<LocalAuthService>();
-      final authenticated = await authService.authenticate();
-      if (!authenticated) return;
-      await _storageService.setChatLocked(chat.id, false);
-      loadChats();
-    } catch (e) {
-      debugPrint('⚠️ Unlock chat failed: $e');
     }
   }
 

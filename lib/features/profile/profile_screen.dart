@@ -268,23 +268,6 @@ class ProfileScreen extends GetView<ProfileController> {
                     ),
                     const SizedBox(height: AppSizes.paddingM),
                     _buildSectionCard(
-                      title: 'Calls',
-                      children: [
-                        Obx(
-                          () => _buildSwitchTile(
-                            icon: Icons.vpn_key_outlined,
-                            iconColor: AppColors.primaryDark,
-                            title: 'Protect IP address in calls',
-                            subtitle:
-                                'To make it harder for people to infer your location, calls will be relayed through Vant servers. This will reduce call quality.',
-                            value: controller.protectCallIpAddress.value,
-                            onChanged: controller.toggleProtectCallIp,
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: AppSizes.paddingM),
-                    _buildSectionCard(
                       title: 'Account',
                       children: [
                         Obx(() {

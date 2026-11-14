@@ -1354,23 +1354,8 @@ class FCMService extends GetxService {
     if (!shouldSuppressNotification && senderId.isNotEmpty) {
       try {
         var title = message.notification?.title ?? 'New Message';
-        var body =
+        final body =
             message.notification?.body ?? 'You have a new encrypted message';
-
-        // Locked chats never leak the sender name or preview text in the
-        // notification banner — the chat content stays behind the auth gate.
-        try {
-          if (Get.isRegistered<LocalStorageService>()) {
-            final lockedChat = Get.find<LocalStorageService>()
-                .getChat(isGroup ? chatId : senderId);
-            if (lockedChat?.isLocked == true) {
-              title = 'New message';
-              body = 'New message';
-            }
-          }
-        } catch (e) {
-          debugPrint('⚠️ Locked-chat notification check failed: $e');
-        }
 
         // If title is a raw device ID (no username found), format it as friendly name
         if (title == senderId && senderId.length > 5) {

@@ -135,7 +135,7 @@ void main() {
       expect(
         screen,
         contains(
-          'await controller.createPendingImageMessage(\n        sendBytes,\n        isViewOnce: preview.viewOnce,',
+          'await controller.createPendingImageMessage(\n        compressedBytes,\n        isViewOnce: isViewOnce,',
         ),
         reason: 'screen passes the toggle into the pending bubble',
       );

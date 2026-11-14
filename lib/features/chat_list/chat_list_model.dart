@@ -9,10 +9,6 @@ class ChatListModel {
   final String? replyContent;
   final bool isGroup;
 
-  /// Hidden from the main list; reachable only via the biometric-gated
-  /// "Locked chats" row.
-  final bool isLocked;
-
   ChatListModel({
     required this.id,
     required this.userName,
@@ -22,6 +18,5 @@ class ChatListModel {
     this.isReply = false,
     this.replyContent,
     this.isGroup = false,
-    this.isLocked = false,
   }) : avatarLetter = userName.isNotEmpty ? userName[0].toUpperCase() : 'U';
 }
