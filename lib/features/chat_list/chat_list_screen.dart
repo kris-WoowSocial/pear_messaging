@@ -71,10 +71,10 @@ class ChatListScreen extends GetView<ChatListController> {
             ),
             const SizedBox(height: 2),
             const Text(
-              'Private messaging with no phone number or email needed.',
+              '🔒 End-to-end encrypted',
               style: TextStyle(
                 color: AppColors.textPrimary,
-                fontSize: 10,
+                fontSize: 12,
                 fontWeight: FontWeight.w400,
               ),
             ),
