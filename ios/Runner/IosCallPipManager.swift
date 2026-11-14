@@ -38,7 +38,11 @@ final class VantPipFrameSink: NSObject, RTCVideoRenderer {
     )
     guard status == noErr, let desc = formatDesc else { return }
 
-    var timing = CMSampleTimingInfo.invalid
+    var timing = CMSampleTimingInfo(
+      duration: .invalid,
+      presentationTimeStamp: .invalid,
+      decodeTimeStamp: .invalid
+    )
     var sampleBuffer: CMSampleBuffer?
     status = CMSampleBufferCreateReadyWithImageBuffer(
       allocator: kCFAllocatorDefault,
@@ -49,7 +53,8 @@ final class VantPipFrameSink: NSObject, RTCVideoRenderer {
     )
     guard status == noErr, let sb = sampleBuffer else { return }
 
-    if let attachments = CMSampleBufferGetSampleAttachmentsArray(sb, true),
+    if let attachments = CMSampleBufferGetSampleAttachmentsArray(
+      sb, createIfNecessary: true),
        CFArrayGetCount(attachments) > 0 {
       let dict = unsafeBitCast(
         CFArrayGetValueAtIndex(attachments, 0),
@@ -74,11 +79,13 @@ final class VantPipFrameSink: NSObject, RTCVideoRenderer {
   /// frame carries a rotation (PiP renders the enqueued buffers directly —
   /// a layer transform would be ignored), then I420ToNV12.
   private func toCVPixelBuffer(frame: RTCVideoFrame) -> CVPixelBuffer? {
-    var i420 = frame.buffer.toI420()
+    // toI420() returns id<RTCI420Buffer> — imported into Swift as
+    // RTCI420BufferProtocol (the concrete class shares the ObjC name).
+    var i420: RTCI420BufferProtocol = frame.buffer.toI420()
     if frame.rotation != ._0 {
       i420 = rotate(i420, rotation: frame.rotation)
     }
-    guard let src = i420 else { return nil }
+    let src = i420
 
     var output: CVPixelBuffer?
     let attrs = [kCVPixelBufferIOSurfacePropertiesKey: [:]] as CFDictionary
@@ -95,7 +102,7 @@ final class VantPipFrameSink: NSObject, RTCVideoRenderer {
     CVPixelBufferLockBaseAddress(pb, [])
     guard let dstY = CVPixelBufferGetBaseAddressOfPlane(pb, 0),
           let dstUV = CVPixelBufferGetBaseAddressOfPlane(pb, 1) else {
-      CVPixelBufferUnlockBaseAddress(pb, 0)
+      CVPixelBufferUnlockBaseAddress(pb, [])
       return nil
     }
     let dstYStride = Int32(CVPixelBufferGetBytesPerRowOfPlane(pb, 0))
@@ -115,20 +122,26 @@ final class VantPipFrameSink: NSObject, RTCVideoRenderer {
       width: src.width,
       height: src.height
     )
-    CVPixelBufferUnlockBaseAddress(pb, 0)
+    CVPixelBufferUnlockBaseAddress(pb, [])
     return pb
   }
 
   /// Mirrors FlutterRTCVideoRenderer's correctRotation:withRotation: —
   /// I420Rotate into a fresh buffer whose width/height are swapped for
   /// quarter turns.
-  private func rotate(_ src: RTCI420Buffer, rotation: RTCVideoRotation) -> RTCI420Buffer {
+  private func rotate(
+    _ src: RTCI420BufferProtocol,
+    rotation: RTCVideoRotation
+  ) -> RTCI420BufferProtocol {
     var width = src.width
     var height = src.height
     if rotation == ._90 || rotation == ._270 {
       swap(&width, &height)
     }
     let dst = RTCI420Buffer(width: width, height: height)
+    // RTCYUVHelper's dst params are uint8_t* while the buffer properties are
+    // const uint8_t* — UnsafeMutablePointer(mutating:) bridges the ObjC
+    // const-mismatch (the helper only writes into dst).
     RTCYUVHelper.i420Rotate(
       src.dataY,
       srcStrideY: src.strideY,
@@ -136,11 +149,11 @@ final class VantPipFrameSink: NSObject, RTCVideoRenderer {
       srcStrideU: src.strideU,
       srcV: src.dataV,
       srcStrideV: src.strideV,
-      dstY: dst.dataY,
+      dstY: UnsafeMutablePointer(mutating: dst.dataY),
       dstStrideY: dst.strideY,
-      dstU: dst.dataU,
+      dstU: UnsafeMutablePointer(mutating: dst.dataU),
       dstStrideU: dst.strideU,
-      dstV: dst.dataV,
+      dstV: UnsafeMutablePointer(mutating: dst.dataV),
       dstStrideV: dst.strideV,
       width: src.width,
       height: src.height,
@@ -279,13 +292,13 @@ final class IosCallPipManager: NSObject {
     }
     if attachedTrack === track { return }
     detachTrack()
-    track.addRenderer(frameSink)
+    track.add(frameSink)
     attachedTrack = track
     NSLog("VantPip: frame sink attached to remote track %@", trackId)
   }
 
   private func detachTrack() {
-    attachedTrack?.removeRenderer(frameSink)
+    attachedTrack?.remove(frameSink)
     attachedTrack = nil
   }
 
@@ -411,6 +424,18 @@ extension IosCallPipManager: AVPictureInPictureControllerDelegate,
     shouldTransitionTo newSize: CGSize
   ) {
     // Accept any system-proposed PiP size; the sample layer scales itself.
+  }
+
+  // iOS 16+: the coordinator variant is the required member — let the
+  // system render the transition over our host view's display layer.
+  func pictureInPictureController(
+    _ pictureInPictureController: AVPictureInPictureController,
+    shouldTransitionTo newSize: CGSize,
+    with coordinator: AVPictureInPictureSampleBufferTransitionCoordinating
+  ) {
+    if let view = hostView {
+      coordinator.contributeTransition(to: newSize, using: view)
+    }
   }
 
   func pictureInPictureController(
