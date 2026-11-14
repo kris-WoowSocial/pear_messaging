@@ -11,6 +11,8 @@ import '../../core/utils/string_utils.dart';
 import '../../routes/app_routes.dart';
 import 'profile_controller.dart';
 import '../contact/contact_us_screen.dart';
+import '../../widgets/vant_avatar.dart';
+import '../../core/services/user_profile_cache.dart';
 
 class ProfileScreen extends GetView<ProfileController> {
   const ProfileScreen({super.key});
@@ -35,8 +37,17 @@ class ProfileScreen extends GetView<ProfileController> {
     final appStore = Uri.encodeComponent(
       '${NetworkConstants.appStoreReviewUrl}6758916131',
     );
+    // Inviter avatar rides the link for both the in-app scanner and the
+    // OpenGraph preview ($og_image_url) shown by iMessage/WhatsApp/Telegram.
+    final avatarUrl = Get.isRegistered<UserProfileCache>()
+        ? Get.find<UserProfileCache>().myAvatarUrl.value
+        : '';
+    final avatarParam = avatarUrl.isNotEmpty
+        ? '&avatar_url=${Uri.encodeComponent(avatarUrl)}'
+            '&\$og_image_url=${Uri.encodeComponent(avatarUrl)}'
+        : '';
     return 'https://vantchatting.app.link/?device_id=$deviceId'
-        '&user_name=$userName'
+        '&user_name=$userName$avatarParam'
         '&\$android_url=$playStore'
         '&\$ios_url=$appStore'
         '&\$fallback_url=$playStore';
@@ -138,13 +149,17 @@ class ProfileScreen extends GetView<ProfileController> {
                 ),
               ),
               const SizedBox(height: AppSizes.paddingL),
-              Container(
-                padding: const EdgeInsets.all(AppSizes.paddingM),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(AppSizes.radiusM),
-                  border: Border.all(color: Colors.grey.shade200),
+              // Own avatar above the QR card so the scanner sees a face too.
+              Obx(
+                () => VantAvatar(
+                  userId: controller.deviceId.value,
+                  name: controller.userName.value,
+                  size: 64,
+                  borderRadius: 32,
                 ),
+              ),
+              const SizedBox(height: AppSizes.paddingM),
+              Container(
                 child: FutureBuilder<String>(
                   future: _generateQRData(),
                   builder: (context, snapshot) {
@@ -262,6 +277,23 @@ class ProfileScreen extends GetView<ProfileController> {
                             subtitle: 'Require authentication to open app',
                             value: controller.isAuthEnabled.value,
                             onChanged: controller.toggleAuth,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: AppSizes.paddingM),
+                    _buildSectionCard(
+                      title: 'Calls',
+                      children: [
+                        Obx(
+                          () => _buildSwitchTile(
+                            icon: Icons.vpn_key_outlined,
+                            iconColor: AppColors.primaryDark,
+                            title: 'Protect IP address in calls',
+                            subtitle:
+                                'To make it harder for people to infer your location, calls will be relayed through Vant servers. This will reduce call quality.',
+                            value: controller.protectCallIpAddress.value,
+                            onChanged: controller.toggleProtectCallIp,
                           ),
                         ),
                       ],
@@ -828,14 +860,12 @@ class _ProfileHeaderDelegate extends SliverPersistentHeaderDelegate {
                   border:
                       Border.all(color: Colors.white, width: _lerp(3, 2, t)),
                 ),
-                child: Center(
-                  child: Text(
-                    controller.userInitial,
-                    style: TextStyle(
-                      fontSize: _lerp(28, 15, t),
-                      fontWeight: FontWeight.bold,
-                      color: AppColors.primaryDark,
-                    ),
+                child: ClipOval(
+                  child: VantAvatar(
+                    userId: controller.deviceId.value,
+                    name: controller.userName.value,
+                    size: avatarSize,
+                    borderRadius: avatarSize / 2,
                   ),
                 ),
               ),

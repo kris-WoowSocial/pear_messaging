@@ -28,6 +28,7 @@ class LocalStorageService extends GetxService {
   static const String _prefsDeviceIdKey = 'device_id';
   static const String _prefsAuthEnabledKey = 'auth_enabled';
   static const String _prefsUserNameKey = 'user_name';
+  static const String _prefsProtectCallIpKey = 'protect_call_ip_address';
 
   late Box _chatsBox;
   late Box _messagesBox;
@@ -191,6 +192,15 @@ class LocalStorageService extends GetxService {
     await _prefs.setBool(_prefsAuthEnabledKey, enabled);
   }
 
+  // "Protect IP address in calls" — when on, WebRTC gathers only relayed
+  // (TURN) candidates so the peer never sees the device's real IP.
+  bool get protectCallIpAddress =>
+      _prefs.getBool(_prefsProtectCallIpKey) ?? false;
+
+  Future<void> setProtectCallIpAddress(bool enabled) async {
+    await _prefs.setBool(_prefsProtectCallIpKey, enabled);
+  }
+
   // User name preference
   String? getUserName() {
     return _prefs.getString(_prefsUserNameKey);
@@ -198,6 +208,47 @@ class LocalStorageService extends GetxService {
 
   Future<void> setUserName(String name) async {
     await _prefs.setString(_prefsUserNameKey, name);
+  }
+
+  /// Current user's own avatar URL (null = initial-letter fallback).
+  String? getUserAvatarUrl() {
+    return _prefs.getString('user_avatar_url');
+  }
+
+  Future<void> setUserAvatarUrl(String? url) async {
+    if (url == null || url.isEmpty) {
+      await _prefs.remove('user_avatar_url');
+    } else {
+      await _prefs.setString('user_avatar_url', url);
+    }
+  }
+
+  /// Persisted avatar URL for a contact — written even before a ChatEntity
+  /// exists so invite/QR flows don't lose the photo across restarts.
+  String? getContactAvatarUrl(String deviceId) {
+    return _prefs.getString('avatar_url_$deviceId');
+  }
+
+  Future<void> setContactAvatarUrl(String deviceId, String? url) async {
+    if (url == null || url.isEmpty) {
+      await _prefs.remove('avatar_url_$deviceId');
+    } else {
+      await _prefs.setString('avatar_url_$deviceId', url);
+    }
+  }
+
+  /// All persisted contact avatars (deviceId -> url), for cache hydration.
+  Map<String, String> getAllContactAvatarUrls() {
+    final map = <String, String>{};
+    for (final key in _prefs.getKeys()) {
+      if (key.startsWith('avatar_url_')) {
+        final value = _prefs.getString(key);
+        if (value != null && value.isNotEmpty) {
+          map[key.substring('avatar_url_'.length)] = value;
+        }
+      }
+    }
+    return map;
   }
 
   // Last seen timestamp for presence status
@@ -348,9 +399,28 @@ class LocalStorageService extends GetxService {
     }
   }
 
+  /// Flip a chat's locked flag (biometric-gated "Locked chats" feature).
+  /// No-op when the chat row doesn't exist.
+  Future<void> setChatLocked(String chatId, bool locked) async {
+    final chat = getChat(chatId);
+    if (chat == null || chat.isLocked == locked) return;
+    await saveChat(chat.copyWith(isLocked: locked));
+  }
+
   Future<void> saveChat(ChatEntity chat) async {
     try {
-      final jsonData = chat.toJson();
+      // Preserve the stored avatar when the update doesn't carry one — most
+      // ChatEntity reconstructions (message/list refreshes) omit avatarUrl.
+      // The prefs store catches avatars that arrived before the chat did.
+      var chatToSave = chat;
+      if (chat.avatarUrl == null) {
+        final preserved =
+            getChat(chat.id)?.avatarUrl ?? getContactAvatarUrl(chat.id);
+        if (preserved != null) {
+          chatToSave = chat.copyWith(avatarUrl: preserved);
+        }
+      }
+      final jsonData = chatToSave.toJson();
       debugPrint('💾 Saving chat: ${chat.id} -> $jsonData');
       await _chatsBox.put(chat.id, jsonData);
 

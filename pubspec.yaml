@@ -81,6 +81,7 @@ dependencies:
 
   # Image Compression
   flutter_image_compress: ^2.3.0
+  image_cropper: 8.0.2
   cached_network_image: ^3.4.1
 
   # App Icon Badge
@@ -122,6 +123,12 @@ dev_dependencies:
   # rules and activating additional ones.
   flutter_lints: ^5.0.0
   flutter_launcher_icons: ^0.14.4
+
+dependency_overrides:
+  # image_cropper 8.0.2 accepts platform_interface ^7.0.0; 7.2.x requires
+  # Color.toARGB32 which only exists on Flutter 3.29+. Pin to the last
+  # compatible release for this project's Flutter 3.27 toolchain.
+  image_cropper_platform_interface: 7.1.0
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec

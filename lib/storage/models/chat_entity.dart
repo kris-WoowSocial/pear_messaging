@@ -44,6 +44,10 @@ class ChatEntity {
   /// send timestamp. Synced peer-to-peer via `disappear_timer_set`.
   final int disappearingAfterSeconds;
 
+  /// Locked chats are hidden from the main chat list behind biometric/PIN
+  /// auth (WhatsApp "Chat lock"). Local-only flag — never synced.
+  final bool isLocked;
+
   ChatEntity({
     required this.id,
     required this.userName,
@@ -61,6 +65,7 @@ class ChatEntity {
     this.avatarUrl,
     this.maxMembers,
     this.disappearingAfterSeconds = 0,
+    this.isLocked = false,
   })  : messages = messages ?? [],
         members = members ?? [],
         admins = admins ?? [];
@@ -85,6 +90,7 @@ class ChatEntity {
       'avatarUrl': avatarUrl,
       'maxMembers': maxMembers,
       'disappearingAfterSeconds': disappearingAfterSeconds,
+      'isLocked': isLocked,
     };
   }
 
@@ -118,6 +124,7 @@ class ChatEntity {
       avatarUrl: json['avatarUrl'] as String?,
       maxMembers: json['maxMembers'] as int?,
       disappearingAfterSeconds: json['disappearingAfterSeconds'] as int? ?? 0,
+      isLocked: json['isLocked'] as bool? ?? false,
     );
   }
 
@@ -140,6 +147,7 @@ class ChatEntity {
     String? avatarUrl,
     int? maxMembers,
     int? disappearingAfterSeconds,
+    bool? isLocked,
   }) {
     return ChatEntity(
       id: id ?? this.id,
@@ -161,6 +169,7 @@ class ChatEntity {
       maxMembers: maxMembers ?? this.maxMembers,
       disappearingAfterSeconds:
           disappearingAfterSeconds ?? this.disappearingAfterSeconds,
+      isLocked: isLocked ?? this.isLocked,
     );
   }
 }

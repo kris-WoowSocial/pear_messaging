@@ -13,6 +13,7 @@ import '../../storage/models/connection_request_entity.dart';
 import '../../storage/models/message_entity.dart';
 import '../../features/chat_list/chat_list_controller.dart';
 import 'api_service.dart';
+import 'user_profile_cache.dart';
 import 'invite_prompt_gate.dart';
 import 'local_storage_service.dart';
 import 'invitation_storage_service.dart';
@@ -276,6 +277,15 @@ class BranchService extends GetxService {
             '⚠️ Could not fetch linked influencer, falling back to plain share: $e');
       }
 
+      // Inviter avatar — drives both link previews ($og_image_url / imageUrl)
+      // and the recipient's instant contact-photo hydration (avatar_url).
+      final inviterAvatarUrl = Get.isRegistered<UserProfileCache>()
+          ? Get.find<UserProfileCache>().myAvatarUrl.value
+          : '';
+      final previewImageUrl = inviterAvatarUrl.isNotEmpty
+          ? inviterAvatarUrl
+          : NetworkConstants.branchIconUrl;
+
       // Create Branch Content Metadata with rich data
       final contentMetadata = BranchContentMetaData()
         ..addCustomMetadata('page', 'chat')
@@ -283,6 +293,11 @@ class BranchService extends GetxService {
         ..addCustomMetadata('user_name', friendlyName)
         ..addCustomMetadata('sender_device_id', deviceId)
         ..addCustomMetadata('chat_id', deviceId);
+      if (inviterAvatarUrl.isNotEmpty) {
+        contentMetadata.addCustomMetadata('avatar_url', inviterAvatarUrl);
+        contentMetadata.addCustomMetadata(
+            'inviter_avatar_url', inviterAvatarUrl);
+      }
       if (influencerCode != null && influencerCode.isNotEmpty) {
         contentMetadata.addCustomMetadata('referral_code', influencerCode);
       }
@@ -292,7 +307,7 @@ class BranchService extends GetxService {
         canonicalIdentifier: 'chat/$deviceId',
         title: 'Chat with $friendlyName on Vant Chat',
         contentDescription: 'Start a secure conversation with $friendlyName',
-        imageUrl: NetworkConstants.branchIconUrl,
+        imageUrl: previewImageUrl,
         contentMetadata: contentMetadata,
         publiclyIndex: false,
         locallyIndex: true,
@@ -312,7 +327,7 @@ class BranchService extends GetxService {
       lp.addControlParam('\$og_description', 'Start chatting on Vant Chat');
       lp.addControlParam(
         '\$og_image_url',
-        NetworkConstants.branchIconUrl,
+        previewImageUrl,
       );
 
       lp.addControlParam('\$deeplink_no_attribution', 'true');
@@ -359,6 +374,9 @@ class BranchService extends GetxService {
       lp.addControlParam('device_id', deviceId);
       lp.addControlParam('chat_device_id', deviceId);
       lp.addControlParam('user_name', friendlyName);
+      if (inviterAvatarUrl.isNotEmpty) {
+        lp.addControlParam('avatar_url', inviterAvatarUrl);
+      }
       if (influencerCode != null && influencerCode.isNotEmpty) {
         lp.addControlParam('referral_code', influencerCode);
       }
@@ -524,10 +542,17 @@ Experience total privacy with military-grade encryption and a direct, peer-to-pe
   /// Generate custom scheme link for direct app opening (fallback)
   String generateCustomSchemeLink(String deviceId) {
     final userName = _storageService.getDisplayName(deviceId);
+    final myAvatar = Get.isRegistered<UserProfileCache>()
+        ? Get.find<UserProfileCache>().myAvatarUrl.value
+        : '';
     return Uri(
       scheme: 'vantchat',
       host: 'chat',
-      queryParameters: {'device_id': deviceId, 'user_name': userName},
+      queryParameters: {
+        'device_id': deviceId,
+        'user_name': userName,
+        if (myAvatar.isNotEmpty) 'avatar_url': myAvatar,
+      },
     ).toString();
   }
 
@@ -619,6 +644,23 @@ Experience total privacy with military-grade encryption and a direct, peer-to-pe
       debugPrint(
         '🔗 Found device_id: $deviceId ${isColdStart ? "(cold start)" : "(warm start)"}',
       );
+
+      // Hydrate the inviter's avatar immediately — every surface renders it
+      // before the chat even opens.
+      final inviterAvatar = (data['avatar_url'] ??
+              data['inviter_avatar_url'] ??
+              (deepLinkCustomData is Map
+                  ? (deepLinkCustomData['avatar_url'] ??
+                      deepLinkCustomData['inviter_avatar_url'])
+                  : null))
+          ?.toString();
+      if (inviterAvatar != null &&
+          inviterAvatar.isNotEmpty &&
+          Get.isRegistered<UserProfileCache>()) {
+        unawaited(
+          Get.find<UserProfileCache>().setAvatar(deviceId, inviterAvatar),
+        );
+      }
 
       // Check for duplicate processing at listener level
       final now = DateTime.now();

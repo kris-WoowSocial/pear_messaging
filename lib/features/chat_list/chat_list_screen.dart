@@ -11,7 +11,11 @@ import '../../core/constants/app_colors.dart';
 import '../../core/constants/app_strings.dart';
 import '../../core/constants/app_sizes.dart';
 import '../../core/services/socket_service.dart';
+import '../../core/services/local_storage_service.dart';
+import '../../core/services/user_profile_cache.dart';
+import '../../core/services/profile_avatar_service.dart';
 import '../../core/services/call_history_service.dart';
+import '../../widgets/vant_avatar.dart';
 import '../call/call_controller.dart';
 import '../../core/utils/device_utils.dart';
 import '../../core/widgets/empty_state.dart';
@@ -27,6 +31,7 @@ class ChatListScreen extends GetView<ChatListController> {
   @override
   Widget build(BuildContext context) {
     final socketService = Get.find<SocketService>();
+    final storageService = Get.find<LocalStorageService>();
 
     return Scaffold(
       appBar: AppBar(
@@ -116,35 +121,33 @@ class ChatListScreen extends GetView<ChatListController> {
                   padding: const EdgeInsets.symmetric(horizontal: 16),
                   child: Row(
                     children: [
-                      // Avatar with green connection dot
+                      // Avatar with pencil edit badge (opens photo options)
+                      // + connection dot moved to top-right so they never clash
                       Obx(
                         () => Stack(
+                          clipBehavior: Clip.none,
                           children: [
-                            Container(
-                              width: 40,
-                              height: 40,
-                              decoration: BoxDecoration(
-                                color: AppColors.senderBubble,
-                                borderRadius: BorderRadius.circular(12),
-                              ),
-                              child: Center(
-                                child: Text(
-                                  controller.userDisplayName.isNotEmpty
-                                      ? controller.userDisplayName[0]
-                                          .toUpperCase()
-                                      : 'U',
-                                  style: const TextStyle(
-                                    color: AppColors.textPrimary,
-                                    fontSize: 18,
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                                ),
-                              ),
+                            VantAvatar(
+                              userId: storageService.deviceId,
+                              name: controller.userDisplayName,
+                              avatarUrl:
+                                  Get.isRegistered<UserProfileCache>()
+                                      ? Get.find<UserProfileCache>()
+                                          .myAvatarUrl
+                                          .value
+                                      : '',
+                              size: 40,
+                              showEditBadge: true,
+                              onTap: () => Get.isRegistered<
+                                      ProfileAvatarService>()
+                                  ? Get.find<ProfileAvatarService>()
+                                      .showAvatarOptions()
+                                  : null,
                             ),
                             // Green dot for socket connection
                             Positioned(
-                              bottom: 0,
-                              right: 0,
+                              top: -2,
+                              right: -2,
                               child: Obx(
                                 () => Container(
                                   width: 12,
@@ -287,7 +290,9 @@ class ChatListScreen extends GetView<ChatListController> {
               final hasChats = controller.filteredChats.isNotEmpty;
               final hasConnectionRequests =
                   controller.pendingConnectionRequests.isNotEmpty;
-              final hasItems = hasChats || hasConnectionRequests;
+              final showLockedRow = controller.hasLockedChats;
+              final hasItems =
+                  hasChats || hasConnectionRequests || showLockedRow;
 
               if (!hasItems) {
                 return EmptyState(
@@ -312,9 +317,17 @@ class ChatListScreen extends GetView<ChatListController> {
               );
 
               return ListView.builder(
-                itemCount: controller.pendingConnectionRequests.length +
+                itemCount: (showLockedRow ? 1 : 0) +
+                    controller.pendingConnectionRequests.length +
                     controller.filteredChats.length,
                 itemBuilder: (context, index) {
+                  // "Locked chats" entry row pinned above everything else
+                  if (showLockedRow) {
+                    if (index == 0) {
+                      return _buildLockedChatsRow();
+                    }
+                    index -= 1;
+                  }
                   // First show connection requests, then chats
                   if (index < controller.pendingConnectionRequests.length) {
                     // Show connection request item
@@ -353,6 +366,63 @@ class ChatListScreen extends GetView<ChatListController> {
           ),
         ],
       ),
+    );
+  }
+
+  /// "Locked chats" row pinned at the top of the list — biometric gate
+  /// into LockedChatsScreen. Rendered only when at least one chat is locked.
+  Widget _buildLockedChatsRow() {
+    return Column(
+      children: [
+        InkWell(
+          onTap: controller.openLockedChats,
+          child: Container(
+            height: AppSizes.chatItemHeight,
+            padding: const EdgeInsets.symmetric(
+              horizontal: AppSizes.paddingM,
+              vertical: AppSizes.paddingS,
+            ),
+            child: Row(
+              children: [
+                Container(
+                  width: AppSizes.avatarSize,
+                  height: AppSizes.avatarSize,
+                  decoration: const BoxDecoration(
+                    color: AppColors.senderBubble,
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(
+                    Icons.lock,
+                    color: AppColors.textPrimary,
+                    size: AppSizes.fontXL,
+                  ),
+                ),
+                const SizedBox(width: AppSizes.paddingM),
+                const Expanded(
+                  child: Text(
+                    'Locked chats',
+                    style: TextStyle(
+                      fontSize: AppSizes.fontL,
+                      fontWeight: FontWeight.w600,
+                      color: AppColors.textPrimary,
+                    ),
+                  ),
+                ),
+                const Icon(
+                  Icons.chevron_right,
+                  color: AppColors.textPrimary,
+                ),
+              ],
+            ),
+          ),
+        ),
+        const Divider(
+          height: 1,
+          indent:
+              AppSizes.paddingM + AppSizes.avatarSize + AppSizes.paddingM,
+          color: AppColors.divider,
+        ),
+      ],
     );
   }
 

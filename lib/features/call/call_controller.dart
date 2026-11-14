@@ -5641,7 +5641,7 @@ class CallController extends GetxController {
       }),
     );
     remoteAvatarUrl.value =
-        data['avatarUrl'] as String? ?? data['avatar_url'] as String? ?? '';
+        data['callerAvatarUrl'] as String? ?? data['avatarUrl'] as String? ?? data['avatar_url'] as String? ?? '';
 
     // Mark this callId as handled so FCMService dedup guard skips it if FCM
     // arrives shortly after (server sends both socket + FCM in parallel)
@@ -5900,7 +5900,7 @@ class CallController extends GetxController {
       currentCallId.value = callId;
       remoteDeviceId.value = callerId;
       remoteAvatarUrl.value =
-          data['avatarUrl'] as String? ?? data['avatar_url'] as String? ?? '';
+          data['callerAvatarUrl'] as String? ?? data['avatarUrl'] as String? ?? data['avatar_url'] as String? ?? '';
       isCaller.value = false;
       _latestIncomingCallData = null;
       _videoRequested = incomingVideo;

@@ -3,6 +3,7 @@ import 'package:get/get.dart';
 import '../../core/constants/app_colors.dart';
 import '../../core/constants/app_sizes.dart';
 import '../../core/utils/string_utils.dart';
+import '../../widgets/vant_avatar.dart';
 import '../../storage/models/call_history_entry.dart';
 import '../call/call_controller.dart';
 import 'call_history_controller.dart';
@@ -169,7 +170,7 @@ class CallHistoryScreen extends GetView<CallHistoryController> {
     final displayName = contact?.userName.isNotEmpty == true
         ? contact!.userName
         : StringUtils.generateFriendlyName(entry.remoteDeviceId);
-    final avatarUrl = "";
+    final avatarUrl = entry.remoteAvatarUrl ?? '';
 
     final isMissed = entry.status == CallStatus.missed ||
         entry.status == CallStatus.declined;
@@ -236,7 +237,8 @@ class CallHistoryScreen extends GetView<CallHistoryController> {
                   ),
                   child: Row(
                     children: [
-                      _buildAvatar(displayName, avatarUrl, isMissed),
+                      _buildAvatar(entry.remoteDeviceId, displayName,
+                          avatarUrl, isMissed),
                       const SizedBox(width: AppSizes.paddingM),
                       Expanded(
                         child: Column(
@@ -309,30 +311,16 @@ class CallHistoryScreen extends GetView<CallHistoryController> {
     );
   }
 
-  Widget _buildAvatar(String name, String? avatarUrl, bool isMissed) {
-    final initial = name.isNotEmpty ? name[0].toUpperCase() : '?';
-
+  Widget _buildAvatar(
+      String remoteDeviceId, String name, String? avatarUrl, bool isMissed) {
     return Stack(
       children: [
-        Container(
-          width: AppSizes.avatarSize,
-          height: AppSizes.avatarSize,
-          decoration: BoxDecoration(
-            color: isMissed
-                ? AppColors.error.withOpacity(0.1)
-                : AppColors.senderBubble,
-            shape: BoxShape.circle,
-          ),
-          child: Center(
-            child: Text(
-              initial,
-              style: TextStyle(
-                fontSize: AppSizes.fontXL,
-                fontWeight: FontWeight.bold,
-                color: isMissed ? AppColors.error : AppColors.textPrimary,
-              ),
-            ),
-          ),
+        VantAvatar(
+          userId: remoteDeviceId.isNotEmpty ? remoteDeviceId : null,
+          name: name,
+          avatarUrl: avatarUrl,
+          size: AppSizes.avatarSize,
+          borderRadius: AppSizes.avatarSize / 2,
         ),
         if (isMissed)
           Positioned(

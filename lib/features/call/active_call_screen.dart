@@ -1,8 +1,8 @@
-import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:get/get.dart';
 import 'call_controller.dart';
+import '../../widgets/vant_avatar.dart';
 import 'call_encryption_indicator.dart';
 
 /// Active Call Screen - Full-screen overlay for connected audio calls
@@ -272,10 +272,8 @@ class _ActiveCallScreenState extends State<ActiveCallScreen> {
   }
 
   Widget _buildAvatar(CallController controller) {
-    return Obx(() {
-      final avatarUrl = controller.remoteAvatarUrl.value.trim();
-      final hasAvatar = avatarUrl.isNotEmpty;
-      return Container(
+    return Obx(
+      () => Container(
         width: 120,
         height: 120,
         decoration: BoxDecoration(
@@ -287,27 +285,18 @@ class _ActiveCallScreenState extends State<ActiveCallScreen> {
           ),
         ),
         child: ClipOval(
-          child: hasAvatar
-              ? CachedNetworkImage(
-                  imageUrl: avatarUrl,
-                  fit: BoxFit.cover,
-                  placeholder: (context, url) => const Center(
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  ),
-                  errorWidget: (context, url, error) => const Icon(
-                    Icons.person,
-                    size: 58,
-                    color: Colors.white,
-                  ),
-                )
-              : const Icon(
-                  Icons.person,
-                  size: 58,
-                  color: Colors.white,
-                ),
+          child: VantAvatar(
+            userId: controller.remoteDeviceId.value.isNotEmpty
+                ? controller.remoteDeviceId.value
+                : null,
+            name: controller.remoteDisplayName.value,
+            avatarUrl: controller.remoteAvatarUrl.value.trim(),
+            size: 120,
+            borderRadius: 60,
+          ),
         ),
-      );
-    });
+      ),
+    );
   }
 
   Widget _buildControlButton({

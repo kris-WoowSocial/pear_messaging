@@ -6,6 +6,7 @@ import 'package:pear_messaging/core/services/feature_flag_service.dart';
 import 'package:pear_messaging/core/services/notification_service.dart';
 import 'package:pear_messaging/core/services/socket_service.dart';
 import 'call_controller.dart';
+import '../../widgets/vant_avatar.dart';
 import 'call_encryption_indicator.dart';
 import '../../core/services/ringtone_service.dart';
 import '../../core/services/callkit_service.dart';
@@ -138,10 +139,20 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
                                   width: 2,
                                 ),
                               ),
-                              child: const Icon(
-                                Icons.person,
-                                size: 60,
-                                color: Colors.white,
+                              child: ClipOval(
+                                child: Obx(
+                                  () => VantAvatar(
+                                    userId: callerId.isNotEmpty
+                                        ? callerId
+                                        : null,
+                                    name:
+                                        controller.remoteDisplayName.value,
+                                    avatarUrl: controller
+                                        .remoteAvatarUrl.value,
+                                    size: 120,
+                                    borderRadius: 60,
+                                  ),
+                                ),
                               ),
                             ),
                           );

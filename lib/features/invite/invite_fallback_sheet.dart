@@ -61,6 +61,7 @@ class InviteFallbackSheet {
                 await Get.find<ChatListController>().initializeChatFromQR(
                   parsed.deviceId!,
                   userName: parsed.userName,
+                  avatarUrl: parsed.avatarUrl,
                 );
               }
             } catch (e) {

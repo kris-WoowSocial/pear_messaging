@@ -10,6 +10,7 @@ import 'active_call_screen.dart';
 import 'call_controller.dart';
 import 'call_encryption_indicator.dart';
 import 'call_video_view.dart';
+import '../../widgets/vant_avatar.dart';
 
 class VideoCallScreen extends StatefulWidget {
   const VideoCallScreen({super.key});
@@ -267,7 +268,17 @@ class _VideoCallScreenState extends State<VideoCallScreen>
                 shape: BoxShape.circle,
                 color: Colors.white.withValues(alpha: 0.08),
               ),
-              child: const Icon(Icons.person, size: 56, color: Colors.white54),
+              child: ClipOval(
+                child: VantAvatar(
+                  userId: _controller.remoteDeviceId.value.isNotEmpty
+                      ? _controller.remoteDeviceId.value
+                      : null,
+                  name: _controller.remoteDisplayLabel,
+                  avatarUrl: _controller.remoteAvatarUrl.value,
+                  size: 104,
+                  borderRadius: 52,
+                ),
+              ),
             ),
             const SizedBox(height: 16),
             Text(

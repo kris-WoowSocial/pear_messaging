@@ -75,6 +75,7 @@ class SocketService extends GetxService {
   Function(Map<String, dynamic>)? onMessageReaction;
   Function(Map<String, dynamic>)? onDisappearTimerSet;
   Function(Map<String, dynamic>)? onViewOnceOpened;
+  Function(Map<String, dynamic>)? onProfileUpdated;
 
   // Callbacks for group chat events
   Function(Map<String, dynamic>)? onGroupMessageReceived;
@@ -697,6 +698,14 @@ class SocketService extends GetxService {
       debugPrint('👁️ View-once opened: $data');
       if (onViewOnceOpened != null && data != null) {
         onViewOnceOpened!(Map<String, dynamic>.from(data));
+      }
+    });
+
+    // Profile: a contact changed their avatar or display name
+    _socket?.on('profile_updated', (data) {
+      debugPrint('🖼️ Profile updated: $data');
+      if (onProfileUpdated != null && data != null) {
+        onProfileUpdated!(Map<String, dynamic>.from(data));
       }
     });
 
