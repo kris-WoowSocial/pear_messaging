@@ -436,6 +436,23 @@ extension IosCallPipManager: AVPictureInPictureControllerDelegate,
 
   func pictureInPictureController(
     _ pictureInPictureController: AVPictureInPictureController,
+    didTransitionToRenderSize newRenderSize: CMVideoDimensions
+  ) {
+    // PiP window resized; the display layer scales the samples itself.
+    NSLog("VantPip: render size %dx%d", newRenderSize.width, newRenderSize.height)
+  }
+
+  func pictureInPictureController(
+    _ pictureInPictureController: AVPictureInPictureController,
+    skipByInterval skipInterval: CMTime,
+    completion completionHandler: @escaping () -> Void
+  ) {
+    // Live calls are not seekable — acknowledge without skipping.
+    completionHandler()
+  }
+
+  func pictureInPictureController(
+    _ pictureInPictureController: AVPictureInPictureController,
     setPlaying playing: Bool
   ) {
     // A live call has no pause affordance — remote frames keep streaming.
