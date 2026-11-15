@@ -7,6 +7,8 @@ import '../../core/utils/string_utils.dart';
 import '../../core/services/feature_flag_service.dart';
 import '../../core/services/identity_announcement_service.dart';
 import '../../core/services/local_storage_service.dart';
+import '../../core/services/user_profile_cache.dart';
+import '../../widgets/vant_avatar.dart';
 import 'chat_controller.dart';
 import 'verify_contact_screen.dart';
 
@@ -113,18 +115,41 @@ class ChatSettingsScreen extends GetView<ChatController> {
       padding: const EdgeInsets.symmetric(vertical: 24),
       child: Column(
         children: [
-          // Profile Avatar
-          Container(
-            width: 100,
-            height: 100,
-            decoration: BoxDecoration(
-              color: AppColors.primary.withValues(alpha: 0.1),
-              shape: BoxShape.circle,
-            ),
-            child: Icon(
-              Icons.person,
-              size: 50,
-              color: AppColors.primary,
+          // Profile Avatar — full-size view on tap
+          GestureDetector(
+            onTap: () {
+              final url = Get.isRegistered<UserProfileCache>()
+                  ? Get.find<UserProfileCache>()
+                      .avatarFor(controller.recipientDeviceId)
+                  : '';
+              if (url.isEmpty) return;
+              Get.dialog(
+                Dialog(
+                  backgroundColor: Colors.black,
+                  insetPadding: EdgeInsets.zero,
+                  child: GestureDetector(
+                    onTap: Get.back,
+                    child: InteractiveViewer(
+                      child: Center(
+                        child: Image.network(url, fit: BoxFit.contain),
+                      ),
+                    ),
+                  ),
+                ),
+              );
+            },
+            child: ClipOval(
+              child: Obx(
+                () => VantAvatar(
+                  userId: controller.recipientDeviceId.isNotEmpty
+                      ? controller.recipientDeviceId
+                      : null,
+                  name: controller.displayName.value,
+                  avatarUrl: controller.peerAvatarUrl,
+                  size: 100,
+                  borderRadius: 50,
+                ),
+              ),
             ),
           ),
           const SizedBox(height: 16),
@@ -243,7 +268,24 @@ class ChatSettingsScreen extends GetView<ChatController> {
           //   },
           // ),
           // const Divider(height: 1, indent: 56),
-          if (!controller.isGroup) ...[
+          Obx(
+            () => _buildSettingsTile(
+              icon: controller.isChatLocked.value
+                  ? Icons.lock_open_outlined
+                  : Icons.lock_outline,
+              title: 'Chat lock',
+              subtitle: controller.isChatLocked.value
+                  ? 'Hidden in Locked chats — unlock to restore'
+                  : 'Hide this chat behind device authentication',
+              iconColor: controller.isChatLocked.value
+                  ? AppColors.info
+                  : AppColors.messageText,
+              onTap: controller.toggleChatLock,
+            ),
+          ),
+          const Divider(height: 1, indent: 56),
+          if (!controller.isGroup ||
+              controller.canChangeDisappearingTimer) ...[
             Obx(
               () => _buildSettingsTile(
                 icon: Icons.timer_outlined,

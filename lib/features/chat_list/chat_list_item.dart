@@ -3,6 +3,7 @@ import '../../core/constants/app_colors.dart';
 import '../../core/constants/app_sizes.dart';
 import '../../core/utils/string_utils.dart';
 import '../../core/utils/time_utils.dart';
+import '../../widgets/vant_avatar.dart';
 import 'chat_list_model.dart';
 
 class ChatListItem extends StatelessWidget {
@@ -57,27 +58,16 @@ class ChatListItem extends StatelessWidget {
         ),
         child: Row(
           children: [
-            // Avatar
-            Container(
-              width: AppSizes.avatarSize,
-              height: AppSizes.avatarSize,
-              decoration: BoxDecoration(
-                color: AppColors.senderBubble,
-                shape: BoxShape.circle,
-              ),
-              child: Center(
-                child: Text(
-                  chat.userName.isNotEmpty
-                      ? chat.userName[0].toUpperCase()
-                      : StringUtils.generateFriendlyName(chat.id)[0]
-                          .toUpperCase(),
-                  style: const TextStyle(
-                    color: AppColors.textPrimary,
-                    fontSize: AppSizes.fontXL,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-              ),
+            // Avatar (reactive — updates live on profile_updated)
+            VantAvatar(
+              userId: chat.isGroup ? null : chat.id,
+              name: chat.userName.isNotEmpty
+                  ? chat.userName
+                  : StringUtils.generateFriendlyName(chat.id),
+              avatarUrl: chat.avatarUrl,
+              size: AppSizes.avatarSize,
+              isGroup: chat.isGroup,
+              borderRadius: AppSizes.avatarSize / 2,
             ),
             const SizedBox(width: AppSizes.paddingM),
 

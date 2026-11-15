@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
-import '../../core/constants/app_colors.dart';
 import '../../core/services/connection_request_service.dart';
 import '../../storage/models/connection_request_entity.dart';
 import '../../storage/models/message_entity.dart';
+import '../../widgets/vant_avatar.dart';
 
 class ConnectionRequestItem extends StatefulWidget {
   final ConnectionRequestEntity request;
@@ -59,18 +59,13 @@ class _ConnectionRequestItemState extends State<ConnectionRequestItem> {
         contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
         // Remove onTap to prevent navigation to chat screen
         // Users should only interact via Accept/Reject buttons
-        leading: Container(
-          width: 50,
-          height: 50,
-          decoration: BoxDecoration(
-            color: Colors.blue.shade100,
-            shape: BoxShape.circle,
-          ),
-          child: const Icon(
-            Icons.person_add,
-            color: AppColors.primary,
-            size: 24,
-          ),
+        leading: VantAvatar(
+          userId: widget.request.senderDeviceId.isNotEmpty
+              ? widget.request.senderDeviceId
+              : null,
+          name: senderName,
+          size: 50,
+          borderRadius: 25,
         ),
         title: Row(
           children: [

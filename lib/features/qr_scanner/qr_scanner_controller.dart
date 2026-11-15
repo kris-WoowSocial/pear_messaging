@@ -49,6 +49,7 @@ class QRScannerController extends GetxController {
       final base64Result = await QRService.validateQRDataEx(qrData);
       String? deviceId = base64Result?.deviceId;
       String? userName = base64Result?.userName;
+      String? avatarUrl;
 
       // 2. Fall back to URL format: https://vant.chat/chat?device_id=XXXX
       //    (and the Branch quick-link QR: ...app.link/?device_id=X&user_name=Y)
@@ -56,6 +57,7 @@ class QRScannerController extends GetxController {
         final urlParts = _extractDeviceIdFromUrl(qrData);
         deviceId = urlParts?.$1;
         userName ??= urlParts?.$2;
+        avatarUrl = urlParts?.$3;
       }
 
       if (deviceId != null) {
@@ -64,6 +66,7 @@ class QRScannerController extends GetxController {
         await chatListController.initializeChatFromQR(
           deviceId,
           userName: userName,
+          avatarUrl: avatarUrl,
         );
         // Navigation is handled in initializeChatFromQR
       } else {
@@ -79,14 +82,18 @@ class QRScannerController extends GetxController {
   /// Extract device_id (and user_name when present) from an invitation URL.
   /// Handles https://vant.chat/chat?device_id=XXXX, the Branch quick-link
   /// (vantchatting.app.link/?device_id=X&user_name=Y), and any URL carrying
-  /// a device_id query param.
-  (String, String?)? _extractDeviceIdFromUrl(String qrData) {
+  /// a device_id query param. Returns (deviceId, userName, avatarUrl).
+  (String, String?, String?)? _extractDeviceIdFromUrl(String qrData) {
     try {
       final uri = Uri.tryParse(qrData);
       if (uri == null) return null;
       final deviceId = uri.queryParameters['device_id'];
       if (deviceId != null && deviceId.isNotEmpty) {
-        return (deviceId, uri.queryParameters['user_name']);
+        return (
+          deviceId,
+          uri.queryParameters['user_name'],
+          uri.queryParameters['avatar_url'],
+        );
       }
     } catch (_) {}
     return null;

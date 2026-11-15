@@ -1,7 +1,10 @@
+import 'dart:async';
+
 import 'package:get/get.dart';
 
 import '../utils/string_utils.dart';
 import 'local_storage_service.dart';
+import 'user_profile_cache.dart';
 import 'username_service.dart';
 
 /// Single place that derives a human display name for a peer device id.
@@ -94,6 +97,15 @@ class CallerNameResolver {
   static Future<String?> _defaultServerNameLookup(String deviceId) async {
     try {
       final data = await UsernameService.getUsername(deviceId);
+      // Opportunistically hydrate the avatar cache — the profile payload
+      // carries avatarUrl/avatarUpdatedAt alongside the username.
+      if (data != null && Get.isRegistered<UserProfileCache>()) {
+        unawaited(Get.find<UserProfileCache>().applyProfileUpdate({
+          'deviceId': deviceId,
+          'avatarUrl': data.avatarUrl ?? '',
+          'avatarUpdatedAt': data.avatarUpdatedAt,
+        }));
+      }
       return data?.username;
     } catch (_) {
       return null;

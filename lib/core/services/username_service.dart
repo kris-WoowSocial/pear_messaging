@@ -61,6 +61,8 @@ class UsernameService {
           deviceId: responseData['deviceId'],
           username: responseData['username'],
           updatedAt: responseData['updatedAt'],
+          avatarUrl: responseData['avatarUrl'],
+          avatarUpdatedAt: responseData['avatarUpdatedAt'],
         );
       } else if (response.statusCode == 404) {
         // Username not found - return null
@@ -104,6 +106,8 @@ class UsernameService {
             deviceId: deviceId,
             username: userData['username'],
             updatedAt: userData['updatedAt'],
+            avatarUrl: userData['avatarUrl'],
+            avatarUpdatedAt: userData['avatarUpdatedAt'],
           );
         });
 
@@ -164,11 +168,15 @@ class UsernameData {
   final String deviceId;
   final String username;
   final String updatedAt;
+  final String? avatarUrl;
+  final int? avatarUpdatedAt;
 
   UsernameData({
     required this.deviceId,
     required this.username,
     required this.updatedAt,
+    this.avatarUrl,
+    this.avatarUpdatedAt,
   });
 
   @override

@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:get/get.dart';
 import 'local_storage_service.dart';
 import 'caller_name_resolver.dart';
+import 'user_profile_cache.dart';
 import '../../routes/app_routes.dart';
 import '../../storage/models/connection_request_entity.dart';
 import '../../storage/models/message_entity.dart';
@@ -53,7 +54,11 @@ class DeepLinkService extends GetxService {
       final deviceId = uri.queryParameters['device_id'];
 
       if (deviceId != null && deviceId.isNotEmpty) {
-        _openChat(deviceId, userName: uri.queryParameters['user_name']);
+        _openChat(
+          deviceId,
+          userName: uri.queryParameters['user_name'],
+          avatarUrl: uri.queryParameters['avatar_url'],
+        );
       } else {
         debugPrint('⚠️ No device_id found in deep link');
       }
@@ -61,8 +66,16 @@ class DeepLinkService extends GetxService {
   }
 
   /// Open chat with device ID
-  void _openChat(String deviceId, {String? userName}) async {
+  void _openChat(String deviceId, {String? userName, String? avatarUrl}) async {
     debugPrint('📱 Opening chat with device: $deviceId');
+
+    // Persist the inviter's avatar so the chat/contact shows it immediately.
+    if (avatarUrl != null &&
+        avatarUrl.isNotEmpty &&
+        Get.isRegistered<UserProfileCache>()) {
+      unawaited(
+          Get.find<UserProfileCache>().setAvatar(deviceId, avatarUrl));
+    }
 
     // Check if chat exists
     final existingChat = _storageService.getChat(deviceId);

@@ -156,6 +156,35 @@ class ApiService extends GetxService {
     }
   }
 
+  // ── Profile / Avatar ────────────────────────────────────────────────────────
+
+  /// Upload a base64 avatar (pre-cropped 1:1 JPEG/WebP, <=5MB).
+  /// Returns { avatarUrl, avatarUpdatedAt }.
+  Future<Map<String, dynamic>> uploadAvatar(
+      String deviceId, String base64Image) async {
+    // Avatars are ~100KB after compression, but allow headroom on slow links.
+    final res = await http
+        .post(_uri('/api/profile/avatar'),
+            headers: _headers,
+            body: jsonEncode({'deviceId': deviceId, 'image': base64Image}))
+        .timeout(const Duration(seconds: 30));
+    return _decode(res, 'uploadAvatar');
+  }
+
+  /// Remove the current avatar. Returns { success: true }.
+  Future<Map<String, dynamic>> removeAvatar(String deviceId) async {
+    final res =
+        await _delete('/api/profile/avatar', body: {'deviceId': deviceId});
+    return _decode(res, 'removeAvatar');
+  }
+
+  /// Full profile for a device ({ deviceId, userName, avatarUrl, avatarUpdatedAt }).
+  Future<Map<String, dynamic>?> getProfile(String deviceId) async {
+    final res = await _get('/api/profile/$deviceId');
+    if (res.statusCode == 404) return null;
+    return _decode(res, 'getProfile');
+  }
+
   Future<Map<String, dynamic>> syncContactName({
     required String ownerDeviceId,
     required String contactDeviceId,

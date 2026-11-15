@@ -49,6 +49,8 @@ import 'core/services/identity_service.dart';
 import 'core/services/identity_announcement_service.dart';
 import 'core/services/identity_verification_service.dart';
 import 'core/services/feature_flag_service.dart';
+import 'core/services/user_profile_cache.dart';
+import 'core/services/profile_avatar_service.dart';
 import 'core/utils/device_utils.dart';
 import 'features/call/call_controller.dart';
 
@@ -289,6 +291,16 @@ Future<void> initializeCriticalServices() async {
     debugPrint('❌ UsernameSyncService initialization failed: $e');
     debugPrint('⚠️ App will continue without username sync');
     Get.put(UsernameSyncService());
+  }
+
+  // Profile avatar cache + picker/upload service — needs storage, ApiService
+  // and SocketService so profile_updated events land in the reactive map.
+  try {
+    await Get.putAsync(() => UserProfileCache().init());
+    Get.put(ProfileAvatarService());
+    debugPrint('✅ UserProfileCache + ProfileAvatarService initialized');
+  } catch (e) {
+    debugPrint('❌ Profile services init failed: $e');
   }
 
   // Initialize call history service - must be ready before UI renders

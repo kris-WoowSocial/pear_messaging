@@ -11,15 +11,17 @@
 library;
 
 class ParsedInvite {
-  const ParsedInvite.deviceId(this.deviceId, {this.userName})
+  const ParsedInvite.deviceId(this.deviceId, {this.userName, this.avatarUrl})
       : isBranchLink = false;
   const ParsedInvite.branchLink(this.deviceId)
       : userName = null,
+        avatarUrl = null,
         isBranchLink = true;
 
   /// For [isBranchLink] this holds the pasted URL instead of a device id.
   final String? deviceId;
   final String? userName;
+  final String? avatarUrl;
   final bool isBranchLink;
 
   String? get branchUrl => isBranchLink ? deviceId : null;
@@ -38,9 +40,11 @@ ParsedInvite? parseInviteLink(String input) {
       uri.queryParameters['chat_device_id']?.trim();
   if (deviceId != null && deviceId.isNotEmpty) {
     final userName = uri.queryParameters['user_name']?.trim();
+    final avatarUrl = uri.queryParameters['avatar_url']?.trim();
     return ParsedInvite.deviceId(
       deviceId,
       userName: (userName == null || userName.isEmpty) ? null : userName,
+      avatarUrl: (avatarUrl == null || avatarUrl.isEmpty) ? null : avatarUrl,
     );
   }
 
