@@ -1953,6 +1953,13 @@ class CallController extends GetxController {
         Get.offNamed('/call/video');
       }
     }
+    // Remote video m-line just came up (upgrade answer / track unmute) —
+    // re-attach the renderer to the live remote stream so EglRenderer
+    // binds the active track instead of holding a black surface.
+    if (videoOn && remoteVideoStream.value != null) {
+      unawaited(ensureVideoRenderers());
+      rebindVideoStreams();
+    }
   }
 
   /// Setup proximity sensor using actual hardware proximity sensor
@@ -3709,7 +3716,12 @@ class CallController extends GetxController {
   }
 
   /// Enable or disable the local video track without renegotiation.
-  Future<void> setCameraEnabled(bool enabled) async {
+  /// [skipRenegotiation] is for the video-upgrade RESPONDER only — the
+  /// initiator owns the single re-offer; see the consent handshake below.
+  Future<void> setCameraEnabled(
+    bool enabled, {
+    bool skipRenegotiation = false,
+  }) async {
     _webrtcService.videoUpgradeEnabled = _videoUpgradeEnabled;
     if (enabled && !_webrtcService.isVideoCall && _videoUpgradeEnabled) {
       // Audio call → camera on: upgrade path (replaceTrack + renegotiation).
@@ -3718,7 +3730,9 @@ class CallController extends GetxController {
       bool upgraded;
       _videoUpgradeInFlight = true;
       try {
-        upgraded = await _webrtcService.upgradeToVideo();
+        upgraded = await _webrtcService.upgradeToVideo(
+          skipRenegotiation: skipRenegotiation,
+        );
       } finally {
         _videoUpgradeInFlight = false;
       }
@@ -3726,6 +3740,11 @@ class CallController extends GetxController {
       if (upgraded) {
         _videoRequested = true;
         isVideoCall.value = true;
+        // Force the renderers onto the live tracks — the remote video
+        // m-line just renegotiated and the local camera just attached, so
+        // a stale srcObject is the classic black-remote-video symptom.
+        unawaited(ensureVideoRenderers());
+        rebindVideoStreams();
         _stopProximitySensor();
         unawaited(_refreshAndroidOngoingCallNotification());
         if (Get.currentRoute == '/call/active') {
@@ -3812,7 +3831,7 @@ class CallController extends GetxController {
       _videoUpgradeTimeoutTimer = null;
       isVideoUpgradePending.value = false;
       hasIncomingVideoUpgradeRequest.value = true;
-      respondToVideoUpgrade(true);
+      respondToVideoUpgrade(true, isGlare: true);
       return;
     }
     hasIncomingVideoUpgradeRequest.value = true;
@@ -3821,7 +3840,14 @@ class CallController extends GetxController {
 
   /// Step 3 (receiver side): accept or decline the incoming request.
   /// Also invoked from the simultaneous-request glare path.
-  Future<void> respondToVideoUpgrade(bool accepted) async {
+  ///
+  /// Renegotiation ownership: the upgrade INITIATOR sends the single
+  /// re-offer — the responder never does (`skipRenegotiation`), which
+  /// removes the simultaneous-offer SDP glare that left both remote views
+  /// black. In the double-tap glare case BOTH devices are initiators, so
+  /// ownership falls to the call-role tie-break: the original call caller
+  /// offers, the callee skips.
+  Future<void> respondToVideoUpgrade(bool accepted, {bool isGlare = false}) async {
     if (!hasIncomingVideoUpgradeRequest.value) return;
     hasIncomingVideoUpgradeRequest.value = false;
     _socketService.sendVideoUpgradeResponse(
@@ -3831,7 +3857,10 @@ class CallController extends GetxController {
     );
     if (accepted) {
       unawaited(
-        setCameraEnabled(true).then((_) => _enterVideoSurface()),
+        setCameraEnabled(
+          true,
+          skipRenegotiation: !isGlare || !isCaller.value,
+        ).then((_) => _enterVideoSurface()),
       );
     }
   }

@@ -379,30 +379,33 @@ class _VideoCallScreenState extends State<VideoCallScreen>
                 ),
               ),
               // Hide self-view — collapse button in the tile's corner.
-              Positioned(
-                top: 4,
-                right: 4,
-                child: GestureDetector(
-                  behavior: HitTestBehavior.opaque,
-                  onTap: () {
-                    HapticFeedback.lightImpact();
-                    _controller.isSelfViewHidden.value = true;
-                  },
-                  child: Container(
-                    width: 26,
-                    height: 26,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: Colors.black.withValues(alpha: 0.55),
-                    ),
-                    child: const Icon(
-                      Icons.visibility_off_outlined,
-                      size: 15,
-                      color: Colors.white70,
+              // Shown only while controls are visible: drawn permanently it
+              // reads as a crossed-out camera badge over the live preview.
+              if (_controlsVisible)
+                Positioned(
+                  top: 4,
+                  right: 4,
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTap: () {
+                      HapticFeedback.lightImpact();
+                      _controller.isSelfViewHidden.value = true;
+                    },
+                    child: Container(
+                      width: 26,
+                      height: 26,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: Colors.black.withValues(alpha: 0.55),
+                      ),
+                      child: const Icon(
+                        Icons.visibility_off_outlined,
+                        size: 15,
+                        color: Colors.white70,
+                      ),
                     ),
                   ),
                 ),
-              ),
             ],
           ),
         ),
