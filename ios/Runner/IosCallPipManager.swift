@@ -426,22 +426,13 @@ extension IosCallPipManager: AVPictureInPictureControllerDelegate,
     // Accept any system-proposed PiP size; the sample layer scales itself.
   }
 
-  // iOS 26 SDK only: AVPictureInPictureSampleBufferTransitionCoordinating
-  // doesn't exist in earlier SDKs. It's an optional delegate method — the
-  // CGSize-only variant above covers older toolchains. Gated on the Swift
-  // compiler version (Xcode 26 ships Swift 6.2) since Swift can't test
-  // SDK availability for a single type.
-#if compiler(>=6.2)
-  func pictureInPictureController(
-    _ pictureInPictureController: AVPictureInPictureController,
-    shouldTransitionTo newSize: CGSize,
-    with coordinator: AVPictureInPictureSampleBufferTransitionCoordinating
-  ) {
-    if let view = hostView {
-      coordinator.contributeTransition(to: newSize, using: view)
-    }
-  }
-#endif
+  // AVPictureInPictureSampleBufferTransitionCoordinating (the
+  // coordinator variant of shouldTransitionTo:) only exists in the
+  // newest iOS 26.x SDKs and can't be gated reliably — Swift has no
+  // per-type SDK check and compiler versions don't map to SDK point
+  // releases. It's an optional method, so the CGSize-only variant above
+  // covers every toolchain; skipping it just lets the system render the
+  // size transition itself. Re-add once CI guarantees Xcode 26.4+.
 
   func pictureInPictureController(
     _ pictureInPictureController: AVPictureInPictureController,
