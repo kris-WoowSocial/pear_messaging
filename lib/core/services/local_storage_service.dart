@@ -251,6 +251,53 @@ class LocalStorageService extends GetxService {
     return map;
   }
 
+  /// Local-file avatar cache — `avatar_file_<id>` is the on-disk path the
+  /// image was downloaded to, `avatar_file_url_<id>` the remote URL it was
+  /// fetched from. Because avatar URLs are immutable (new URL on every
+  /// change), a matching stored URL means the file is still correct and no
+  /// re-download is ever needed.
+  String? getContactAvatarFile(String deviceId) {
+    return _prefs.getString('avatar_file_$deviceId');
+  }
+
+  String? getContactAvatarFileUrl(String deviceId) {
+    return _prefs.getString('avatar_file_url_$deviceId');
+  }
+
+  Future<void> setContactAvatarFile(
+    String deviceId,
+    String? path,
+    String? url,
+  ) async {
+    if (path == null || path.isEmpty) {
+      await _prefs.remove('avatar_file_$deviceId');
+      await _prefs.remove('avatar_file_url_$deviceId');
+    } else {
+      await _prefs.setString('avatar_file_$deviceId', path);
+      await _prefs.setString('avatar_file_url_$deviceId', url ?? '');
+    }
+  }
+
+  /// All persisted avatar file entries (deviceId -> (path, url)), for
+  /// cache hydration at startup.
+  Map<String, ({String path, String url})> getAllContactAvatarFiles() {
+    final map = <String, ({String path, String url})>{};
+    for (final key in _prefs.getKeys()) {
+      // NB: 'avatar_file_url_' also starts with 'avatar_file_' — check it
+      // first or it would be misread as a deviceId containing 'url_'.
+      if (key.startsWith('avatar_file_url_')) continue;
+      if (key.startsWith('avatar_file_')) {
+        final deviceId = key.substring('avatar_file_'.length);
+        final path = _prefs.getString(key);
+        final url = _prefs.getString('avatar_file_url_$deviceId') ?? '';
+        if (path != null && path.isNotEmpty) {
+          map[deviceId] = (path: path, url: url);
+        }
+      }
+    }
+    return map;
+  }
+
   // Last seen timestamp for presence status
   int? getLastSeen(String deviceId) {
     return _prefs.getInt('last_seen_$deviceId');

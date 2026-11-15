@@ -872,7 +872,13 @@ class WebRTCCallService {
   /// the pre-allocated video transceiver and renegotiate over the existing
   /// ice_restart signaling channel. Returns false on any failure — the call
   /// stays audio-only and the audio path is never disturbed.
-  Future<bool> upgradeToVideo() async {
+  ///
+  /// [skipRenegotiation]: the accepting peer of the two-step consent
+  /// handshake passes true — only the upgrade INITIATOR re-offers, which
+  /// prevents simultaneous-offer SDP glare when both sides attach their
+  /// camera at the same moment. The responder's replaceTrack/setDirection
+  /// picks up the negotiated m-line when it answers the initiator's offer.
+  Future<bool> upgradeToVideo({bool skipRenegotiation = false}) async {
     if (!videoUpgradeEnabled ||
         _peerConnection == null ||
         _localStream == null ||
@@ -946,11 +952,13 @@ class WebRTCCallService {
       await _configureAudioSession(speakerOn: true, preferBluetooth: true);
       // Re-fire so the UI binds the new track to the self-view renderer.
       onLocalStream?.call(_localStream!);
-      final renegotiated =
-          needsRenegotiation ? await _sendRenegotiationOffer() : true;
+      final renegotiated = (needsRenegotiation && !skipRenegotiation)
+          ? await _sendRenegotiationOffer()
+          : true;
       _logMirrorState(
         'upgradeToVideo',
-        extra: 'renegotiated=$renegotiated needs=$needsRenegotiation',
+        extra:
+            'renegotiated=$renegotiated needs=$needsRenegotiation skip=$skipRenegotiation',
       );
       return true;
     } catch (e) {
@@ -1458,7 +1466,16 @@ class WebRTCCallService {
     bool acceptDuringLocalRestart = false,
   }) async {
     if (_peerConnection == null) return false;
-    if (_iceRestartInProgress) {
+    // Glare detection covers BOTH the local restart flag AND the real
+    // signaling state — an offer that reached setLocalDescription through a
+    // path that doesn't set the flag (or a flag cleared early) still counts
+    // as a pending local offer, so a colliding remote offer is resolved by
+    // the polite/impolite rule instead of throwing on
+    // setRemoteDescription while have-local-offer.
+    final localOfferPending = _iceRestartInProgress ||
+        _peerConnection!.signalingState ==
+            RTCSignalingState.RTCSignalingStateHaveLocalOffer;
+    if (localOfferPending) {
       if (!acceptDuringLocalRestart) {
         debugPrint('📞 Ignoring remote ICE restart offer during local restart');
         return false;

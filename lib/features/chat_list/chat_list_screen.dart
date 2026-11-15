@@ -75,13 +75,24 @@ class ChatListScreen extends GetView<ChatListController> {
               ),
             ),
             const SizedBox(height: 2),
-            const Text(
-              '🔒 End-to-end encrypted',
-              style: TextStyle(
-                color: AppColors.textPrimary,
-                fontSize: 12,
-                fontWeight: FontWeight.w400,
-              ),
+            const Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  Icons.lock,
+                  color: Colors.black,
+                  size: 12,
+                ),
+                SizedBox(width: 4),
+                Text(
+                  'End-to-end encrypted',
+                  style: TextStyle(
+                    color: AppColors.textPrimary,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w400,
+                  ),
+                ),
+              ],
             ),
           ],
         ),

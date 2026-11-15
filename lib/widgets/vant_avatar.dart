@@ -1,3 +1,6 @@
+import 'dart:async';
+import 'dart:io';
+
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
@@ -93,6 +96,36 @@ class VantAvatar extends StatelessWidget {
       return Obx(() {
         final live = cache.avatarByDeviceId[userId];
         final url = (live != null && live.isNotEmpty) ? live : (avatarUrl ?? '');
+        // Local-file hit: render synchronously from disk — no network, no
+        // placeholder flash, works offline. Subscribing to the map means a
+        // just-finished download swaps the image in automatically.
+        final localPath = cache.localAvatarFileByDeviceId[userId];
+        if (localPath != null && File(localPath).existsSync()) {
+          return ClipRRect(
+            borderRadius: BorderRadius.circular(borderRadius),
+            child: Container(
+              width: size,
+              height: size,
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(borderRadius),
+                image: DecorationImage(
+                  image: FileImage(File(localPath)),
+                  fit: BoxFit.cover,
+                ),
+              ),
+            ),
+          );
+        }
+        if (url.isNotEmpty) {
+          // Not on disk yet — kick off the one-time download (no-ops if a
+          // file for this URL is already cached) while the network image
+          // bridges this single first-render gap.
+          unawaited(cache.ensureCachedLocally(userId!, url));
+        } else if (localPath != null) {
+          // Map holds a stale path whose file is gone and the URL is empty —
+          // drop the persisted leftovers.
+          unawaited(cache.ensureCachedLocally(userId!, ''));
+        }
         return _buildAvatar(url);
       });
     }
@@ -110,7 +143,7 @@ class VantAvatar extends StatelessWidget {
         width: size,
         height: size,
         fit: BoxFit.cover,
-        fadeInDuration: const Duration(milliseconds: 200),
+        fadeInDuration: Duration.zero,
         placeholder: (_, __) => _fallback(radius, clip: false),
         errorWidget: (_, __, ___) => _fallback(radius, clip: false),
       ),
