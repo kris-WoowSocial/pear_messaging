@@ -2741,6 +2741,16 @@ class CallController extends GetxController {
   /// Start an outgoing call
   Future<bool> startCall(String calleeDeviceId, {bool isVideo = false}) async {
     try {
+      // Single chokepoint: every outgoing path (chat buttons, call-history
+      // redial, call-again, widgets) funnels through startCall, so the
+      // 7-day-free-trial gate lives here rather than per entry point.
+      if (Get.isRegistered<MembershipService>() &&
+          !Get.find<MembershipService>().canMakeCalls) {
+        debugPrint('🔒 Call blocked: free period ended, premium required');
+        Get.toNamed(AppRoutes.stripeSubscription);
+        return false;
+      }
+
       final callerDeviceId = _storageService.deviceId;
       if (callerDeviceId == null) {
         debugPrint('❌ Cannot start call: No device ID');
@@ -3034,6 +3044,16 @@ class CallController extends GetxController {
   /// Accept an incoming call
   Future<bool> acceptCall(Map<String, dynamic> callData) async {
     try {
+      // Trial-expired users can't take calls either — reject cleanly so the
+      // caller's screen stops ringing, then route to the paywall.
+      if (Get.isRegistered<MembershipService>() &&
+          !Get.find<MembershipService>().canMakeCalls) {
+        debugPrint('🔒 Incoming call blocked: premium required');
+        rejectCall(callData);
+        Get.toNamed(AppRoutes.stripeSubscription);
+        return false;
+      }
+
       final callId = callData['callId'] as String;
       if (Platform.isIOS) {
         _nativePushCallIds.remove(callId);
@@ -5871,6 +5891,20 @@ class CallController extends GetxController {
       final callId = data['callId'] as String;
       final callerId = data['callerId'] as String;
       if (Platform.isIOS) _nativePushCallIds.remove(callId);
+      // Native accept paths (CallKit, lock screen, notification, socket
+      // resync) bypass acceptCall() — apply the same premium gate here.
+      if (Get.isRegistered<MembershipService>() &&
+          !Get.find<MembershipService>().canMakeCalls) {
+        debugPrint('🔒 Incoming call blocked: premium required');
+        _socketService.rejectCall(
+          callId: callId,
+          callerId: callerId,
+          reason: 'premium_required',
+        );
+        _resetCallState();
+        Get.toNamed(AppRoutes.stripeSubscription);
+        return;
+      }
       if (_acceptInFlightCallId == callId || isInCall) {
         debugPrint('📞 Accept already in progress for $callId — skipping dup');
         return;

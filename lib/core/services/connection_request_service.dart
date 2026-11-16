@@ -5,6 +5,7 @@ import 'socket_service.dart';
 import 'identity_announcement_service.dart';
 import 'api_service.dart';
 import 'invitation_storage_service.dart';
+import 'user_profile_cache.dart';
 import '../utils/string_utils.dart';
 import '../../storage/models/connection_request_entity.dart';
 import '../../storage/models/chat_entity.dart';
@@ -207,6 +208,9 @@ class ConnectionRequestService extends GetxService {
       targetDeviceId,
       messageContent: messageContent,
       senderName: _storageService.getDisplayName(myDeviceId),
+      senderAvatarUrl: Get.isRegistered<UserProfileCache>()
+          ? Get.find<UserProfileCache>().myAvatarUrl.value
+          : null,
     );
 
     if (success) {
@@ -299,6 +303,7 @@ class ConnectionRequestService extends GetxService {
       debugPrint(
         '📱 RECIPIENT LOG: Chat already exists with $senderDeviceId, auto-accepting',
       );
+      _applyPeerAvatar(senderDeviceId, data['avatarUrl']);
       acceptConnectionRequest(requestId, senderDeviceId);
       return;
     }
@@ -350,6 +355,10 @@ class ConnectionRequestService extends GetxService {
     );
 
     debugPrint('🔍 DEBUG: Created connection request: ${request.toJson()}');
+
+    // Seed the sender's avatar from the request payload, then refresh from
+    // the profile registry so we always end up with the live photo.
+    _applyPeerAvatar(senderDeviceId, data['avatarUrl']);
 
     // Save to storage
     _storageService.saveConnectionRequest(request);
@@ -502,7 +511,14 @@ class ConnectionRequestService extends GetxService {
       true,
       senderDeviceId: senderDeviceId,
       responderName: myName,
+      responderAvatarUrl: Get.isRegistered<UserProfileCache>()
+          ? Get.find<UserProfileCache>().myAvatarUrl.value
+          : null,
     );
+
+    // Pull the sender's live profile — covers requests restored from storage
+    // where the avatar never arrived over the socket payload.
+    _applyPeerAvatar(senderDeviceId, null);
 
     // Create chat entity for the accepted connection
     final request = pendingRequests.firstWhereOrNull(
@@ -717,6 +733,23 @@ class ConnectionRequestService extends GetxService {
   }
 
   /// Handle connection request response
+  /// Cache a peer's avatar from a socket payload, then pull the live profile
+  /// from the server so a stale or missing payload URL never leaves the peer
+  /// avatar-less on first contact.
+  void _applyPeerAvatar(String deviceId, dynamic avatarUrlValue) {
+    if (!Get.isRegistered<UserProfileCache>()) return;
+    try {
+      final cache = Get.find<UserProfileCache>();
+      final avatarUrl = avatarUrlValue?.toString();
+      if (avatarUrl != null && avatarUrl.isNotEmpty) {
+        cache.setAvatar(deviceId, avatarUrl);
+      }
+      cache.fetchAndCacheProfile(deviceId);
+    } catch (e) {
+      debugPrint('⚠️ Could not cache peer avatar for $deviceId: $e');
+    }
+  }
+
   void _handleConnectionRequestResponse(Map<String, dynamic> data) {
     debugPrint('📨 SENDER LOG: _handleConnectionRequestResponse called');
     debugPrint('🔍 SENDER LOG: Response data: $data');
@@ -747,6 +780,10 @@ class ConnectionRequestService extends GetxService {
           : _storageService.getDisplayName(targetDeviceId);
       debugPrint(
           '👤 SENDER LOG: Target name: $targetName (payload: $payloadName)');
+
+      // Seed the acceptor's avatar from the response payload, then refresh
+      // from the profile registry for the live photo.
+      _applyPeerAvatar(targetDeviceId, data['avatarUrl']);
 
       // Check if chat already exists and update it
       final existingChat = _storageService.getChat(targetDeviceId);

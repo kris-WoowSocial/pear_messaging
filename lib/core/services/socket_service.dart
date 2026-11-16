@@ -1543,6 +1543,7 @@ class SocketService extends GetxService {
     String targetDeviceId, {
     String? messageContent,
     String? senderName,
+    String? senderAvatarUrl,
   }) async {
     if (!isConnected.value) {
       debugPrint('❌ Cannot send connection request: not connected');
@@ -1565,6 +1566,11 @@ class SocketService extends GetxService {
       'timestamp': timestamp,
       if (senderName != null && senderName.trim().isNotEmpty)
         'senderName': senderName.trim(),
+      // Carry our avatar so the recipient can render our photo on first
+      // contact. The server prefers its profile registry; this is the
+      // fallback when the sender has no server-side profile row.
+      if (senderAvatarUrl != null && senderAvatarUrl.trim().isNotEmpty)
+        'avatarUrl': senderAvatarUrl.trim(),
     };
 
     // Add encrypted message content if provided
@@ -1591,6 +1597,7 @@ class SocketService extends GetxService {
     bool accepted, {
     String? senderDeviceId,
     String? responderName,
+    String? responderAvatarUrl,
   }) async {
     if (!isConnected.value) {
       debugPrint('❌ Cannot respond to connection request: not connected');
@@ -1607,6 +1614,8 @@ class SocketService extends GetxService {
       // globally-unique username registry rejected it with a 409).
       if (responderName != null && responderName.trim().isNotEmpty)
         'responderName': responderName.trim(),
+      if (responderAvatarUrl != null && responderAvatarUrl.trim().isNotEmpty)
+        'avatarUrl': responderAvatarUrl.trim(),
     });
 
     debugPrint(

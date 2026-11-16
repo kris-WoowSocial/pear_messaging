@@ -164,7 +164,10 @@ class ProfileScreen extends GetView<ProfileController> {
               ),
               const SizedBox(height: AppSizes.paddingM),
               Container(
-                child: FutureBuilder<String>(
+                // Obx so a new/changed avatar regenerates the QR payload —
+                // _generateQRData() reads myAvatarUrl, making it a reactive
+                // dependency, so the scanned link always carries the live URL.
+                child: Obx(() => FutureBuilder<String>(
                   future: _generateQRData(),
                   builder: (context, snapshot) {
                     if (snapshot.hasData) {
@@ -182,7 +185,7 @@ class ProfileScreen extends GetView<ProfileController> {
                       child: Center(child: CircularProgressIndicator()),
                     );
                   },
-                ),
+                )),
               ),
               const SizedBox(height: AppSizes.paddingL),
               Text(

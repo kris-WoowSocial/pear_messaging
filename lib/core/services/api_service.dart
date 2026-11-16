@@ -4,6 +4,7 @@ import 'package:get/get.dart';
 import 'package:http/http.dart' as http;
 
 import '../constants/network_constants.dart';
+import 'local_storage_service.dart';
 
 /// Centralised HTTP client for all backend API calls.
 /// All services must use this instead of constructing raw http.* calls.
@@ -21,7 +22,21 @@ class ApiService extends GetxService {
 
   // ── Low-level helpers ───────────────────────────────────────────────────────
 
-  Map<String, String> get _headers => {'Content-Type': 'application/json'};
+  Map<String, String> get _headers {
+    final headers = {'Content-Type': 'application/json'};
+    // Lets the backend scope per-device mutations (e.g. avatar DELETE) to
+    // the actual caller instead of trusting a body-supplied deviceId.
+    try {
+      final deviceId =
+          Get.isRegistered<LocalStorageService>()
+              ? Get.find<LocalStorageService>().deviceId
+              : null;
+      if (deviceId != null && deviceId.isNotEmpty) {
+        headers['x-device-id'] = deviceId;
+      }
+    } catch (_) {}
+    return headers;
+  }
 
   Uri _uri(String path) => Uri.parse('$_base$path');
 

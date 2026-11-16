@@ -6,6 +6,7 @@ import 'package:get/get.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 
+import 'api_service.dart';
 import 'local_storage_service.dart';
 import 'socket_service.dart';
 import '../../features/chat_list/chat_list_controller.dart';
@@ -151,14 +152,30 @@ class UserProfileCache extends GetxService {
         final name =
             '${deviceId}_${avatarUrl.hashCode.abs().toRadixString(16)}.jpg';
         final file = File('${dir.path}/$name');
+        // Grab the context before the write — it's only used to build the
+        // ImageConfiguration for precacheImage below.
+        final ctx = Get.context;
         await file.writeAsBytes(response.bodyBytes, flush: true);
+        await _storage.setContactAvatarFile(deviceId, file.path, avatarUrl);
+        // Warm the decode BEFORE pointing the reactive map at the new file —
+        // Obx swaps straight from the old bitmap to this cached one, so the
+        // avatar never renders an empty frame while FileImage decodes.
+        if (ctx != null) {
+          try {
+            // Get.context is the global navigator context — it cannot
+            // unmount, so the async gap is safe.
+            // ignore: use_build_context_synchronously
+            await precacheImage(FileImage(file), ctx);
+          } catch (_) {}
+        }
+        localAvatarFileByDeviceId[deviceId] = file.path;
+        // Old file deleted only after the map no longer references it —
+        // any rebuild before this point still finds the old image on disk.
         if (storedPath != null && storedPath != file.path) {
           try {
             await File(storedPath).delete();
           } catch (_) {}
         }
-        await _storage.setContactAvatarFile(deviceId, file.path, avatarUrl);
-        localAvatarFileByDeviceId[deviceId] = file.path;
       } finally {
         _downloadInFlight.remove(deviceId);
       }
@@ -192,6 +209,43 @@ class UserProfileCache extends GetxService {
     return fallback ?? '';
   }
 
+  /// Pull the freshest server-side profile (username + avatar) for a
+  /// contact and apply it — QR/Branch payloads can predate the inviter's
+  /// latest photo, so scanning always fetches the live record.
+  Future<void> fetchAndCacheProfile(String deviceId) async {
+    if (deviceId.isEmpty || !Get.isRegistered<ApiService>()) return;
+    try {
+      final profile = await Get.find<ApiService>().getProfile(deviceId);
+      if (profile == null) return;
+
+      final url =
+          (profile['avatarUrl'] ?? profile['avatar_url'] ?? '').toString();
+      final updated =
+          profile['avatarUpdatedAt'] ?? profile['avatar_updated_at'];
+      final updatedMs = updated is int
+          ? updated
+          : int.tryParse(updated?.toString() ?? '');
+
+      // Already current — no churn.
+      if (url == (avatarByDeviceId[deviceId] ?? '') &&
+          (updatedMs == null || updatedMs <= (avatarUpdatedAt[deviceId] ?? 0))) {
+        return;
+      }
+
+      avatarByDeviceId[deviceId] = url;
+      if (updatedMs != null) avatarUpdatedAt[deviceId] = updatedMs;
+      if (deviceId == _storage.deviceId) {
+        myAvatarUrl.value = url;
+        await _storage.setUserAvatarUrl(url.isEmpty ? null : url);
+      }
+      await _persistToChat(deviceId, url);
+      unawaited(ensureCachedLocally(deviceId, url));
+      _refreshLists();
+    } catch (e) {
+      debugPrint('⚠️ fetchAndCacheProfile failed for $deviceId: $e');
+    }
+  }
+
   /// Socket + manual entry point: apply a profile_updated payload
   /// ({ userId, deviceId, userName, avatarUrl, avatarUpdatedAt }).
   Future<void> applyProfileUpdate(Map<String, dynamic> data) async {
@@ -199,8 +253,13 @@ class UserProfileCache extends GetxService {
         (data['deviceId'] ?? data['userId'] ?? '').toString();
     if (deviceId.isEmpty) return;
 
-    final url = (data['avatarUrl'] ?? '').toString();
-    final updated = data['avatarUpdatedAt'];
+    // Only payloads that explicitly carry avatarUrl may change the avatar —
+    // a name-only update must never be read as "avatar removed".
+    if (!data.containsKey('avatarUrl') && !data.containsKey('avatar_url')) {
+      return;
+    }
+    var url = (data['avatarUrl'] ?? data['avatar_url'] ?? '').toString();
+    final updated = data['avatarUpdatedAt'] ?? data['avatar_updated_at'];
     final updatedMs = updated is int
         ? updated
         : int.tryParse(updated?.toString() ?? '');
@@ -208,6 +267,17 @@ class UserProfileCache extends GetxService {
     // Staleness guard — ignore out-of-order older updates.
     final known = avatarUpdatedAt[deviceId];
     if (updatedMs != null && known != null && updatedMs <= known) return;
+
+    // Own-avatar protection: a bare `{avatarUrl: null, avatarUpdatedAt:
+    // null}` is indistinguishable from a device that simply never uploaded
+    // — it must not strip a locally-uploaded photo. Real local removals go
+    // through removePhoto() -> setAvatar(null) anyway.
+    if (deviceId == _storage.deviceId &&
+        url.isEmpty &&
+        myAvatarUrl.value.isNotEmpty &&
+        updatedMs == null) {
+      url = myAvatarUrl.value;
+    }
 
     avatarByDeviceId[deviceId] = url;
     if (updatedMs != null) avatarUpdatedAt[deviceId] = updatedMs;

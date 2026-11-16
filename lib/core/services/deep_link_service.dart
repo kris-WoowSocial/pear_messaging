@@ -76,6 +76,11 @@ class DeepLinkService extends GetxService {
       unawaited(
           Get.find<UserProfileCache>().setAvatar(deviceId, avatarUrl));
     }
+    // Link payloads can predate their latest photo — fetch the live profile.
+    if (Get.isRegistered<UserProfileCache>()) {
+      unawaited(
+          Get.find<UserProfileCache>().fetchAndCacheProfile(deviceId));
+    }
 
     // Check if chat exists
     final existingChat = _storageService.getChat(deviceId);

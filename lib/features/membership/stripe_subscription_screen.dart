@@ -534,6 +534,7 @@ class _StripeSubscriptionScreenState extends State<StripeSubscriptionScreen> {
   Widget _buildFeaturesSection() {
     const features = [
       (Icons.phone_in_talk_rounded, 'Voice calls'),
+      (Icons.videocam_rounded, 'Video calls'),
       (Icons.photo_library_rounded, 'Unlimited photo sharing'),
       (Icons.attach_file_rounded, 'Send files without limits'),
       (Icons.bolt_rounded, 'Priority customer support'),

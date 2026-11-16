@@ -429,6 +429,15 @@ class ChatListController extends GetxController {
 
     // Match backend field names: messageId, senderDeviceId, encryptedPayload, timestamp
     final senderId = data['senderDeviceId'] as String;
+
+    // First contact from this sender — pull their live profile so the new
+    // chat row and chat screen render their photo/name immediately.
+    if (Get.isRegistered<UserProfileCache>() &&
+        (Get.find<UserProfileCache>().avatarByDeviceId[senderId] ?? '')
+            .isEmpty) {
+      unawaited(Get.find<UserProfileCache>().fetchAndCacheProfile(senderId));
+    }
+
     final messageId = data['messageId'] as String? ?? _uuid.v4();
     final cipherText = data['encryptedPayload'] as String? ?? '';
     final timestamp =
@@ -1440,6 +1449,12 @@ class ChatListController extends GetxController {
       // Persist the inviter's avatar immediately so the chat opens showing it.
       if (avatarUrl != null && avatarUrl.isNotEmpty) {
         unawaited(_applyInviterAvatar(deviceId, avatarUrl));
+      }
+      // QR payloads can predate the inviter's latest photo — always pull
+      // the live profile so the chat opens with their current avatar.
+      if (Get.isRegistered<UserProfileCache>()) {
+        unawaited(
+            Get.find<UserProfileCache>().fetchAndCacheProfile(deviceId));
       }
 
       // Check if chat already exists in memory list
