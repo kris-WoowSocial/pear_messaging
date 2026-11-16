@@ -129,7 +129,7 @@ class ChatListScreen extends GetView<ChatListController> {
                 SizedBox(height: 10),
                 Container(height: 1, color: Colors.grey),
                 Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
                   child: Row(
                     children: [
                       // Avatar with pencil edit badge (opens photo options)
@@ -149,15 +149,11 @@ class ChatListScreen extends GetView<ChatListController> {
                                       : '',
                               size: 40,
                               showEditBadge: true,
-                              onTap: () => Get.isRegistered<
-                                      ProfileAvatarService>()
-                                  ? Get.find<ProfileAvatarService>()
-                                      .showAvatarOptions()
-                                  : null,
+                             
                             ),
                             // Green dot for socket connection
                             Positioned(
-                              top: -2,
+                              bottom: -2,
                               right: -2,
                               child: Obx(
                                 () => Container(
@@ -182,31 +178,7 @@ class ChatListScreen extends GetView<ChatListController> {
                       const SizedBox(width: 12),
                       // User name - editable inline
                       Expanded(
-                        child: Obx(
-                          () => controller.isEditingName.value
-                              ? TextField(
-                                  controller: controller.userNameController,
-                                  autofocus: true,
-                                  style: const TextStyle(
-                                    color: AppColors.textPrimary,
-                                    fontSize: 16,
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                                  decoration: const InputDecoration(
-                                    isDense: true,
-                                    contentPadding: EdgeInsets.symmetric(
-                                      vertical: 8,
-                                    ),
-                                    border: UnderlineInputBorder(),
-                                    focusedBorder: UnderlineInputBorder(
-                                      borderSide: BorderSide(
-                                        color: AppColors.textPrimary,
-                                      ),
-                                    ),
-                                  ),
-                                  onSubmitted: (_) => controller.saveUserName(),
-                                )
-                              : Text(
+                        child:  Text(
                                   controller.userDisplayName,
                                   style: const TextStyle(
                                     color: AppColors.textPrimary,
@@ -215,55 +187,10 @@ class ChatListScreen extends GetView<ChatListController> {
                                   ),
                                   overflow: TextOverflow.ellipsis,
                                 ),
-                        ),
+                        
                       ),
                       // Edit/Save icon
-                      Obx(
-                        () => controller.isEditingName.value
-                            ? Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  IconButton(
-                                    icon: const Icon(
-                                      Icons.check,
-                                      color: Colors.green,
-                                      size: 22,
-                                    ),
-                                    onPressed: () => controller.saveUserName(),
-                                  ),
-                                  IconButton(
-                                    icon: const Icon(
-                                      Icons.close,
-                                      color: Colors.red,
-                                      size: 22,
-                                    ),
-                                    onPressed: () =>
-                                        controller.cancelEditingName(),
-                                  ),
-                                ],
-                              )
-                            : Column(
-                                children: [
-                                  IconButton(
-                                    icon: const Icon(
-                                      Icons.edit_outlined,
-                                      color: AppColors.textPrimary,
-                                      size: 22,
-                                    ),
-                                    onPressed: () =>
-                                        controller.startEditingName(),
-                                  ),
-                                  const Text(
-                                    'Edit your name',
-                                    style: TextStyle(
-                                      color: AppColors.textPrimary,
-                                      fontSize: 10,
-                                      fontWeight: FontWeight.w400,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                      ),
+                 
                     ],
                   ),
                 ),

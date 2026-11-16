@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:get/get.dart';
+import 'package:pear_messaging/core/constants/app_colors.dart';
 import '../../core/constants/app_strings.dart';
 import '../../core/services/api_service.dart';
 import '../../core/services/branch_service.dart';
@@ -203,6 +204,8 @@ class ProfileController extends GetxController {
       Get.snackbar(
         'Success',
         'Name updated successfully',
+        backgroundColor: AppColors.primaryDark,
+        colorText: AppColors.textPrimary,
         snackPosition: SnackPosition.TOP,
       );
     }

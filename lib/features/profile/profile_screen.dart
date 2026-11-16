@@ -13,6 +13,7 @@ import 'profile_controller.dart';
 import '../contact/contact_us_screen.dart';
 import '../../widgets/vant_avatar.dart';
 import '../../core/services/user_profile_cache.dart';
+import '../../core/services/profile_avatar_service.dart';
 
 class ProfileScreen extends GetView<ProfileController> {
   const ProfileScreen({super.key});
@@ -223,7 +224,7 @@ class ProfileScreen extends GetView<ProfileController> {
   Widget build(BuildContext context) {
     final statusBarHeight = MediaQuery.of(context).padding.top;
     final collapsedHeight = kToolbarHeight + statusBarHeight;
-    final expandedHeight = statusBarHeight + 190;
+    final expandedHeight = statusBarHeight + 150;
 
     return Scaffold(
       backgroundColor: AppColors.background,
@@ -238,7 +239,7 @@ class ProfileScreen extends GetView<ProfileController> {
               statusBarHeight: statusBarHeight,
               controller: controller,
               onQrTap: () => _showQrCodeSheet(context),
-              nameEditorBuilder: _buildNameEditor,
+              onEditName: () => _showEditNameSheet(context),
             ),
           ),
           SliverToBoxAdapter(
@@ -390,55 +391,113 @@ class ProfileScreen extends GetView<ProfileController> {
     );
   }
 
-  Widget _buildNameEditor() {
-    return Row(
-      key: const ValueKey('name_editor'),
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        SizedBox(
-          width: 160,
-          child: TextField(
-            controller: controller.nameController.value,
-            autofocus: true,
-            textAlign: TextAlign.center,
-            style:
-                const TextStyle(color: Colors.white, fontSize: AppSizes.fontL),
-            onSubmitted: (_) => controller.saveUserName(),
-            decoration: InputDecoration(
-              hintText: 'Enter your name',
-              hintStyle: const TextStyle(color: Colors.white70),
-              isDense: true,
-              contentPadding: const EdgeInsets.symmetric(
-                horizontal: AppSizes.paddingS,
-                vertical: AppSizes.paddingS,
+  /// One-tap name editor: a focused bottom sheet is far more reliable than
+  /// the old inline header field, which lost focus to the collapsing-header
+  /// rebuilds and couldn't open at all once the page was scrolled.
+  void _showEditNameSheet(BuildContext context) {
+    controller.startEditingName();
+    Get.bottomSheet(
+      Padding(
+        padding: EdgeInsets.only(
+          left: AppSizes.paddingL,
+          right: AppSizes.paddingL,
+          top: AppSizes.paddingL,
+          bottom: MediaQuery.of(context).viewInsets.bottom +
+              AppSizes.paddingL,
+        ),
+        child: SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Text(
+                'Your name',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontSize: AppSizes.fontL,
+                  fontWeight: FontWeight.w600,
+                  color: AppColors.textPrimary,
+                ),
               ),
-              enabledBorder: const UnderlineInputBorder(
-                borderSide: BorderSide(color: Colors.white70),
+              const SizedBox(height: AppSizes.paddingM),
+              TextField(
+                controller: controller.nameController.value,
+                autofocus: true,
+                textCapitalization: TextCapitalization.words,
+                maxLength: 25,
+                style: const TextStyle(
+                  fontSize: AppSizes.fontL,
+                  color: AppColors.textPrimary,
+                ),
+                decoration: const InputDecoration(
+                  hintText: 'Enter your name',
+                  counterText: '',
+                  enabledBorder: UnderlineInputBorder(
+                    borderSide: BorderSide(color: AppColors.textPrimary),
+                  ),
+                  focusedBorder: UnderlineInputBorder(
+                    borderSide: BorderSide(
+                        color: AppColors.primaryDark, width: 2),
+                  ),
+                ),
+                onSubmitted: (_) => _saveNameFromSheet(),
               ),
-              focusedBorder: const UnderlineInputBorder(
-                borderSide: BorderSide(color: Colors.white),
+              const SizedBox(height: AppSizes.paddingM),
+              Row(
+                children: [
+                  Expanded(
+                    child: ElevatedButton(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppColors.surface,
+                        foregroundColor: AppColors.textPrimary,
+                      ),
+                      onPressed: () => Get.back(),
+                      child: const Text('Cancel'),
+                    ),
+                  ),
+                  const SizedBox(width: AppSizes.paddingM),
+                  Expanded(
+                    child: ElevatedButton(
+                      onPressed: _saveNameFromSheet,
+                      child: const Text('Save'),
+                    ),
+                  ),
+                ],
               ),
-            ),
+            ],
           ),
         ),
-        IconButton(
-          onPressed: controller.cancelEditingName,
-          icon: const Icon(Icons.close, color: Colors.white70),
-          iconSize: 20,
+      ),
+      isScrollControlled: true,
+      backgroundColor: AppColors.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(
+          top: Radius.circular(AppSizes.radiusL),
         ),
-        IconButton(
-          onPressed: controller.saveUserName,
-          icon: const Icon(Icons.check, color: Colors.white),
-          iconSize: 20,
-        ),
-      ],
+      ),
     );
+  }
+
+  Future<void> _saveNameFromSheet() async {
+        if (Get.isBottomSheetOpen ?? false) Get.back();
+    await controller.saveUserName();
+    if (Get.isBottomSheetOpen ?? false) Get.back();
   }
 
   /// Row of quick-glance shortcut cards (Scan QR, Share app)
   Widget _buildQuickActionsRow(BuildContext context) {
     return Row(
       children: [
+            Expanded(
+          child: _buildQuickActionCard(
+            icon: Icons.ios_share_rounded,
+            label: 'Show my QR code',
+            color: AppColors.primaryDark,
+            onTap: () => _showQrCodeSheet(context),
+          ),
+        ),
+              const SizedBox(width: AppSizes.paddingM),
+
         Expanded(
           child: _buildQuickActionCard(
             icon: Icons.qr_code_scanner,
@@ -447,15 +506,7 @@ class ProfileScreen extends GetView<ProfileController> {
             onTap: () => Get.toNamed('/qr-scanner'),
           ),
         ),
-        const SizedBox(width: AppSizes.paddingM),
-        Expanded(
-          child: _buildQuickActionCard(
-            icon: Icons.ios_share_rounded,
-            label: 'Share App',
-            color: AppColors.primaryDark,
-            onTap: controller.shareApp,
-          ),
-        ),
+        
       ],
     );
   }
@@ -774,7 +825,7 @@ class _ProfileHeaderDelegate extends SliverPersistentHeaderDelegate {
     required this.statusBarHeight,
     required this.controller,
     required this.onQrTap,
-    required this.nameEditorBuilder,
+    required this.onEditName,
   });
 
   final double expandedHeight;
@@ -782,7 +833,7 @@ class _ProfileHeaderDelegate extends SliverPersistentHeaderDelegate {
   final double statusBarHeight;
   final ProfileController controller;
   final VoidCallback onQrTap;
-  final Widget Function() nameEditorBuilder;
+  final VoidCallback onEditName;
 
   static const double _avatarExpandedSize = 72.0;
   static const double _avatarCollapsedSize = 34.0;
@@ -822,7 +873,6 @@ class _ProfileHeaderDelegate extends SliverPersistentHeaderDelegate {
     // Fades out the edit hint + QR chip quickly as collapse begins.
     final secondaryOpacity = (1 - t * 2.5).clamp(0.0, 1.0);
     final showSecondary = secondaryOpacity > 0.01;
-    final showEditor = controller.isEditingName.value && t < 0.3;
 
     return Container(
       height: expandedHeight - shrinkOffset < collapsedHeight
@@ -869,6 +919,13 @@ class _ProfileHeaderDelegate extends SliverPersistentHeaderDelegate {
                     name: controller.userName.value,
                     size: avatarSize,
                     borderRadius: avatarSize / 2,
+                    // Pencil badge only while expanded — it would cover most
+                    // of the shrunken 34px collapsed avatar.
+                    showEditBadge: t < 0.5,
+                    onTap: () => Get.isRegistered<ProfileAvatarService>()
+                        ? Get.find<ProfileAvatarService>()
+                            .showAvatarOptions()
+                        : null,
                   ),
                 ),
               ),
@@ -879,92 +936,51 @@ class _ProfileHeaderDelegate extends SliverPersistentHeaderDelegate {
             right: _lerp(0, _leadingSlot, t),
             top: nameTop,
             child: Obx(() {
-              if (showEditor) {
-                return Align(
-                  alignment: Alignment.center,
-                  child: nameEditorBuilder(),
-                );
-              }
               return Align(
                 alignment: Alignment.lerp(
                   Alignment.center,
                   Alignment.centerLeft,
                   t,
                 )!,
-                child: GestureDetector(
-                  onTap: t < 0.3 ? controller.startEditingName : null,
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Flexible(
-                        child: Text(
-                          controller.userName.value,
-                          style: TextStyle(
-                            fontSize: nameFontSize,
-                            fontWeight: FontWeight.bold,
-                            color: Colors.black,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Flexible(
+                      child: GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onTap: onEditName,
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(
+                              vertical: 6, horizontal: 4),
+                          child: Text(
+                            controller.userName.value,
+                            style: TextStyle(
+                              fontSize: nameFontSize,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.black,
+                            ),
+                            overflow: TextOverflow.ellipsis,
                           ),
-                          overflow: TextOverflow.ellipsis,
                         ),
                       ),
-                      if (showSecondary) ...[
-                        const SizedBox(width: 6),
-                        Opacity(
-                          opacity: secondaryOpacity,
-                          child: const Icon(Icons.edit,
-                              size: 16, color: Colors.black87),
+                    ),
+                    if (showSecondary)
+                      Opacity(
+                        opacity: secondaryOpacity,
+                        child: IconButton(
+                          visualDensity: VisualDensity.compact,
+                          iconSize: 18,
+                          icon: const Icon(Icons.edit,
+                              color: Colors.black87),
+                          onPressed: onEditName,
                         ),
-                      ],
-                    ],
-                  ),
+                      ),
+                  ],
                 ),
               );
             }),
           ),
-          if (showSecondary)
-            Positioned(
-              left: 0,
-              right: 0,
-              top: nameTopExpanded + 38,
-              child: IgnorePointer(
-                ignoring: secondaryOpacity < 0.4,
-                child: Opacity(
-                  opacity: secondaryOpacity,
-                  child: Center(
-                    child: GestureDetector(
-                      onTap: onQrTap,
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: AppSizes.paddingM,
-                          vertical: 6,
-                        ),
-                        decoration: BoxDecoration(
-                          color: Colors.white.withValues(alpha: 0.18),
-                          borderRadius:
-                              BorderRadius.circular(AppSizes.radiusCircular),
-                        ),
-                        child: const Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(Icons.qr_code_2,
-                                size: 16, color: Colors.black),
-                            SizedBox(width: 6),
-                            Text(
-                              'Show my QR code',
-                              style: TextStyle(
-                                fontSize: AppSizes.fontS,
-                                color: Colors.black,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            ),
+      
         ],
       ),
     );

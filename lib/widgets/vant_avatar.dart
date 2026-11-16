@@ -48,7 +48,7 @@ class VantAvatar extends StatelessWidget {
   Widget build(BuildContext context) {
     Widget avatar = _buildReactive();
 
-    if (showEditBadge) {
+    if (showEditBadge && onTap != null) {
       avatar = Stack(
         clipBehavior: Clip.none,
         children: [
@@ -72,7 +72,7 @@ class VantAvatar extends StatelessWidget {
                 ],
               ),
               child: Icon(
-                Icons.edit,
+                Icons.camera_alt_outlined,
                 size: size * 0.26,
                 color: Colors.green.shade700,
               ),
