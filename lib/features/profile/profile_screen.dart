@@ -39,9 +39,12 @@ class ProfileScreen extends GetView<ProfileController> {
     );
     // Inviter avatar rides the link for both the in-app scanner and the
     // OpenGraph preview ($og_image_url) shown by iMessage/WhatsApp/Telegram.
-    final avatarUrl = Get.isRegistered<UserProfileCache>()
+    final cachedAvatar = Get.isRegistered<UserProfileCache>()
         ? Get.find<UserProfileCache>().myAvatarUrl.value
         : '';
+    // WhatsApp/iMessage crawlers need a public https URL.
+    final avatarUrl =
+        cachedAvatar.startsWith('https://') ? cachedAvatar : '';
     final avatarParam = avatarUrl.isNotEmpty
         ? '&avatar_url=${Uri.encodeComponent(avatarUrl)}'
             '&\$og_image_url=${Uri.encodeComponent(avatarUrl)}'

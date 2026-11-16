@@ -279,9 +279,13 @@ class BranchService extends GetxService {
 
       // Inviter avatar — drives both link previews ($og_image_url / imageUrl)
       // and the recipient's instant contact-photo hydration (avatar_url).
-      final inviterAvatarUrl = Get.isRegistered<UserProfileCache>()
+      // WhatsApp/Telegram crawlers can only fetch public https images, so a
+      // non-https value is treated as "no avatar".
+      final cachedAvatar = Get.isRegistered<UserProfileCache>()
           ? Get.find<UserProfileCache>().myAvatarUrl.value
           : '';
+      final inviterAvatarUrl =
+          cachedAvatar.startsWith('https://') ? cachedAvatar : '';
       final previewImageUrl = inviterAvatarUrl.isNotEmpty
           ? inviterAvatarUrl
           : NetworkConstants.branchIconUrl;
@@ -302,9 +306,14 @@ class BranchService extends GetxService {
         contentMetadata.addCustomMetadata('referral_code', influencerCode);
       }
 
-      // Create Branch Universal Object with proper structure
+      // Create Branch Universal Object with proper structure.
+      // Version the canonical identifier by the avatar URL so adding or
+      // changing the profile photo mints a fresh short link carrying the
+      // new imageUrl — instead of Branch returning the stale pre-avatar
+      // link with no og:image.
       final buo = BranchUniversalObject(
-        canonicalIdentifier: 'chat/$deviceId',
+        canonicalIdentifier:
+            'chat/${deviceId}_${previewImageUrl.hashCode}',
         title: 'Chat with $friendlyName on Vant Chat',
         contentDescription: 'Start a secure conversation with $friendlyName',
         imageUrl: previewImageUrl,
@@ -329,6 +338,12 @@ class BranchService extends GetxService {
         '\$og_image_url',
         previewImageUrl,
       );
+      lp.addControlParam('\$twitter_image_url', previewImageUrl);
+      lp.addControlParam('\$og_image_width', '640');
+      lp.addControlParam('\$og_image_height', '640');
+      if (inviterAvatarUrl.isNotEmpty) {
+        lp.addControlParam('avatar_url', inviterAvatarUrl);
+      }
 
       lp.addControlParam('\$deeplink_no_attribution', 'true');
       lp.addControlParam('\$match_duration', '7200');
