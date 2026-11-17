@@ -2771,7 +2771,11 @@ class CallController extends GetxController {
       callState.value = CallState.dialing;
       _startDialWatchdog(calleeDeviceId, wantsVideo);
       remoteDeviceId.value = calleeDeviceId;
-      remoteAvatarUrl.value = '';
+      // Seed the callee avatar BEFORE the ringing screen renders — the
+      // prefs-backed store is the single source of truth and already holds
+      // the URL offline; VantAvatar renders the on-disk file via userId.
+      remoteAvatarUrl.value =
+          _storageService.getContactAvatarUrl(calleeDeviceId) ?? '';
       isCaller.value = true;
       _videoRequested = wantsVideo;
       isVideoCall.value = wantsVideo;
@@ -5111,7 +5115,8 @@ class CallController extends GetxController {
     _updateCallEncryptionState(deviceId);
     // First check locally saved contact name (what the user named them in chat)
     final savedChat = _storageService.getChat(deviceId);
-    final savedAvatarUrl = savedChat?.avatarUrl;
+    final savedAvatarUrl = savedChat?.avatarUrl ??
+        _storageService.getContactAvatarUrl(deviceId);
     if (savedAvatarUrl != null && savedAvatarUrl.isNotEmpty) {
       remoteAvatarUrl.value = savedAvatarUrl;
     }

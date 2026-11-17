@@ -76,6 +76,7 @@ class SocketService extends GetxService {
   Function(Map<String, dynamic>)? onDisappearTimerSet;
   Function(Map<String, dynamic>)? onViewOnceOpened;
   Function(Map<String, dynamic>)? onProfileUpdated;
+  Function(Map<String, dynamic>)? onProfilesDeltaSync;
 
   // Callbacks for group chat events
   Function(Map<String, dynamic>)? onGroupMessageReceived;
@@ -709,6 +710,15 @@ class SocketService extends GetxService {
       }
     });
 
+    // Delta sync: server pushes only peers whose profile changed since our
+    // lastProfileSyncAt cursor — a single packet, no per-peer API calls.
+    _socket?.on('profiles_delta_sync', (data) {
+      if (onProfilesDeltaSync != null && data != null) {
+        debugPrint('🔄 Profiles delta sync: $data');
+        onProfilesDeltaSync!(Map<String, dynamic>.from(data));
+      }
+    });
+
     // Group chat: incoming message
     _socket?.on('group_message', (data) {
       debugPrint('👥 Group message: $data');
@@ -841,6 +851,11 @@ class SocketService extends GetxService {
       'identityBundle': bundle,
       'identitySig': identitySig,
       'registerSig': registerSig,
+      // Delta-sync cursor — the server replies with only the peer profiles
+      // that changed since this server-time watermark.
+      if (Get.isRegistered<LocalStorageService>())
+        'lastProfileSyncAt':
+            Get.find<LocalStorageService>().getLastProfileSyncAt(),
     });
     _registerWatch
       ..reset()

@@ -298,6 +298,15 @@ class LocalStorageService extends GetxService {
     return map;
   }
 
+  /// Server-time cursor for the `profiles_delta_sync` socket event (epoch
+  /// ms). Sent on every socket register so the server returns only peers
+  /// whose avatar changed since the last sync — null means "send everything".
+  int? getLastProfileSyncAt() => _prefs.getInt('last_profile_sync_at');
+
+  Future<void> setLastProfileSyncAt(int serverTimeMs) {
+    return _prefs.setInt('last_profile_sync_at', serverTimeMs);
+  }
+
   // Last seen timestamp for presence status
   int? getLastSeen(String deviceId) {
     return _prefs.getInt('last_seen_$deviceId');

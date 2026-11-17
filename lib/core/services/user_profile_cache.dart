@@ -340,8 +340,37 @@ class UserProfileCache extends GetxService {
     try {
       final socket = Get.find<SocketService>();
       socket.onProfileUpdated = (data) => applyProfileUpdate(data);
+      socket.onProfilesDeltaSync = (data) => applyProfilesDelta(data);
     } catch (e) {
       debugPrint('⚠️ UserProfileCache: socket not ready, will rely on sync');
+    }
+  }
+
+  /// Server-time cursor sent on every socket register — the server answers
+  /// `profiles_delta_sync` with only peers whose avatar changed after it.
+  int? get lastProfileSyncAt => _storage.getLastProfileSyncAt();
+
+  /// Apply the batched `profiles_delta_sync` payload (one packet on socket
+  /// register) and advance the cursor to the server-provided time. Each
+  /// profile flows through applyProfileUpdate, so timestamps, Hive writes
+  /// and the atomic file swap all behave exactly like live updates.
+  Future<void> applyProfilesDelta(Map<String, dynamic> data) async {
+    final profiles = data['profiles'];
+    if (profiles is List) {
+      for (final p in profiles) {
+        if (p is Map) {
+          await applyProfileUpdate(Map<String, dynamic>.from(p));
+        }
+      }
+    }
+
+    final raw = data['serverTime'];
+    final ms = raw is int
+        ? raw
+        : int.tryParse(raw?.toString() ?? '') ??
+            DateTime.tryParse(raw?.toString() ?? '')?.millisecondsSinceEpoch;
+    if (ms != null) {
+      await _storage.setLastProfileSyncAt(ms);
     }
   }
 }
