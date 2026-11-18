@@ -399,78 +399,16 @@ class ProfileScreen extends GetView<ProfileController> {
   /// rebuilds and couldn't open at all once the page was scrolled.
   void _showEditNameSheet(BuildContext context) {
     controller.startEditingName();
+    // Cursor parked at the end of the prefilled name — startEditingName()
+    // resets it to offset 0 when it assigns .text.
+    controller.nameController.value.selection = TextSelection.collapsed(
+      offset: controller.nameController.value.text.length,
+    );
+    // The sheet owns its FocusNode for its real lifecycle — created in
+    // initState, disposed only when the sheet fully unmounts, so no
+    // exit-animation rebuild ever touches a disposed node.
     Get.bottomSheet(
-      Padding(
-        padding: EdgeInsets.only(
-          left: AppSizes.paddingL,
-          right: AppSizes.paddingL,
-          top: AppSizes.paddingL,
-          bottom: MediaQuery.of(context).viewInsets.bottom +
-              AppSizes.paddingL,
-        ),
-        child: SafeArea(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              const Text(
-                'Your name',
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  fontSize: AppSizes.fontL,
-                  fontWeight: FontWeight.w600,
-                  color: AppColors.textPrimary,
-                ),
-              ),
-              const SizedBox(height: AppSizes.paddingM),
-              TextField(
-                controller: controller.nameController.value,
-                autofocus: true,
-                textCapitalization: TextCapitalization.words,
-                maxLength: 25,
-                style: const TextStyle(
-                  fontSize: AppSizes.fontL,
-                  color: AppColors.textPrimary,
-                ),
-                decoration: const InputDecoration(
-                  hintText: 'Enter your name',
-                  counterText: '',
-                  enabledBorder: UnderlineInputBorder(
-                    borderSide: BorderSide(color: AppColors.textPrimary),
-                  ),
-                  focusedBorder: UnderlineInputBorder(
-                    borderSide: BorderSide(
-                        color: AppColors.primaryDark, width: 2),
-                  ),
-                ),
-                onSubmitted: (_) => _saveNameFromSheet(),
-              ),
-              const SizedBox(height: AppSizes.paddingM),
-              Row(
-                children: [
-                  Expanded(
-                    child: ElevatedButton(
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: AppColors.surface,
-                        foregroundColor: AppColors.textPrimary,
-                      ),
-                      onPressed: () => Get.back(),
-                      child: const Text('Cancel'),
-                    ),
-                  ),
-                  const SizedBox(width: AppSizes.paddingM),
-                  Expanded(
-                    child: ElevatedButton(
-                      onPressed: _saveNameFromSheet,
-                      child: const Text('Save'),
-                    ),
-                  ),
-                ],
-              ),
-            ],
-          ),
-        ),
-      ),
+      _EditOwnNameSheet(controller: controller),
       isScrollControlled: true,
       backgroundColor: AppColors.surface,
       shape: const RoundedRectangleBorder(
@@ -481,11 +419,6 @@ class ProfileScreen extends GetView<ProfileController> {
     );
   }
 
-  Future<void> _saveNameFromSheet() async {
-        if (Get.isBottomSheetOpen ?? false) Get.back();
-    await controller.saveUserName();
-    if (Get.isBottomSheetOpen ?? false) Get.back();
-  }
 
   /// Row of quick-glance shortcut cards (Scan QR, Share app)
   Widget _buildQuickActionsRow(BuildContext context) {
@@ -991,4 +924,122 @@ class _ProfileHeaderDelegate extends SliverPersistentHeaderDelegate {
 
   @override
   bool shouldRebuild(covariant _ProfileHeaderDelegate oldDelegate) => true;
+}
+
+/// One-tap name editor bottom sheet. Owns its FocusNode for the sheet's
+/// real lifecycle — created in initState, disposed only when the sheet
+/// fully unmounts, so no exit-animation rebuild ever touches a disposed
+/// node. The TextEditingController is shared with ProfileController
+/// (persistent) and is NOT disposed here.
+class _EditOwnNameSheet extends StatefulWidget {
+  const _EditOwnNameSheet({required this.controller});
+
+  final ProfileController controller;
+
+  @override
+  State<_EditOwnNameSheet> createState() => _EditOwnNameSheetState();
+}
+
+class _EditOwnNameSheetState extends State<_EditOwnNameSheet> {
+  late final FocusNode _focusNode;
+
+  @override
+  void initState() {
+    super.initState();
+    _focusNode = FocusNode();
+    // Request focus after the first frame — autofocus during the entrance
+    // animation can trigger a stray word-selection on some keyboards.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _focusNode.canRequestFocus) _focusNode.requestFocus();
+    });
+  }
+
+  @override
+  void dispose() {
+    _focusNode.dispose();
+    super.dispose();
+  }
+
+  Future<void> _save() async {
+    if (Get.isBottomSheetOpen ?? false) Get.back();
+    await widget.controller.saveUserName();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: EdgeInsets.only(
+        left: AppSizes.paddingL,
+        right: AppSizes.paddingL,
+        top: AppSizes.paddingL,
+        bottom: MediaQuery.of(context).viewInsets.bottom + AppSizes.paddingL,
+      ),
+      child: SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Text(
+              'Your name',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: AppSizes.fontL,
+                fontWeight: FontWeight.w600,
+                color: AppColors.textPrimary,
+              ),
+            ),
+            const SizedBox(height: AppSizes.paddingM),
+            TextField(
+              controller: widget.controller.nameController.value,
+              focusNode: _focusNode,
+              maxLines: 1,
+              keyboardType: TextInputType.name,
+              textCapitalization: TextCapitalization.words,
+              textInputAction: TextInputAction.done,
+              scrollPhysics: const ClampingScrollPhysics(),
+              maxLength: 100,
+              style: const TextStyle(
+                fontSize: AppSizes.fontL,
+                color: AppColors.textPrimary,
+              ),
+              decoration: const InputDecoration(
+                hintText: 'Enter your name',
+                counterText: '',
+                enabledBorder: UnderlineInputBorder(
+                  borderSide: BorderSide(color: AppColors.textPrimary),
+                ),
+                focusedBorder: UnderlineInputBorder(
+                  borderSide:
+                      BorderSide(color: AppColors.primaryDark, width: 2),
+                ),
+              ),
+              onSubmitted: (_) => _save(),
+            ),
+            const SizedBox(height: AppSizes.paddingM),
+            Row(
+              children: [
+                Expanded(
+                  child: ElevatedButton(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppColors.surface,
+                      foregroundColor: AppColors.textPrimary,
+                    ),
+                    onPressed: () => Get.back(),
+                    child: const Text('Cancel'),
+                  ),
+                ),
+                const SizedBox(width: AppSizes.paddingM),
+                Expanded(
+                  child: ElevatedButton(
+                    onPressed: _save,
+                    child: const Text('Save'),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 }

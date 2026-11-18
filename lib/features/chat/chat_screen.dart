@@ -806,138 +806,17 @@ class ChatScreen extends GetView<ChatController> {
       return;
     }
 
-    final nameController = TextEditingController(
-      text: controller.displayName.value,
-    );
-
+    // The StatefulWidget owns the field's controller/focus node so they're
+    // disposed on real unmount (after the exit animation), never mid-transition.
     Get.bottomSheet(
-      SafeArea(
-        child: Container(
-          decoration: const BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-          ),
-          padding: const EdgeInsets.all(AppSizes.paddingL),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Row(
-                children: [
-                  IconButton(
-                    onPressed: () => Get.back(),
-                    icon: const Icon(Icons.close),
-                  ),
-                  const SizedBox(width: AppSizes.paddingM),
-                  const Expanded(
-                    child: Text(
-                      'Edit Contact',
-                      style: TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: AppSizes.paddingL),
-              TextField(
-                controller: nameController,
-                decoration: InputDecoration(
-                  labelText: 'Contact Name',
-                  hintText: 'Enter contact name',
-                  hintStyle: TextStyle(color: Colors.grey.shade400),
-                  filled: true,
-                  fillColor: Colors.grey.shade50,
-                  contentPadding: const EdgeInsets.symmetric(
-                    horizontal: AppSizes.paddingM,
-                    vertical: AppSizes.paddingM,
-                  ),
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    borderSide: BorderSide(color: Colors.grey.shade300),
-                  ),
-                  enabledBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    borderSide: BorderSide(color: Colors.grey.shade300),
-                  ),
-                  focusedBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    borderSide: const BorderSide(
-                      color: AppColors.primary,
-                      width: 2,
-                    ),
-                  ),
-                ),
-                // Auto-select all text when field gets focus
-                onTap: () {
-                  nameController.selection = TextSelection(
-                    baseOffset: 0,
-                    extentOffset: nameController.text.length,
-                  );
-                },
-                onSubmitted: (value) {
-                  final newName = value.trim();
-                  if (newName.isNotEmpty) {
-                    controller.updateDisplayName(newName);
-                    Get.back();
-                  }
-                },
-              ),
-              const SizedBox(height: AppSizes.paddingL),
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton(
-                  onPressed: () {
-                    // Unfocus the keyboard first
-                    FocusScope.of(context).unfocus();
-
-                    final newName = nameController.text.trim();
-                    debugPrint("object 2");
-                    if (newName.isNotEmpty) {
-                      debugPrint("object 1");
-                      controller.updateDisplayName(newName);
-                      debugPrint("object 3");
-
-                      // Try multiple ways to close the sheet
-                      debugPrint("object 4 - attempting to close sheet");
-
-                      // Method 1: Try Get.back()
-                      try {
-                        Get.back();
-                        debugPrint("object 4a - Get.back() called");
-                      } catch (e) {
-                        debugPrint("object 4a - Get.back() failed: $e");
-                      }
-
-                      // Method 2: Try Navigator.pop() as fallback
-                      try {
-                        if (Navigator.canPop(context)) {
-                          Navigator.pop(context);
-                          debugPrint("object 4b - Navigator.pop() called");
-                        }
-                      } catch (e) {
-                        debugPrint("object 4b - Navigator.pop() failed: $e");
-                      }
-                    } else {
-                      // Show error if name is empty
-                      Get.snackbar(
-                        'Error',
-                        'Please enter a name',
-                        snackPosition: SnackPosition.TOP,
-                        backgroundColor: Colors.red.shade100,
-                        colorText: Colors.red.shade800,
-                      );
-                    }
-                  },
-                  child: const Text('Save'),
-                ),
-              ),
-              const SizedBox(
-                height: AppSizes.paddingS,
-              ), // Add some padding at bottom
-            ],
-          ),
-        ),
+      _EditContactNameSheet(
+        initialName: controller.displayName.value,
+        onSave: (newName) {
+          controller.updateDisplayName(newName);
+          try {
+            Get.back();
+          } catch (_) {}
+        },
       ),
       isScrollControlled:
           true, // Allow sheet to be scrollable and handle keyboard
@@ -1920,6 +1799,152 @@ class _MessageInputState extends State<_MessageInput> {
           ),
         ),
       ],
+    );
+  }
+}
+
+/// WhatsApp-style single-line contact-name editor. Owns its
+/// TextEditingController and FocusNode for the sheet's real lifecycle —
+/// created in initState, disposed only when the sheet fully unmounts, so no
+/// exit-animation rebuild ever touches a disposed node.
+class _EditContactNameSheet extends StatefulWidget {
+  const _EditContactNameSheet({
+    required this.initialName,
+    required this.onSave,
+  });
+
+  final String initialName;
+  final void Function(String newName) onSave;
+
+  @override
+  State<_EditContactNameSheet> createState() => _EditContactNameSheetState();
+}
+
+class _EditContactNameSheetState extends State<_EditContactNameSheet> {
+  late final TextEditingController _controller;
+  late final FocusNode _focusNode;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController(text: widget.initialName);
+    // Cursor parked at the end of the text — never select-all on tap.
+    _controller.selection =
+        TextSelection.collapsed(offset: _controller.text.length);
+    _focusNode = FocusNode();
+    // Request focus after the first frame — autofocus during the entrance
+    // animation can trigger a stray word-selection on some keyboards.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _focusNode.canRequestFocus) _focusNode.requestFocus();
+    });
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    _focusNode.dispose();
+    super.dispose();
+  }
+
+  void _submit([String? value]) {
+    FocusScope.of(context).unfocus();
+    final newName = (value ?? _controller.text).trim();
+    if (newName.isNotEmpty && newName.length <= 100) {
+      widget.onSave(newName);
+    } else {
+      Get.snackbar(
+        'Error',
+        'Name must be 1-100 characters',
+        snackPosition: SnackPosition.TOP,
+        backgroundColor: Colors.red.shade100,
+        colorText: Colors.red.shade800,
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      child: Container(
+        decoration: const BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+        ),
+        padding: const EdgeInsets.all(AppSizes.paddingL),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Row(
+              children: [
+                IconButton(
+                  onPressed: () => Get.back(),
+                  icon: const Icon(Icons.close),
+                ),
+                const SizedBox(width: AppSizes.paddingM),
+                const Expanded(
+                  child: Text(
+                    'Edit Contact',
+                    style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: AppSizes.paddingL),
+            TextField(
+              controller: _controller,
+              focusNode: _focusNode,
+              maxLines: 1,
+              maxLength: 100,
+              keyboardType: TextInputType.name,
+              textCapitalization: TextCapitalization.words,
+              textInputAction: TextInputAction.done,
+              scrollPhysics: const ClampingScrollPhysics(),
+              decoration: InputDecoration(
+                counterText: '',
+                labelText: 'Contact Name',
+                hintText: 'Enter contact name',
+                hintStyle: TextStyle(color: Colors.grey.shade400),
+                filled: true,
+                fillColor: Colors.grey.shade50,
+                contentPadding: const EdgeInsets.symmetric(
+                  horizontal: AppSizes.paddingM,
+                  vertical: AppSizes.paddingM,
+                ),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: BorderSide(color: Colors.grey.shade300),
+                ),
+                enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: BorderSide(color: Colors.grey.shade300),
+                ),
+                focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: const BorderSide(
+                    color: AppColors.primary,
+                    width: 2,
+                  ),
+                ),
+              ),
+              onSubmitted: _submit,
+            ),
+            const SizedBox(height: AppSizes.paddingL),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton(
+                onPressed: _submit,
+                child: const Text('Save'),
+              ),
+            ),
+            const SizedBox(
+              height: AppSizes.paddingS,
+            ), // Add some padding at bottom
+          ],
+        ),
+      ),
     );
   }
 }

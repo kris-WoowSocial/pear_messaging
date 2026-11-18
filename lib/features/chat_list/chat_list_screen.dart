@@ -13,7 +13,6 @@ import '../../core/constants/app_sizes.dart';
 import '../../core/services/socket_service.dart';
 import '../../core/services/local_storage_service.dart';
 import '../../core/services/user_profile_cache.dart';
-import '../../core/services/profile_avatar_service.dart';
 import '../../core/services/call_history_service.dart';
 import '../../widgets/vant_avatar.dart';
 import '../call/call_controller.dart';

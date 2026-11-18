@@ -162,23 +162,34 @@ class ChatSettingsScreen extends GetView<ChatController> {
               },
               child: Row(
                 mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
-                    StringUtils.formatDeviceIdWithName(
-                      controller.recipientDeviceId,
-                      controller.displayName.value,
-                    ),
-                    style: const TextStyle(
-                      fontSize: 22,
-                      fontWeight: FontWeight.bold,
-                      color: Colors.black,
+                  // Long names wrap to a second line instead of
+                  // overflowing the row (chat list/header still ellipsize).
+                  Flexible(
+                    child: Text(
+                      StringUtils.formatDeviceIdWithName(
+                        controller.recipientDeviceId,
+                        controller.displayName.value,
+                      ),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                        fontSize: 22,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.black,
+                      ),
                     ),
                   ),
                   const SizedBox(width: 20),
-                  Icon(
-                    Icons.edit_outlined,
-                    size: 24,
-                    color: Colors.black,
+                  const Padding(
+                    padding: EdgeInsets.only(top: 4),
+                    child: Icon(
+                      Icons.edit_outlined,
+                      size: 24,
+                      color: Colors.black,
+                    ),
                   ),
                 ],
               ),
@@ -487,120 +498,25 @@ class ChatSettingsScreen extends GetView<ChatController> {
     );
   }
 
-  /// Show edit name dialog
+  /// Show edit name dialog — the StatefulWidget owns the field's controller
+  /// and focus node so they're disposed on real unmount (after the exit
+  /// animation), never mid-transition.
   void _showEditNameDialog() {
-    final nameController = TextEditingController(
-      text: controller.displayName.value,
-    );
-
     Get.dialog(
-      Dialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        child: Container(
-          padding: const EdgeInsets.all(24),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(20),
-            color: Colors.white,
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Row(
-                children: [
-                  IconButton(
-                    onPressed: () => Get.back(),
-                    icon: const Icon(Icons.close),
-                  ),
-                  const SizedBox(width: AppSizes.paddingM),
-                  const Expanded(
-                    child: Text('Edit Contact Name',
-                        style: TextStyle(
-                            fontSize: 18, fontWeight: FontWeight.bold)),
-                  ),
-                ],
-              ),
-              const SizedBox(height: AppSizes.paddingL),
-              TextField(
-                controller: nameController,
-                decoration: InputDecoration(
-                  labelText: 'Contact Name',
-                  hintText: 'Enter contact name',
-                  hintStyle: TextStyle(color: Colors.grey.shade400),
-                  filled: true,
-                  fillColor: Colors.grey.shade50,
-                  contentPadding: const EdgeInsets.symmetric(
-                    horizontal: AppSizes.paddingM,
-                    vertical: AppSizes.paddingM,
-                  ),
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    borderSide: BorderSide(color: Colors.grey.shade300),
-                  ),
-                  enabledBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    borderSide: BorderSide(color: Colors.grey.shade300),
-                  ),
-                  focusedBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    borderSide:
-                        const BorderSide(color: AppColors.primary, width: 2),
-                  ),
-                ),
-                // Auto-select all text when field gets focus
-                onTap: () {
-                  nameController.selection = TextSelection(
-                    baseOffset: 0,
-                    extentOffset: nameController.text.length,
-                  );
-                },
-              ),
-              const SizedBox(height: AppSizes.paddingL),
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton(
-                  onPressed: () {
-                    // Unfocus the keyboard first
-                    FocusScope.of(Get.context!).unfocus();
-
-                    final newName = nameController.text.trim();
-                    if (newName.isNotEmpty) {
-                      // Close dialog first
-                      Get.back();
-                      // Update the name
-                      controller.updateDisplayName(newName);
-                      // Show success message
-                      Get.snackbar(
-                        'Success',
-                        'Contact name updated',
-                        snackPosition: SnackPosition.TOP,
-                        backgroundColor: Colors.green.withOpacity(0.8),
-                        colorText: Colors.white,
-                        duration: const Duration(seconds: 2),
-                      );
-                    } else {
-                      Get.snackbar(
-                        'Error',
-                        'Please enter a name',
-                        snackPosition: SnackPosition.TOP,
-                        backgroundColor: Colors.red.withOpacity(0.8),
-                        colorText: Colors.white,
-                      );
-                    }
-                  },
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: AppColors.primary,
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(vertical: 12),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                  ),
-                  child: const Text('Save'),
-                ),
-              ),
-            ],
-          ),
-        ),
+      _EditContactNameDialog(
+        initialName: controller.displayName.value,
+        onSave: (newName) {
+          Get.back();
+          controller.updateDisplayName(newName);
+          Get.snackbar(
+            'Success',
+            'Contact name updated',
+            snackPosition: SnackPosition.TOP,
+            backgroundColor: Colors.green.withOpacity(0.8),
+            colorText: Colors.white,
+            duration: const Duration(seconds: 2),
+          );
+        },
       ),
     );
   }
@@ -685,6 +601,153 @@ class ChatSettingsScreen extends GetView<ChatController> {
               ),
             ],
           ),
+        ),
+      ),
+    );
+  }
+}
+
+/// WhatsApp-style single-line name editor. Owns its TextEditingController
+/// and FocusNode for the dialog's real lifecycle — they're created in
+/// initState and disposed only when the dialog fully unmounts, so no
+/// exit-animation rebuild ever touches a disposed node.
+class _EditContactNameDialog extends StatefulWidget {
+  const _EditContactNameDialog({
+    required this.initialName,
+    required this.onSave,
+  });
+
+  final String initialName;
+  final void Function(String newName) onSave;
+
+  @override
+  State<_EditContactNameDialog> createState() =>
+      _EditContactNameDialogState();
+}
+
+class _EditContactNameDialogState extends State<_EditContactNameDialog> {
+  late final TextEditingController _controller;
+  late final FocusNode _focusNode;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController(text: widget.initialName);
+    // Cursor parked at the end of the text — never select-all on tap.
+    _controller.selection =
+        TextSelection.collapsed(offset: _controller.text.length);
+    _focusNode = FocusNode();
+    // Request focus after the first frame — autofocus during the entrance
+    // animation can trigger a stray word-selection on some keyboards.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _focusNode.canRequestFocus) _focusNode.requestFocus();
+    });
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    _focusNode.dispose();
+    super.dispose();
+  }
+
+  void _submit([String? value]) {
+    FocusScope.of(context).unfocus();
+    final newName = (value ?? _controller.text).trim();
+    if (newName.isNotEmpty && newName.length <= 100) {
+      widget.onSave(newName);
+    } else {
+      Get.snackbar(
+        'Error',
+        'Name must be 1-100 characters',
+        snackPosition: SnackPosition.TOP,
+        backgroundColor: Colors.red.withOpacity(0.8),
+        colorText: Colors.white,
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      child: Container(
+        padding: const EdgeInsets.all(24),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(20),
+          color: Colors.white,
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Row(
+              children: [
+                IconButton(
+                  onPressed: () => Get.back(),
+                  icon: const Icon(Icons.close),
+                ),
+                const SizedBox(width: AppSizes.paddingM),
+                const Expanded(
+                  child: Text('Edit Contact Name',
+                      style:
+                          TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                ),
+              ],
+            ),
+            const SizedBox(height: AppSizes.paddingL),
+            TextField(
+              controller: _controller,
+              focusNode: _focusNode,
+              maxLines: 1,
+              maxLength: 100,
+              keyboardType: TextInputType.name,
+              textCapitalization: TextCapitalization.words,
+              textInputAction: TextInputAction.done,
+              scrollPhysics: const ClampingScrollPhysics(),
+              decoration: InputDecoration(
+                counterText: '',
+                labelText: 'Contact Name',
+                hintText: 'Enter contact name',
+                hintStyle: TextStyle(color: Colors.grey.shade400),
+                filled: true,
+                fillColor: Colors.grey.shade50,
+                contentPadding: const EdgeInsets.symmetric(
+                  horizontal: AppSizes.paddingM,
+                  vertical: AppSizes.paddingM,
+                ),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: BorderSide(color: Colors.grey.shade300),
+                ),
+                enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: BorderSide(color: Colors.grey.shade300),
+                ),
+                focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide:
+                      const BorderSide(color: AppColors.primary, width: 2),
+                ),
+              ),
+              onSubmitted: _submit,
+            ),
+            const SizedBox(height: AppSizes.paddingL),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton(
+                onPressed: _submit,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.primary,
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                ),
+                child: const Text('Save'),
+              ),
+            ),
+          ],
         ),
       ),
     );

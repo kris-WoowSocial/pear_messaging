@@ -19,6 +19,7 @@ import 'connection_request_service.dart';
 import 'ice_servers_cache.dart';
 import 'identity_service.dart';
 import 'local_storage_service.dart';
+import 'user_profile_cache.dart';
 import '../../storage/models/message_entity.dart';
 import '../constants/network_constants.dart';
 import 'package:package_info_plus/package_info_plus.dart';
@@ -856,6 +857,15 @@ class SocketService extends GetxService {
       if (Get.isRegistered<LocalStorageService>())
         'lastProfileSyncAt':
             Get.find<LocalStorageService>().getLastProfileSyncAt(),
+      // Self-heal: re-announce our own avatar so the server can re-stamp a
+      // profile row that lost it (e.g. uploaded before persistence worked).
+      if (Get.isRegistered<UserProfileCache>()) ...{
+        if (Get.find<UserProfileCache>().myAvatarUrl.value.isNotEmpty)
+          'avatarUrl': Get.find<UserProfileCache>().myAvatarUrl.value,
+        if (Get.find<UserProfileCache>().avatarUpdatedAt[_deviceId] != null)
+          'avatarUpdatedAt':
+              Get.find<UserProfileCache>().avatarUpdatedAt[_deviceId],
+      },
     });
     _registerWatch
       ..reset()
