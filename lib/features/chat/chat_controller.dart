@@ -12,6 +12,7 @@ import '../../core/services/local_auth_service.dart';
 import '../../core/services/local_storage_service.dart';
 import '../../core/services/socket_service.dart';
 import '../../core/services/block_service.dart';
+import '../../core/services/caller_name_resolver.dart';
 import '../../core/services/encryption_service.dart';
 import '../../core/services/image_cache_service.dart';
 import '../../core/services/media_upload_service.dart';
@@ -122,7 +123,30 @@ class ChatController extends GetxController with WidgetsBindingObserver {
     // Get arguments
     final args = Get.arguments as Map<String, dynamic>;
     chatId = args['chatId'] ?? '';
-    displayName.value = args['userName'] ?? 'Unknown';
+    // Notification taps can carry a stale @user_xxxxx placeholder (the
+    // pending chat was saved before the responder's real name arrived).
+    // Prefer any real name — argument first, then saved contact name —
+    // and never let a placeholder overwrite a real one.
+    final argName = (args['userName'] ?? '').toString();
+    displayName.value = CallerNameResolver.resolveSync(
+          chatId,
+          payloadName: argName,
+          savedNameLookup: (id) => _storageService.getDisplayName(id),
+        ) ??
+        _storageService.getDisplayName(chatId);
+    // Async upgrade: storage may still hold a placeholder even when the
+    // server profile already knows the responder's real name.
+    if (CallerNameResolver.isPlaceholder(displayName.value, chatId)) {
+      unawaited(CallerNameResolver.resolve(
+        chatId,
+        payloadName: argName,
+        savedNameLookup: (id) => _storageService.getDisplayName(id),
+      ).then((name) {
+        if (!CallerNameResolver.isPlaceholder(name, chatId)) {
+          displayName.value = name;
+        }
+      }));
+    }
     recipientDeviceId = args['recipientDeviceId'] ?? '';
     myDeviceId = args['myDeviceId'] ?? '';
     isGroup = args['isGroup'] as bool? ?? false;

@@ -12,6 +12,8 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../utils/string_utils.dart';
+import 'caller_name_resolver.dart';
+import 'user_profile_cache.dart';
 import '../../routes/app_routes.dart';
 import '../../storage/models/message_entity.dart';
 import '../../storage/models/chat_entity.dart';
@@ -1388,28 +1390,63 @@ class FCMService extends GetxService {
   }
 
   /// Handle notification tap from Firebase (background/terminated state)
-  void _handleNotificationTap(RemoteMessage message) {
+  Future<void> _handleNotificationTap(RemoteMessage message) async {
     debugPrint('📱 Notification tapped: ${message.data}');
 
     final senderId =
         message.data['senderDeviceId'] ?? message.data['sender'] ?? '';
+    if (senderId.isEmpty) return;
 
-    if (senderId.isNotEmpty) {
-      final chat = _storageService.getChat(senderId);
-      final displayName =
-          chat?.userName ?? StringUtils.generateFriendlyName(senderId);
+    // Notification-block pushes (connection_accepted, calls) bypass the
+    // message handlers entirely — the tap is the FIRST place the payload
+    // name can be consumed. Resolve payload -> saved contact -> server
+    // profile -> friendly, never trusting a stale ChatEntity placeholder.
+    final payloadName = (message.data['acceptorName'] ??
+            message.data['responderName'] ??
+            message.data['senderName'] ??
+            message.data['userName'] ??
+            message.data['callerName'] ??
+            '')
+        .toString();
 
-      // Navigate to chat screen
-      Get.toNamed(
-        AppRoutes.chat,
-        arguments: {
-          'chatId': senderId,
-          'userName': displayName,
-          'recipientDeviceId': senderId,
-        },
-      );
-      debugPrint('📱 Navigating to chat with: $displayName');
+    final resolvedName = await CallerNameResolver.resolve(
+      senderId,
+      payloadName: payloadName,
+      savedNameLookup: (id) => _storageService.getDisplayName(id),
+    );
+
+    // Persist the real name so the ChatEntity/chat list upgrade now —
+    // the pending chat saved @user_xxxx at request time and nothing else
+    // overwrote it while the app was backgrounded.
+    if (!CallerNameResolver.isPlaceholder(resolvedName, senderId)) {
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString('chat_name_$senderId', resolvedName);
+        final chat = _storageService.getChat(senderId);
+        if (chat != null &&
+            CallerNameResolver.isPlaceholder(chat.userName, senderId)) {
+          await _storageService.saveChat(
+              chat.copyWith(userName: resolvedName));
+        }
+      } catch (e) {
+        debugPrint('⚠️ Tap-name persist failed: $e');
+      }
     }
+
+    final avatarUrl = Get.isRegistered<UserProfileCache>()
+        ? Get.find<UserProfileCache>().avatarFor(senderId)
+        : '';
+
+    Get.toNamed(
+      AppRoutes.chat,
+      arguments: {
+        'chatId': senderId,
+        'userName': resolvedName,
+        'avatarUrl': avatarUrl,
+        'recipientDeviceId': senderId,
+      },
+    );
+    debugPrint('📱 Navigating to chat with: $resolvedName');
   }
 
   /// Setup token refresh listener
