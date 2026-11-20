@@ -749,8 +749,7 @@ class ChatListController extends GetxController {
           unreadCount: updatedChat.unreadCount,
           isReply: updatedChat.isReply,
           replyContent: updatedChat.replyContent,
-          avatarUrl:
-              _storageService.getChat(updatedChat.id)?.avatarUrl,
+          avatarUrl: _storageService.getChat(updatedChat.id)?.avatarUrl,
         ),
       );
 
@@ -1434,8 +1433,8 @@ class ChatListController extends GetxController {
       } else {
         final existing = _storageService.getChat(deviceId);
         if (existing != null) {
-          await _storageService.saveChat(
-              existing.copyWith(avatarUrl: avatarUrl));
+          await _storageService
+              .saveChat(existing.copyWith(avatarUrl: avatarUrl));
         }
       }
     } catch (e) {
@@ -1453,8 +1452,7 @@ class ChatListController extends GetxController {
       // QR payloads can predate the inviter's latest photo — always pull
       // the live profile so the chat opens with their current avatar.
       if (Get.isRegistered<UserProfileCache>()) {
-        unawaited(
-            Get.find<UserProfileCache>().fetchAndCacheProfile(deviceId));
+        unawaited(Get.find<UserProfileCache>().fetchAndCacheProfile(deviceId));
       }
 
       // Check if chat already exists in memory list
@@ -1531,6 +1529,8 @@ class ChatListController extends GetxController {
           replyContent: null,
         );
         await _storageService.saveChat(newChatEntity);
+        // User explicitly added this contact — known for strict-mode gates.
+        _storageService.markContactKnown(deviceId);
 
         // Add to in-memory list so it shows immediately in the chat list
         final newChatModel = ChatListModel(

@@ -184,6 +184,40 @@ class WebRTCCallService {
     };
   }
 
+  /// True when [serverList] (a list of ICE server maps) contains at least
+  /// one `turn:`/`turns:` URL.
+  static bool _listContainsTurn(dynamic serverList) {
+    if (serverList is! List) return false;
+    bool isTurn(Object? u) =>
+        u.toString().startsWith('turn:') || u.toString().startsWith('turns:');
+    for (final s in serverList) {
+      if (s is! Map) continue;
+      final urls = s['urls'];
+      if (urls is List && urls.any(isTurn)) return true;
+      if (urls != null && isTurn(urls)) return true;
+    }
+    return false;
+  }
+
+  /// Pre-dial check for "Protect IP address in calls": resolves the ICE
+  /// config the next call would use and reports whether a TURN relay is
+  /// actually available. Without one, relay-only policy would gather zero
+  /// candidates and the call could never connect — the caller should abort
+  /// before the ringing UI appears. Always true when the pref is off.
+  Future<bool> hasTurnRelayForIpProtection() async {
+    if (!_ipProtectionEnabled) return true;
+    try {
+      // Inspect (don't consume) primed servers first — the callee path may
+      // have stashed them from the call event.
+      if (_listContainsTurn(_pendingIceServers)) return true;
+      final fetched = await iceServersProvider?.call();
+      return _listContainsTurn(fetched);
+    } catch (e) {
+      debugPrint('⚠️ TURN availability check failed: $e');
+      return false;
+    }
+  }
+
   Future<Map<String, dynamic>> _resolveIceServers() async {
     try {
       final primed = _pendingIceServers;

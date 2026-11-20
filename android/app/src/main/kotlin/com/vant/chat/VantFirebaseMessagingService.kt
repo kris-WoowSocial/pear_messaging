@@ -274,6 +274,25 @@ class VantFirebaseMessagingService : FirebaseMessagingService() {
         return payloadName?.trim()?.takeIf { it.isNotEmpty() } ?: "Unknown"
     }
 
+    /**
+     * Strict-mode "silence unknown callers" check, evaluated natively so it
+     * still applies when the Dart engine isn't running. Mirrors the Dart
+     * LocalStorageService logic: effective = strict_account_settings OR
+     * silence_unknown_callers; a caller not in the comma-joined
+     * known_contact_ids allowlist is silenced.
+     */
+    private fun shouldSilenceUnknownCaller(callerId: String): Boolean {
+        if (callerId.isEmpty()) return false
+        val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+        val strict = prefs.getBoolean("flutter.strict_account_settings", false)
+        val silence = prefs.getBoolean("flutter.silence_unknown_callers", false)
+        if (!strict && !silence) return false
+        val known = prefs.getString("flutter.known_contact_ids", "") ?: ""
+        return known.split(',')
+            .map { it.trim() }
+            .none { it.isNotEmpty() && it == callerId }
+    }
+
     private fun handleIncomingCall(data: Map<String, String>) {
         val callerId = data["callerId"] ?: data["caller_id"] ?: ""
         val callerName = resolveCallerName(
@@ -286,6 +305,17 @@ class VantFirebaseMessagingService : FirebaseMessagingService() {
 
         if (callId.isEmpty() || callerId.isEmpty()) {
             Log.w(TAG, "⚠️ Invalid incoming_call data: missing callId or callerId")
+            return
+        }
+
+        // "Silence unknown callers" (Strict account settings): the Dart side
+        // stores the effective toggle under flutter.silence_unknown_callers /
+        // flutter.strict_account_settings and the known-contact allowlist as
+        // comma-joined flutter.known_contact_ids in FlutterSharedPreferences.
+        // This covers killed/background pushes — the server also withholds the
+        // wake-up push, so this is the second line of defense.
+        if (shouldSilenceUnknownCaller(callerId)) {
+            Log.i(TAG, "🔕 Silencing incoming call from unknown caller $callerId (callId=$callId)")
             return
         }
 

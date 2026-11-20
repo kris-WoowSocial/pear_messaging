@@ -69,6 +69,24 @@ NotificationDetails getNotificationDetails(int badgeCount) {
   );
 }
 
+/// Persistent mute check readable from any isolate (SharedPreferences —
+/// ChatController writes `muted_chat_<chatId>` alongside the Hive
+/// `ChatEntity.mutedUntilMs`). 0/absent = unmuted, -1 = always, >0 = expiry.
+/// Muted chats still save messages + update unread badges; only the alert
+/// (sound/vibration/banner) is suppressed.
+Future<bool> isChatIdMuted(String chatId) async {
+  try {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.reload();
+    final m = prefs.getInt('muted_chat_$chatId');
+    if (m == null || m == 0) return false;
+    if (m == -1) return true;
+    return DateTime.now().millisecondsSinceEpoch < m;
+  } catch (_) {
+    return false;
+  }
+}
+
 /// Top-level function to handle notification taps
 Future<void> onNotificationTap(NotificationResponse response) async {
   try {
@@ -428,8 +446,10 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   // Show notification immediately — but only for data-only pushes. When the
   // FCM payload has a notification block, Android/iOS display it automatically
   // and a local notification here would appear as a duplicate.
+  // Muted chats skip the alert entirely but still save the message below.
+  final chatMuted = await isChatIdMuted(chatId);
   try {
-    if (message.notification == null) {
+    if (message.notification == null && !chatMuted) {
       var title = 'New Message';
       const body = 'New message';
       final payload = jsonEncode({
@@ -1348,6 +1368,9 @@ class FCMService extends GetxService {
     if (senderId.isNotEmpty && activeChatId == senderId) {
       shouldSuppressNotification = true;
       suppressReason = 'user is in chat with: $senderId';
+    } else if (await isChatIdMuted(chatId)) {
+      shouldSuppressNotification = true;
+      suppressReason = 'chat is muted: $chatId';
     } else if (Platform.isIOS && AppLifecycleService.instance.isInForeground) {
       shouldSuppressNotification = true;
       suppressReason = 'app is in foreground on iOS';
@@ -1425,8 +1448,7 @@ class FCMService extends GetxService {
         final chat = _storageService.getChat(senderId);
         if (chat != null &&
             CallerNameResolver.isPlaceholder(chat.userName, senderId)) {
-          await _storageService.saveChat(
-              chat.copyWith(userName: resolvedName));
+          await _storageService.saveChat(chat.copyWith(userName: resolvedName));
         }
       } catch (e) {
         debugPrint('⚠️ Tap-name persist failed: $e');

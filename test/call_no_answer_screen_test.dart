@@ -217,7 +217,10 @@ void main() {
     test('_handleIncomingCall clears the marker before any early return', () {
       final start = controllerSrc.indexOf('Future<void> _handleIncomingCall');
       expect(start, greaterThan(-1));
-      final window = controllerSrc.substring(start, start + 2500);
+      // Window spans every early-return gate (video/crypto rejects, busy
+      // reject, silence-unknown-callers, dedup, pending-auto-accept) so the
+      // ordering assertions below cover all of them.
+      final window = controllerSrc.substring(start, start + 4200);
       final clearAt = window.indexOf('noAnswerUi.value = null');
       expect(clearAt, greaterThan(-1));
       // The clear must precede ALL early-return paths (video/crypto rejects,

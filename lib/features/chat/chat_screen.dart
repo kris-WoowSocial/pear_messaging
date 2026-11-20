@@ -83,59 +83,66 @@ class ChatScreen extends GetView<ChatController> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Obx(
-                () => Text(
-                  controller.isGroup
-                      ? controller.displayName.value
-                      : (controller.displayName.value.isNotEmpty &&
-                              controller.recipientDeviceId !=
-                                  controller.displayName.value)
-                          ? controller.displayName.value
-                          : StringUtils.generateFriendlyName(
-                              controller.recipientDeviceId,
-                            ),
-                  style: const TextStyle(
-                    fontSize: AppSizes.fontM,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.black,
-                  ),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-              Obx(
-                () => controller.isGroup
-                    ? Text(
-                        controller.groupMemberCount.value > 0
-                            ? '${controller.groupMemberCount.value} members'
-                            : 'Group',
+                      () => Text(
+                        controller.isGroup
+                            ? controller.displayName.value
+                            : (controller.displayName.value.isNotEmpty &&
+                                    controller.recipientDeviceId !=
+                                        controller.displayName.value)
+                                ? controller.displayName.value
+                                : StringUtils.generateFriendlyName(
+                                    controller.recipientDeviceId,
+                                  ),
                         style: const TextStyle(
-                          fontSize: AppSizes.fontS,
-                          fontWeight: FontWeight.w600,
-                          color: Colors.grey,
+                          fontSize: AppSizes.fontM,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.black,
                         ),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                      )
-                    : Text(
-                        controller.recipientStatus.value,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontSize: AppSizes.fontS,
-                          fontWeight: FontWeight.w600,
-                          color: controller.recipientOnline.value ||
-                                  (controller.recipientLastSeen.value != null &&
-                                      DateTime.now()
-                                              .difference(
-                                                controller
-                                                    .recipientLastSeen.value!,
-                                              )
-                                              .inHours <
-                                          24)
-                              ? Colors.green
-                              : Colors.grey,
-                        ),
                       ),
+                    ),
+                    Obx(
+                      () => controller.isGroup
+                          ? Text(
+                              controller.groupMemberCount.value > 0
+                                  ? '${controller.groupMemberCount.value} members'
+                                  : 'Group',
+                              style: const TextStyle(
+                                fontSize: AppSizes.fontS,
+                                fontWeight: FontWeight.w600,
+                                color: Colors.grey,
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            )
+                          : Text(
+                              controller.recipientTyping.value
+                                  ? 'typing...'
+                                  : controller.recipientStatus.value,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontSize: AppSizes.fontS,
+                                fontWeight: FontWeight.w600,
+                                color: controller.recipientTyping.value
+                                    ? AppColors.primary
+                                    : (controller.recipientOnline.value ||
+                                            (controller.recipientLastSeen
+                                                        .value !=
+                                                    null &&
+                                                DateTime.now()
+                                                        .difference(
+                                                          controller
+                                                              .recipientLastSeen
+                                                              .value!,
+                                                        )
+                                                        .inHours <
+                                                    24)
+                                        ? Colors.green
+                                        : Colors.grey),
+                              ),
+                            ),
                     ),
                   ],
                 ),
@@ -168,19 +175,18 @@ class ChatScreen extends GetView<ChatController> {
                 },
                 tooltip: 'Audio Call',
               ),
-            if (!controller.isGroup &&
-                Get.isRegistered<FeatureFlagService>())
-              Obx(() =>
-                    Get.find<FeatureFlagService>().videoCalling.value
-                        ? IconButton(
-                            icon: const Icon(Icons.videocam, color: Colors.black),
-                            onPressed: () {
-                              debugPrint('📞 Video call button pressed');
-                              _startVideoCall();
-                            },
-                            tooltip: 'Video Call',
-                          )
-                        : const SizedBox.shrink(),
+            if (!controller.isGroup && Get.isRegistered<FeatureFlagService>())
+              Obx(
+                () => Get.find<FeatureFlagService>().videoCalling.value
+                    ? IconButton(
+                        icon: const Icon(Icons.videocam, color: Colors.black),
+                        onPressed: () {
+                          debugPrint('📞 Video call button pressed');
+                          _startVideoCall();
+                        },
+                        tooltip: 'Video Call',
+                      )
+                    : const SizedBox.shrink(),
               ),
             IconButton(
               icon: const Icon(Icons.settings, color: Colors.black),
@@ -980,51 +986,51 @@ class ChatScreen extends GetView<ChatController> {
                   // payload doesn't carry the flag).
                   if (!controller.isGroup)
                     Obx(() => GestureDetector(
-                        onTap: () => isViewOnce.value = !isViewOnce.value,
-                        child: Row(
-                          children: [
-                            Container(
-                              width: 40,
-                              height: 40,
-                              decoration: BoxDecoration(
-                                shape: BoxShape.circle,
-                                color: isViewOnce.value
-                                    ? const Color(0xFF25D366)
-                                    : Colors.transparent,
-                                border: Border.all(
+                          onTap: () => isViewOnce.value = !isViewOnce.value,
+                          child: Row(
+                            children: [
+                              Container(
+                                width: 40,
+                                height: 40,
+                                decoration: BoxDecoration(
+                                  shape: BoxShape.circle,
                                   color: isViewOnce.value
                                       ? const Color(0xFF25D366)
-                                      : Colors.grey[500]!,
-                                  width: 2,
-                                ),
-                              ),
-                              child: Center(
-                                child: Text(
-                                  '1',
-                                  style: TextStyle(
+                                      : Colors.transparent,
+                                  border: Border.all(
                                     color: isViewOnce.value
-                                        ? Colors.white
-                                        : Colors.grey[600],
-                                    fontSize: 16,
-                                    fontWeight: FontWeight.bold,
+                                        ? const Color(0xFF25D366)
+                                        : Colors.grey[500]!,
+                                    width: 2,
+                                  ),
+                                ),
+                                child: Center(
+                                  child: Text(
+                                    '1',
+                                    style: TextStyle(
+                                      color: isViewOnce.value
+                                          ? Colors.white
+                                          : Colors.grey[600],
+                                      fontSize: 16,
+                                      fontWeight: FontWeight.bold,
+                                    ),
                                   ),
                                 ),
                               ),
-                            ),
-                            const SizedBox(width: 8),
-                            Text(
-                              'View once',
-                              style: TextStyle(
-                                color: isViewOnce.value
-                                    ? const Color(0xFF25D366)
-                                    : Colors.grey[700],
-                                fontSize: 14,
-                                fontWeight: FontWeight.w500,
+                              const SizedBox(width: 8),
+                              Text(
+                                'View once',
+                                style: TextStyle(
+                                  color: isViewOnce.value
+                                      ? const Color(0xFF25D366)
+                                      : Colors.grey[700],
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w500,
+                                ),
                               ),
-                            ),
-                          ],
-                        ),
-                      ))
+                            ],
+                          ),
+                        ))
                   else
                     const SizedBox.shrink(),
                   // Send button
@@ -1721,4 +1727,3 @@ class _MessageInputState extends State<_MessageInput> {
     );
   }
 }
-

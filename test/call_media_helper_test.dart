@@ -221,9 +221,9 @@ void main() {
     );
     final startup = File('lib/main_prod.dart').readAsStringSync();
 
-    expect(actions, contains('Obx(()'));
+    expect(actions, contains('Obx('));
     expect(
-      actions.indexOf('Obx(()'),
+      actions.indexOf('Obx('),
       lessThan(actions.indexOf('videoCalling.value')),
     );
     expect(actions, contains('Icon(Icons.videocam'));

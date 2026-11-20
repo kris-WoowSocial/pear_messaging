@@ -48,6 +48,14 @@ class ChatEntity {
   /// auth (WhatsApp "Chat lock"). Local-only flag — never synced.
   final bool isLocked;
 
+  /// Device ID of the group's creator (from backend `created_by`). Null for
+  /// 1:1 chats. Only the creator may dissolve a group.
+  final String? createdBy;
+
+  /// Mute expiry: null/0 = not muted, -1 = muted always, >0 = epoch ms when
+  /// the mute expires.
+  final int? mutedUntilMs;
+
   ChatEntity({
     required this.id,
     required this.userName,
@@ -66,6 +74,8 @@ class ChatEntity {
     this.maxMembers,
     this.disappearingAfterSeconds = 0,
     this.isLocked = false,
+    this.createdBy,
+    this.mutedUntilMs,
   })  : messages = messages ?? [],
         members = members ?? [],
         admins = admins ?? [];
@@ -91,6 +101,8 @@ class ChatEntity {
       'maxMembers': maxMembers,
       'disappearingAfterSeconds': disappearingAfterSeconds,
       'isLocked': isLocked,
+      'createdBy': createdBy,
+      'mutedUntilMs': mutedUntilMs,
     };
   }
 
@@ -125,6 +137,8 @@ class ChatEntity {
       maxMembers: json['maxMembers'] as int?,
       disappearingAfterSeconds: json['disappearingAfterSeconds'] as int? ?? 0,
       isLocked: json['isLocked'] as bool? ?? false,
+      createdBy: json['createdBy'] as String?,
+      mutedUntilMs: json['mutedUntilMs'] as int?,
     );
   }
 
@@ -148,6 +162,8 @@ class ChatEntity {
     int? maxMembers,
     int? disappearingAfterSeconds,
     bool? isLocked,
+    String? createdBy,
+    int? mutedUntilMs,
   }) {
     return ChatEntity(
       id: id ?? this.id,
@@ -170,6 +186,16 @@ class ChatEntity {
       disappearingAfterSeconds:
           disappearingAfterSeconds ?? this.disappearingAfterSeconds,
       isLocked: isLocked ?? this.isLocked,
+      createdBy: createdBy ?? this.createdBy,
+      mutedUntilMs: mutedUntilMs ?? this.mutedUntilMs,
     );
+  }
+
+  /// True when an active mute applies (always, or unexpired timed mute).
+  bool get isMuted {
+    final m = mutedUntilMs;
+    if (m == null || m == 0) return false;
+    if (m == -1) return true;
+    return DateTime.now().millisecondsSinceEpoch < m;
   }
 }

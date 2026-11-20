@@ -12,6 +12,7 @@ class ChatMessageModel {
   final DateTime? mediaExpiryTimestamp;
   final ReplyToEntity? replyTo;
   final String? senderName;
+  final String? senderId;
   final int? totalMembers;
   final int? deliveredCount;
   final int? readCount;
@@ -36,6 +37,7 @@ class ChatMessageModel {
     this.mediaExpiryTimestamp,
     this.replyTo,
     this.senderName,
+    this.senderId,
     this.totalMembers,
     this.deliveredCount,
     this.readCount,
@@ -88,6 +90,7 @@ class ChatMessageModel {
     DateTime? mediaExpiryTimestamp,
     ReplyToEntity? replyTo,
     String? senderName,
+    String? senderId,
     int? totalMembers,
     int? deliveredCount,
     int? readCount,
@@ -112,6 +115,7 @@ class ChatMessageModel {
       mediaExpiryTimestamp: mediaExpiryTimestamp ?? this.mediaExpiryTimestamp,
       replyTo: replyTo ?? this.replyTo,
       senderName: senderName ?? this.senderName,
+      senderId: senderId ?? this.senderId,
       totalMembers: totalMembers ?? this.totalMembers,
       deliveredCount: deliveredCount ?? this.deliveredCount,
       readCount: readCount ?? this.readCount,
@@ -139,6 +143,7 @@ class ChatMessageModel {
       mediaExpiryTimestamp: entity.mediaExpiryTimestamp,
       replyTo: entity.replyTo,
       senderName: entity.senderName,
+      senderId: entity.senderId,
       totalMembers: entity.totalMembers,
       deliveredCount: entity.deliveredCount,
       readCount: entity.readCount,

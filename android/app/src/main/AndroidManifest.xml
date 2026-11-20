@@ -80,7 +80,7 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:launchMode="singleTop"
+            android:launchMode="singleTask"
             android:theme="@style/LaunchTheme"
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
             android:supportsPictureInPicture="true"
@@ -91,7 +91,9 @@
           
 
 
-            <!-- Custom scheme for direct app opening -->
+            <!-- Custom URI scheme (vantchat://...). Keep separate from the https
+                 App Link filter below and WITHOUT autoVerify — mixing a custom
+                 scheme into an autoVerify filter breaks domain verification. -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
@@ -99,62 +101,15 @@
                 <data android:scheme="vantchat" />
             </intent-filter>
 
-            <!-- Custom scheme with specific host -->
-            <intent-filter>
+            <!-- Branch.io App Links - verified. Single clean filter covering the
+                 bare host and all paths; no pathPattern entries (those generate
+                 the Play Console ".*" misconfigured deep link warnings). -->
+            <intent-filter android:autoVerify="true">
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
-                <data android:scheme="vantchat" android:host="chat" />
-            </intent-filter>
-
-            <!-- Custom scheme for opening -->
-            <intent-filter>
-                <action android:name="android.intent.action.VIEW" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.BROWSABLE" />
-                <data android:scheme="vantchat" android:host="open" />
-            </intent-filter>
-
-            <!-- Branch.io deep links - Without autoVerify for immediate opening -->
-            <intent-filter>
-                <action android:name="android.intent.action.VIEW" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.BROWSABLE" />
-                
-                <data android:scheme="https" />
-                <data android:host="vantchatting.app.link" />
-            </intent-filter>
-
-            <!-- Branch.io deep links - Alternate -->
-            <intent-filter>
-                <action android:name="android.intent.action.VIEW" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.BROWSABLE" />
-                
-                <data android:scheme="https" />
-                <data android:host="vantchatting-alternate.app.link" />
-            </intent-filter>
-
-            <!-- Branch.io deep links - With path -->
-            <intent-filter>
-                <action android:name="android.intent.action.VIEW" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.BROWSABLE" />
-                
-                <data android:scheme="https" />
-                <data android:host="vantchatting.app.link" />
-                <data android:path="/" />
-            </intent-filter>
-
-            <!-- Branch.io deep links - Alternate with path -->
-            <intent-filter>
-                <action android:name="android.intent.action.VIEW" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.BROWSABLE" />
-                
-                <data android:scheme="https" />
-                <data android:host="vantchatting-alternate.app.link" />
-                <data android:path="/" />
+                <data android:scheme="https" android:host="vantchatting.app.link" />
+                <data android:scheme="https" android:host="vantchatting-alternate.app.link" />
             </intent-filter>
 
             <!-- Specifies an Android theme to apply to this Activity as soon as
@@ -165,7 +120,7 @@
               android:name="io.flutter.embedding.android.NormalTheme"
               android:resource="@style/NormalTheme"
               />
-            <intent-filter android:autoVerify="true">
+            <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>

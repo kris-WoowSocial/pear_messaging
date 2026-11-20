@@ -520,6 +520,9 @@ class ConnectionRequestService extends GetxService {
     // where the avatar never arrived over the socket payload.
     _applyPeerAvatar(senderDeviceId, null);
 
+    // We accepted them — they join the known-contact allowlist.
+    _storageService.markContactKnown(senderDeviceId);
+
     // Create chat entity for the accepted connection
     final request = pendingRequests.firstWhereOrNull(
           (request) => request.id == requestId,
@@ -826,6 +829,8 @@ class ConnectionRequestService extends GetxService {
       }
 
       _storageService.saveChat(updatedChat);
+      // They accepted us — mark them a known contact (strict-mode gates).
+      _storageService.markContactKnown(targetDeviceId);
       debugPrint('💾 SENDER LOG: Chat saved/updated to storage');
 
       // Announce our identity bundle to the contact who just accepted.

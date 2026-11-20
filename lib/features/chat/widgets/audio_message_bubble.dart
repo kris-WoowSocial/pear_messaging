@@ -12,6 +12,7 @@ import 'package:path_provider/path_provider.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../core/services/encryption_service.dart';
 import '../../../core/services/image_cache_service.dart';
+import '../../../core/services/local_storage_service.dart';
 import '../../../core/services/media_upload_service.dart';
 import '../../../core/services/socket_service.dart';
 import '../../../storage/models/message_entity.dart';
@@ -54,6 +55,21 @@ class _AudioMessageBubbleState extends State<AudioMessageBubble> {
   final Rx<Duration> _duration = Duration.zero.obs;
   final RxBool _isPlaying = false.obs;
   final RxDouble _playbackRate = 1.0.obs;
+  final RxBool _awaitingTapDownload = false.obs;
+  bool _downloadRequested = false;
+
+  /// Strict account settings: voice notes from senders we never engaged
+  /// with don't auto-download — an explicit tap pulls them instead.
+  bool get _strictMediaGated {
+    if (widget.message.isMe) return false;
+    try {
+      final storage = Get.find<LocalStorageService>();
+      return storage.strictAccountSettings &&
+          !storage.isKnownContact(widget.message.senderId ?? '');
+    } catch (_) {
+      return false;
+    }
+  }
 
   Uint8List? _audioBytes;
   String? _lastToken;
@@ -143,7 +159,12 @@ class _AudioMessageBubbleState extends State<AudioMessageBubble> {
         return;
       }
 
-      // 3. Download from server.
+      // 3. Download from server. Strict-mode gated senders wait for an
+      // explicit tap before any network fetch happens.
+      if (_strictMediaGated && !_downloadRequested) {
+        _awaitingTapDownload.value = true;
+        return;
+      }
       await _downloadAndLoad(token);
     } finally {
       _isLoading = false;
@@ -266,7 +287,8 @@ class _AudioMessageBubbleState extends State<AudioMessageBubble> {
       _playerStateSub = _audioPlayer.playerStateStream.listen((state) {
         _isPlaying.value = state.playing;
       });
-      _processingStateSub = _audioPlayer.processingStateStream.listen((state) async {
+      _processingStateSub =
+          _audioPlayer.processingStateStream.listen((state) async {
         if (state == ProcessingState.completed) {
           await _audioPlayer.pause();
           if (!mounted) return;
@@ -419,6 +441,10 @@ class _AudioMessageBubbleState extends State<AudioMessageBubble> {
     }
 
     return Obx(() {
+      if (_awaitingTapDownload.value) {
+        return _buildTapToDownloadState();
+      }
+
       if (_isDownloading.value) {
         return _buildDownloadingState();
       }
@@ -466,7 +492,8 @@ class _AudioMessageBubbleState extends State<AudioMessageBubble> {
             width: 28,
             height: 28,
             child: CircularProgressIndicator(
-              value: _downloadProgress.value > 0 ? _downloadProgress.value : null,
+              value:
+                  _downloadProgress.value > 0 ? _downloadProgress.value : null,
               strokeWidth: 2.5,
               color: AppColors.primary,
             ),
@@ -482,6 +509,33 @@ class _AudioMessageBubbleState extends State<AudioMessageBubble> {
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildTapToDownloadState() {
+    return _buildBubble(
+      child: GestureDetector(
+        onTap: () {
+          _downloadRequested = true;
+          _awaitingTapDownload.value = false;
+          _initAudio();
+        },
+        child: Row(
+          children: [
+            Icon(Icons.download_outlined, color: Colors.grey[600]),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                'Tap to download media (Strict mode)',
+                style: TextStyle(
+                  color: Colors.grey[600],
+                  fontSize: 13,
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
