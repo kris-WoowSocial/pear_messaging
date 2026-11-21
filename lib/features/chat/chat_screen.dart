@@ -1576,9 +1576,9 @@ Future<Uint8List> _compressImageBytes(String filePath,
   }
 }
 
-/// WhatsApp-style input row: text field on the left, attachment + mic buttons
-/// on the right. Attachment hides while typing or recording; send appears
-/// when there is text.
+/// WhatsApp-style input row: the attachment (paperclip) button lives inside
+/// the input pill and stays visible while typing; only the trailing circle
+/// outside the pill swaps between Mic (empty) and Send (has text).
 class _MessageInput extends StatefulWidget {
   final ChatController controller;
   final VoidCallback onAttachmentTap;
@@ -1599,61 +1599,50 @@ class _MessageInputState extends State<_MessageInput> {
 
   @override
   Widget build(BuildContext context) {
-    return Stack(
-      clipBehavior: Clip.none,
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.end,
       children: [
-        TextField(
-          controller: widget.controller.messageController,
-          focusNode: widget.controller.messageFocusNode,
-          onChanged: widget.controller.onTyping,
-          maxLines: 7,
-          minLines: 1,
-          keyboardType: TextInputType.multiline,
-          textInputAction: TextInputAction.newline,
-          enableInteractiveSelection: true,
-          selectionControls: MaterialTextSelectionControls(),
-          decoration: InputDecoration(
-            hintText: AppStrings.typeMessage,
-            filled: true,
-            fillColor: AppColors.background,
-            contentPadding: const EdgeInsets.only(
-              left: AppSizes.paddingM,
-              right: 108,
-              top: AppSizes.paddingS,
-              bottom: AppSizes.paddingS,
-            ),
-            border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(
-                AppSizes.radiusCircular,
-              ),
-              borderSide: BorderSide.none,
-            ),
-          ),
-        ),
-        Positioned(
-          right: 0,
-          top: 0,
-          bottom: 0,
-          child: Center(
-            child: Obx(() {
-              if (widget.controller.hasText.value) {
-                return CircleAvatar(
-                  backgroundColor: AppColors.primary,
-                  child: IconButton(
-                    icon: const Icon(
-                      Icons.send,
-                      color: AppColors.textLight,
-                    ),
-                    onPressed: widget.controller.sendMessage,
+        // Input pill: text field with the attach button permanently inside
+        // on the right (visible whether the field is empty or not).
+        Expanded(
+          child: Stack(
+            clipBehavior: Clip.none,
+            children: [
+              TextField(
+                controller: widget.controller.messageController,
+                focusNode: widget.controller.messageFocusNode,
+                onChanged: widget.controller.onTyping,
+                maxLines: 7,
+                minLines: 1,
+                keyboardType: TextInputType.multiline,
+                textInputAction: TextInputAction.newline,
+                enableInteractiveSelection: true,
+                selectionControls: MaterialTextSelectionControls(),
+                decoration: InputDecoration(
+                  hintText: AppStrings.typeMessage,
+                  filled: true,
+                  fillColor: AppColors.background,
+                  contentPadding: const EdgeInsets.only(
+                    left: AppSizes.paddingM,
+                    right: 56,
+                    top: AppSizes.paddingS,
+                    bottom: AppSizes.paddingS,
                   ),
-                );
-              }
-
-              return Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  if (!_isRecording)
-                    GestureDetector(
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(
+                      AppSizes.radiusCircular,
+                    ),
+                    borderSide: BorderSide.none,
+                  ),
+                ),
+              ),
+              if (!_isRecording)
+                Positioned(
+                  right: 4,
+                  top: 0,
+                  bottom: 0,
+                  child: Center(
+                    child: GestureDetector(
                       onTap: widget.onAttachmentTap,
                       child: CircleAvatar(
                         radius: 18,
@@ -1665,8 +1654,30 @@ class _MessageInputState extends State<_MessageInput> {
                         ),
                       ),
                     ),
-                  if (!_isRecording) const SizedBox(width: 4),
-                  SocialMediaRecorder(
+                  ),
+                ),
+            ],
+          ),
+        ),
+        const SizedBox(width: 8),
+        // Trailing circle: Mic when empty, Send when there's text.
+        Obx(
+          () => AnimatedSwitcher(
+            duration: const Duration(milliseconds: 150),
+            child: widget.controller.hasText.value
+                ? CircleAvatar(
+                    key: const ValueKey('send'),
+                    backgroundColor: AppColors.primary,
+                    child: IconButton(
+                      icon: const Icon(
+                        Icons.send,
+                        color: AppColors.textLight,
+                      ),
+                      onPressed: widget.controller.sendMessage,
+                    ),
+                  )
+                : SocialMediaRecorder(
+                    key: const ValueKey('mic'),
                     initRecordPackageWidth: 48,
                     fullRecordPackageHeight: 48,
                     radius: BorderRadius.circular(24),
@@ -1718,9 +1729,6 @@ class _MessageInputState extends State<_MessageInput> {
                     slideToCancelText: ' Slide to cancel',
                     cancelText: 'Cancel',
                   ),
-                ],
-              );
-            }),
           ),
         ),
       ],
