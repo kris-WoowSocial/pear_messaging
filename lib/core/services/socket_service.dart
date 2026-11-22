@@ -19,6 +19,7 @@ import 'connection_request_service.dart';
 import 'ice_servers_cache.dart';
 import 'identity_service.dart';
 import 'local_storage_service.dart';
+import 'unknown_sender_guard.dart';
 import 'user_profile_cache.dart';
 import '../../storage/models/message_entity.dart';
 import '../constants/network_constants.dart';
@@ -83,6 +84,7 @@ class SocketService extends GetxService {
   Function(Map<String, dynamic>)? onGroupMessageReceived;
   Function(Map<String, dynamic>)? onGroupMessageStatus;
   Function(Map<String, dynamic>)? onGroupTyping;
+  Function(Map<String, dynamic>)? onTyping; // 1:1 typing indicator
   Function(Map<String, dynamic>)? onGroupCreated;
   Function(Map<String, dynamic>)? onGroupMemberAdded;
   Function(Map<String, dynamic>)? onGroupMemberRemoved;
@@ -434,6 +436,21 @@ class SocketService extends GetxService {
 
     // Define message handler function first
     void handleMessage(Map<String, dynamic> data) {
+      // "Block unknown account messages" — silently drop excess bursts from
+      // senders with no local chat (Settings → Advanced). No save, no ack.
+      try {
+        if (Get.isRegistered<LocalStorageService>()) {
+          final senderId = data['senderDeviceId']?.toString() ?? '';
+          if (senderId.isNotEmpty &&
+              UnknownSenderGuard.shouldDrop(
+                senderId,
+                Get.find<LocalStorageService>(),
+              )) {
+            debugPrint('🚫 Unknown-sender burst dropped: $senderId');
+            return;
+          }
+        }
+      } catch (_) {}
       debugPrint('📨 DEBUG: Socket received message: $data');
       debugPrint(
         '🔍 DEBUG: Message handler exists: ${onMessageReceived != null}',
@@ -737,6 +754,13 @@ class SocketService extends GetxService {
     });
 
     // Group chat: typing indicator
+    // 1:1 typing indicator (relayed by the server)
+    _socket?.on('typing', (data) {
+      if (data != null && onTyping != null) {
+        onTyping!(Map<String, dynamic>.from(data));
+      }
+    });
+
     _socket?.on('group_typing_indicator', (data) {
       debugPrint('👥 Group typing: $data');
       if (onGroupTyping != null && data != null) {
@@ -857,6 +881,15 @@ class SocketService extends GetxService {
       if (Get.isRegistered<LocalStorageService>())
         'lastProfileSyncAt':
             Get.find<LocalStorageService>().getLastProfileSyncAt(),
+      // Advanced privacy prefs — the server enforces them for this session
+      // (e.g. unknown-sender burst throttle on inbound messages).
+      if (Get.isRegistered<LocalStorageService>())
+        'privacyPrefs': {
+          'blockUnknownMessages':
+              Get.find<LocalStorageService>().blockUnknownMessages,
+          'silenceUnknownCallers':
+              Get.find<LocalStorageService>().silenceUnknownCallers,
+        },
       // Self-heal: re-announce our own avatar so the server can re-stamp a
       // profile row that lost it (e.g. uploaded before persistence worked).
       if (Get.isRegistered<UserProfileCache>()) ...{
@@ -1105,9 +1138,19 @@ class SocketService extends GetxService {
       // View-once flag — receiver renders the "[1] Photo" tile and must
       // not pre-fetch the media token.
       if (isViewOnce == true) 'isViewOnce': true,
+      // "Disable link previews" (Settings → Advanced) — asks the peer to
+      // render a plain clickable URL instead of fetching OG metadata.
+      if (Get.isRegistered<LocalStorageService>() &&
+          Get.find<LocalStorageService>().disableLinkPreviews)
+        'disablePreview': true,
     };
 
     _socket?.emit('send_message', messageData);
+    // Replying to someone is explicit engagement — they join the
+    // known-contact allowlist used by Strict-mode call/media gates.
+    if (Get.isRegistered<LocalStorageService>()) {
+      Get.find<LocalStorageService>().markContactKnown(recipientDeviceId);
+    }
     debugPrint(
       '📤 Message sent: $messageId to $recipientDeviceId (hasReply: ${replyTo != null})',
     );
@@ -1369,6 +1412,31 @@ class SocketService extends GetxService {
       'groupId': groupId,
     });
     debugPrint('👁️ Group read ack sent for: $messageId in $groupId');
+  }
+
+  /// Push Advanced-privacy prefs to the server mid-session so the
+  /// unknown-sender throttle takes effect without waiting for the next
+  /// `register` (the server reads its live pref map, not the register
+  /// payload snapshot).
+  void updatePrivacyPrefs() {
+    if (!isConnected.value || !Get.isRegistered<LocalStorageService>()) {
+      return;
+    }
+    _socket?.emit('privacy_prefs', {
+      'blockUnknownMessages':
+          Get.find<LocalStorageService>().blockUnknownMessages,
+      'silenceUnknownCallers':
+          Get.find<LocalStorageService>().silenceUnknownCallers,
+    });
+  }
+
+  /// Send a 1:1 typing indicator to the peer.
+  void sendTyping({required String recipientId, required bool isTyping}) {
+    if (!isConnected.value) return;
+    _socket?.emit('typing', {
+      'recipientId': recipientId,
+      'isTyping': isTyping,
+    });
   }
 
   /// Send group typing indicator.

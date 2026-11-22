@@ -45,7 +45,12 @@ class _GroupSettingsScreenState extends State<GroupSettingsScreen> {
 
     final myDeviceId = _storageService.deviceId ?? '';
     _isAdmin.value = chat.admins.contains(myDeviceId);
-    _isCreator.value = chat.id.isNotEmpty && _isAdmin.value;
+    // Only the true creator may dissolve. Older cached chats lack createdBy;
+    // fall back to the first member (backend orders members by joined_at ASC
+    // and the creator is always inserted first at group creation).
+    final creatorId = chat.createdBy ??
+        (chat.members.isNotEmpty ? chat.members.first.deviceId : null);
+    _isCreator.value = creatorId == myDeviceId;
   }
 
   Future<void> _renameGroup() async {

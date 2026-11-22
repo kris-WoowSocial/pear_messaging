@@ -145,8 +145,7 @@ void main() {
     );
   });
 
-  test('video track is captured and added before createOffer/createAnswer',
-      () {
+  test('video track is captured and added before createOffer/createAnswer', () {
     final service =
         File('lib/core/services/webrtc_call_service.dart').readAsStringSync();
     final controller =
@@ -158,7 +157,8 @@ void main() {
 
     expect(service, contains('_getUserMedia(video: _isVideoCall)'));
     expect(service, contains('for (final track in _localStream!.getTracks())'));
-    expect(service, contains('await _peerConnection!.addTrack(track, _localStream!)'));
+    expect(service,
+        contains('await _peerConnection!.addTrack(track, _localStream!)'));
     expect(service, contains('Active senders before createOffer'));
     expect(service, contains('Active senders before createAnswer'));
     expect(service, isNot(contains('enableDeferredVideo')));
@@ -215,15 +215,18 @@ void main() {
       () {
     final source =
         File('lib/features/chat/chat_screen.dart').readAsStringSync();
+    // The chat header actions live inside the custom header row in the body
+    // Column (the AppBar was replaced by an inline header container). The
+    // row ends where the message list's Positioned.fill begins.
     final actions = source.substring(
-      source.indexOf('actions: ['),
       source.indexOf('body: Column('),
+      source.indexOf('Positioned.fill('),
     );
     final startup = File('lib/main_prod.dart').readAsStringSync();
 
-    expect(actions, contains('Obx(()'));
+    expect(actions, contains('Obx('));
     expect(
-      actions.indexOf('Obx(()'),
+      actions.indexOf('Obx('),
       lessThan(actions.indexOf('videoCalling.value')),
     );
     expect(actions, contains('Icon(Icons.videocam'));

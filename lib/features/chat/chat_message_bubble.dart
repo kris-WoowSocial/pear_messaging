@@ -17,6 +17,7 @@ import '../../core/services/encryption_service.dart';
 import '../../core/services/image_cache_service.dart';
 import '../../core/services/image_download_service.dart';
 import '../../core/services/media_upload_service.dart';
+import '../../core/services/local_storage_service.dart';
 import '../../core/services/url_preview_service.dart';
 import '../../core/utils/time_utils.dart';
 import '../../storage/models/message_entity.dart';
@@ -62,6 +63,21 @@ class _ChatMessageBubbleState extends State<ChatMessageBubble> {
 
   // Static in-memory cache shared across all bubble instances
   static final Map<String, Uint8List> _memoryCache = {};
+
+  /// Strict account settings: media from senders we never engaged with is
+  /// not auto-downloaded — the bubble renders a tap-to-download tile until
+  /// the user explicitly asks for it. Own messages and cached bytes are
+  /// exempt (a cache hit never touches the network anyway).
+  bool get _strictMediaGated {
+    if (widget.message.isMe) return false;
+    try {
+      final storage = Get.find<LocalStorageService>();
+      return storage.strictAccountSettings &&
+          !storage.isKnownContact(widget.message.senderId ?? '');
+    } catch (_) {
+      return false;
+    }
+  }
 
   @override
   void initState() {
@@ -138,8 +154,9 @@ class _ChatMessageBubbleState extends State<ChatMessageBubble> {
       _isLoadingImage.value = false;
       _lastProcessedContent = widget.message.content;
 
-      // Reload image if this is an image message
-      if (widget.message.isImage) {
+      // Reload image if this is an image message (strict-gated senders
+      // wait for an explicit tap instead of auto-downloading)
+      if (widget.message.isImage && !_strictMediaGated) {
         _preloadImageData();
       }
     }
@@ -432,99 +449,6 @@ class _ChatMessageBubbleState extends State<ChatMessageBubble> {
             // (WhatsApp style) — the shared row is suppressed for them.
             if (!widget.message.isCall && !widget.message.isViewOnce)
               Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (widget.message.isExpiring) ...[
-                  Icon(
-                    Icons.timer_outlined,
-                    size: 12,
-                    color: widget.message.isMe
-                        ? Colors.black.withValues(alpha: 0.4)
-                        : Colors.black54,
-                  ),
-                  const SizedBox(width: 3),
-                ],
-                Text(
-                  TimeUtils.formatMessageTime(widget.message.timestamp),
-                  style: TextStyle(
-                    color: widget.message.isMe
-                        ? Colors.black.withOpacity(0.4)
-                        : Colors.black,
-                    fontSize: AppSizes.fontXS,
-                  ),
-                ),
-                if (widget.message.isMe && !widget.message.isCall) ...[
-                  const SizedBox(width: 4),
-                  _buildStatusIcon(widget.message.status),
-                ],
-                // Reply icon (not on call cards — there's nothing to quote)
-                if (!widget.message.isCall)
-                  GestureDetector(
-                    onTap: () {
-                      try {
-                        final chatController = Get.find<ChatController>();
-                        chatController.startReply(widget.message);
-                      } catch (e) {
-                        debugPrint('⚠️ Could not start reply: $e');
-                      }
-                    },
-                    child: Container(
-                      padding: EdgeInsets.all(2),
-                      child: Icon(
-                        Icons.reply,
-                        size: 16,
-                        color: widget.message.isMe
-                            ? Colors.black.withValues(alpha: 0.4)
-                            : Colors.black.withValues(alpha: 0.6),
-                      ),
-                    ),
-                  ),
-              ],
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  /// Build bubble that can use full width (for longer messages)
-  Widget _buildFullWidthBubble(bool hasLinks) {
-    return Flexible(
-      child: GestureDetector(
-        onLongPress: () => widget.message.isCall
-            ? _showCallBackSheet()
-            : _showMessageOptions(Get.context!, hasLinks),
-        child: Container(
-          constraints: BoxConstraints(maxWidth: AppSizes.maxMessageWidth),
-          padding: const EdgeInsets.symmetric(
-            horizontal: AppSizes.paddingM,
-            vertical: AppSizes.paddingS,
-          ),
-          decoration: BoxDecoration(
-            color: widget.message.isMe
-                ? AppColors.senderBubble
-                : AppColors.receiverBubble,
-            borderRadius: BorderRadius.only(
-              topLeft: const Radius.circular(AppSizes.radiusL),
-              topRight: const Radius.circular(AppSizes.radiusL),
-              bottomLeft: Radius.circular(
-                widget.message.isMe ? AppSizes.radiusL : AppSizes.radiusXS,
-              ),
-              bottomRight: Radius.circular(
-                widget.message.isMe ? AppSizes.radiusXS : AppSizes.radiusL,
-              ),
-            ),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              _buildMessageContent(),
-              if (hasLinks) _buildLinkPreview(),
-              const SizedBox(height: 4),
-              // Call cards and view-once tiles render their timestamp
-              // inline (WhatsApp style) — the shared row is suppressed.
-              if (!widget.message.isCall && !widget.message.isViewOnce)
-                Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   if (widget.message.isExpiring) ...[
@@ -574,6 +498,99 @@ class _ChatMessageBubbleState extends State<ChatMessageBubble> {
                     ),
                 ],
               ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Build bubble that can use full width (for longer messages)
+  Widget _buildFullWidthBubble(bool hasLinks) {
+    return Flexible(
+      child: GestureDetector(
+        onLongPress: () => widget.message.isCall
+            ? _showCallBackSheet()
+            : _showMessageOptions(Get.context!, hasLinks),
+        child: Container(
+          constraints: BoxConstraints(maxWidth: AppSizes.maxMessageWidth),
+          padding: const EdgeInsets.symmetric(
+            horizontal: AppSizes.paddingM,
+            vertical: AppSizes.paddingS,
+          ),
+          decoration: BoxDecoration(
+            color: widget.message.isMe
+                ? AppColors.senderBubble
+                : AppColors.receiverBubble,
+            borderRadius: BorderRadius.only(
+              topLeft: const Radius.circular(AppSizes.radiusL),
+              topRight: const Radius.circular(AppSizes.radiusL),
+              bottomLeft: Radius.circular(
+                widget.message.isMe ? AppSizes.radiusL : AppSizes.radiusXS,
+              ),
+              bottomRight: Radius.circular(
+                widget.message.isMe ? AppSizes.radiusXS : AppSizes.radiusL,
+              ),
+            ),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _buildMessageContent(),
+              if (hasLinks) _buildLinkPreview(),
+              const SizedBox(height: 4),
+              // Call cards and view-once tiles render their timestamp
+              // inline (WhatsApp style) — the shared row is suppressed.
+              if (!widget.message.isCall && !widget.message.isViewOnce)
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (widget.message.isExpiring) ...[
+                      Icon(
+                        Icons.timer_outlined,
+                        size: 12,
+                        color: widget.message.isMe
+                            ? Colors.black.withValues(alpha: 0.4)
+                            : Colors.black54,
+                      ),
+                      const SizedBox(width: 3),
+                    ],
+                    Text(
+                      TimeUtils.formatMessageTime(widget.message.timestamp),
+                      style: TextStyle(
+                        color: widget.message.isMe
+                            ? Colors.black.withOpacity(0.4)
+                            : Colors.black,
+                        fontSize: AppSizes.fontXS,
+                      ),
+                    ),
+                    if (widget.message.isMe && !widget.message.isCall) ...[
+                      const SizedBox(width: 4),
+                      _buildStatusIcon(widget.message.status),
+                    ],
+                    // Reply icon (not on call cards — there's nothing to quote)
+                    if (!widget.message.isCall)
+                      GestureDetector(
+                        onTap: () {
+                          try {
+                            final chatController = Get.find<ChatController>();
+                            chatController.startReply(widget.message);
+                          } catch (e) {
+                            debugPrint('⚠️ Could not start reply: $e');
+                          }
+                        },
+                        child: Container(
+                          padding: EdgeInsets.all(2),
+                          child: Icon(
+                            Icons.reply,
+                            size: 16,
+                            color: widget.message.isMe
+                                ? Colors.black.withValues(alpha: 0.4)
+                                : Colors.black.withValues(alpha: 0.6),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
             ],
           ),
         ),
@@ -751,6 +768,15 @@ class _ChatMessageBubbleState extends State<ChatMessageBubble> {
 
   /// Load URL preview for this message
   void _loadUrlPreview() async {
+    // "Disable link previews" (Settings → Advanced) — render a plain
+    // clickable URL; no metadata request ever leaves the device.
+    try {
+      if (Get.isRegistered<LocalStorageService>() &&
+          Get.find<LocalStorageService>().disableLinkPreviews) {
+        return;
+      }
+    } catch (_) {}
+
     final urls = _extractLinks(widget.message.content);
     if (urls.isEmpty) return;
 
@@ -1326,8 +1352,11 @@ class _ChatMessageBubbleState extends State<ChatMessageBubble> {
   }
 
   Widget _buildImageContent() {
-    // Only trigger lazy load if image is not cached and not already loading
-    if (_cachedImageData.value == null && !_isLoadingImage.value) {
+    // Only trigger lazy load if image is not cached and not already loading.
+    // Strict-mode gated media never auto-loads — it waits for a tap.
+    if (_cachedImageData.value == null &&
+        !_isLoadingImage.value &&
+        !_strictMediaGated) {
       // Check if we should show loading state or load asynchronously
       try {
         final cacheService = Get.find<ImageCacheService>();
@@ -1535,6 +1564,37 @@ class _ChatMessageBubbleState extends State<ChatMessageBubble> {
                 style: TextStyle(color: Colors.grey[600], fontSize: 12),
               ),
             ],
+          ),
+        );
+      }
+
+      // Strict account settings — media from this sender never downloads
+      // automatically; the user pulls it explicitly.
+      if (_strictMediaGated) {
+        return GestureDetector(
+          onTap: _preloadImageData,
+          child: Container(
+            width: 200,
+            height: 80,
+            decoration: BoxDecoration(
+              color: Colors.grey[200],
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(Icons.download_outlined,
+                    color: Colors.grey[600], size: 20),
+                const SizedBox(width: 8),
+                Flexible(
+                  child: Text(
+                    'Tap to download media (Strict mode)',
+                    style: TextStyle(color: Colors.grey[600], fontSize: 12),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
+            ),
           ),
         );
       }

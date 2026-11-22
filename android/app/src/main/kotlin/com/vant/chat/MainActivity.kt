@@ -872,6 +872,14 @@ class MainActivity : FlutterFragmentActivity() {
             
             if (action != null) {
                 println("Call intent received: action=$action, callId=$callId")
+                // Consume the action in-place: `this.intent` is the same object
+                // the framework hands back when the activity is destroyed and
+                // recreated (e.g. while a system photo picker is open during a
+                // call). Clearing it stops stale replays from re-firing
+                // open_ongoing_call / answer / end on the recreated activity.
+                intent.action = null
+                intent.removeExtra("call_action")
+                intent.removeExtra("show_incoming_call")
                 if (action == "end") {
                     teardownAndroidCall(callId)
                 }

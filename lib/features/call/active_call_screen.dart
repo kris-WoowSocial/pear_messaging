@@ -112,8 +112,7 @@ class _ActiveCallScreenState extends State<ActiveCallScreen> {
                 children: [
                   // Avatar
                   _buildAvatar(controller),
-                  const SizedBox(height: 16),
-                  // Contact name
+                  Spacer(),                  // Contact name
                   Obx(
                     () => Text(
                       controller.remoteDisplayLabel,
@@ -127,14 +126,14 @@ class _ActiveCallScreenState extends State<ActiveCallScreen> {
                       ),
                     ),
                   ),
-                  const SizedBox(height: 8),
+                  Spacer(),                  // Contact name
                   // E2EE indicator
                   Obx(
                     () => CallEncryptionIndicator(
                       state: controller.callEncryptionState.value,
                     ),
                   ),
-                  const SizedBox(height: 14),
+                  Spacer(),                  // Contact name
                   // Call duration
                   Obx(
                     () => Text(
@@ -154,19 +153,20 @@ class _ActiveCallScreenState extends State<ActiveCallScreen> {
           Expanded(
             flex: 1,
             child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 24),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
                   // Minimize button - keeps the call running behind the
                   // CallBanner so the user can continue using the app
+
                   _buildControlButton(
                     icon: Icons.close_fullscreen,
                     label: 'Minimize',
                     isActive: false,
                     onTap: () => controller.minimizeCallScreen(context),
                   ),
-                  const SizedBox(height: 24),
+                  Spacer(),                  // Contact name
                   // "Requesting video call…" pill while a consent request
                   // is in flight — tap Cancel to withdraw it.
                   Obx(
@@ -226,6 +226,8 @@ class _ActiveCallScreenState extends State<ActiveCallScreen> {
                           )
                         : const SizedBox.shrink(),
                   ),
+                  Spacer(),                  // Contact name
+
                   // Second row: Mute and Speaker (Obx for reactive updates)
                   Obx(
                     () => Row(
@@ -259,7 +261,7 @@ class _ActiveCallScreenState extends State<ActiveCallScreen> {
                       ],
                     ),
                   ),
-                  const SizedBox(height: 32),
+                  Spacer(),                  // Contact name
                   // Third row: End call
                   _buildEndCallButton(controller),
                 ],
@@ -274,14 +276,14 @@ class _ActiveCallScreenState extends State<ActiveCallScreen> {
   Widget _buildAvatar(CallController controller) {
     return Obx(
       () => Container(
-        width: 120,
-        height: 120,
+        width: 100,
+        height: 100,
         decoration: BoxDecoration(
           shape: BoxShape.circle,
           color: Colors.grey[800],
           border: Border.all(
             color: Colors.white.withOpacity(0.3),
-            width: 2,
+            width: 1,
           ),
         ),
         child: ClipOval(
@@ -291,8 +293,8 @@ class _ActiveCallScreenState extends State<ActiveCallScreen> {
                 : null,
             name: controller.remoteDisplayName.value,
             avatarUrl: controller.remoteAvatarUrl.value.trim(),
-            size: 120,
-            borderRadius: 60,
+            size: 100,
+            borderRadius: 50,
           ),
         ),
       ),

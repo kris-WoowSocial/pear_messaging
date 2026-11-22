@@ -29,6 +29,12 @@ class LocalStorageService extends GetxService {
   static const String _prefsAuthEnabledKey = 'auth_enabled';
   static const String _prefsUserNameKey = 'user_name';
   static const String _prefsProtectCallIpKey = 'protect_call_ip_address';
+  static const String _prefsBlockUnknownMessagesKey = 'block_unknown_messages';
+  static const String _prefsDisableLinkPreviewsKey = 'disable_link_previews';
+  static const String _prefsStrictAccountSettingsKey =
+      'strict_account_settings';
+  static const String _prefsSilenceUnknownCallersKey =
+      'silence_unknown_callers';
 
   late Box _chatsBox;
   late Box _messagesBox;
@@ -130,6 +136,10 @@ class LocalStorageService extends GetxService {
     // Seed the native (PushKit-visible) contact-name cache on every start.
     unawaited(syncContactNamesToAppGroup());
 
+    // One-time migration of pre-existing chats into the known-contact
+    // allowlist (mirrored natively for killed-app call silencing).
+    seedKnownContacts();
+
     return this;
   }
 
@@ -199,6 +209,104 @@ class LocalStorageService extends GetxService {
 
   Future<void> setProtectCallIpAddress(bool enabled) async {
     await _prefs.setBool(_prefsProtectCallIpKey, enabled);
+  }
+
+  // "Block unknown account messages" (Settings → Advanced): unknown senders
+  // are capped at a short burst before excess messages drop silently.
+  bool get blockUnknownMessages =>
+      _prefs.getBool(_prefsBlockUnknownMessagesKey) ?? false;
+
+  Future<void> setBlockUnknownMessages(bool enabled) async {
+    await _prefs.setBool(_prefsBlockUnknownMessagesKey, enabled);
+  }
+
+  // "Disable link previews" — never fetch third-party OG metadata so the
+  // linked site can't infer this device's IP.
+  bool get disableLinkPreviews =>
+      _prefs.getBool(_prefsDisableLinkPreviewsKey) ?? false;
+
+  Future<void> setDisableLinkPreviews(bool enabled) async {
+    await _prefs.setBool(_prefsDisableLinkPreviewsKey, enabled);
+  }
+
+  // "Strict account settings" — master lock that forces the three Advanced
+  // switches ON and silences calls/media from non-connections.
+  bool get strictAccountSettings =>
+      _prefs.getBool(_prefsStrictAccountSettingsKey) ?? false;
+
+  Future<void> setStrictAccountSettings(bool enabled) async {
+    await _prefs.setBool(_prefsStrictAccountSettingsKey, enabled);
+  }
+
+  // "Silence unknown callers" — enabled via Strict account settings.
+  // Effective value: forced ON while strict mode is active.
+  bool get silenceUnknownCallers =>
+      strictAccountSettings ||
+      (_prefs.getBool(_prefsSilenceUnknownCallersKey) ?? false);
+
+  Future<void> setSilenceUnknownCallers(bool enabled) async {
+    await _prefs.setBool(_prefsSilenceUnknownCallersKey, enabled);
+  }
+
+  // "Known contacts" allowlist — the peers we treat as real connections for
+  // Strict-mode enforcement (silenced calls, gated media auto-download).
+  // Populated by explicit engagement only: accepting/sending a connection
+  // request, creating a chat yourself, or replying to someone. A stranger's
+  // inbound message alone never grants membership, which is exactly what
+  // keeps the strict-mode gates meaningful.
+  //
+  // Stored as a comma-joined string so the Android FCM service can read it
+  // as `flutter.known_contact_ids` from FlutterSharedPreferences while the
+  // app is killed (shared_preferences encodes StringList values — a plain
+  // String survives as a readable string natively).
+  static const String _prefsKnownContactIdsKey = 'known_contact_ids';
+  // v2: v1 could mark itself seeded while the seed threw on the unmodifiable
+  // empty set, leaving a permanently empty allowlist. The new key forces one
+  // re-seed on the next launch for every device — same merge semantics.
+  static const String _prefsKnownContactsSeededKey =
+      'known_contact_ids_seeded_v2';
+
+  Set<String> get knownContactIds {
+    final raw = _prefs.getString(_prefsKnownContactIdsKey) ?? '';
+    // Always a mutable copy — markContactKnown/seedKnownContacts add to the
+    // returned set before re-joining. Returning `const {}` on the empty path
+    // threw "Cannot change an unmodifiable set", which silently aborted the
+    // seed while its flag still got written — a permanently empty allowlist
+    // that made silence-unknown-callers mute EVERY incoming call.
+    if (raw.isEmpty) return <String>{};
+    return raw.split(',').where((id) => id.isNotEmpty).toSet();
+  }
+
+  bool isKnownContact(String deviceId) =>
+      deviceId.isNotEmpty && knownContactIds.contains(deviceId);
+
+  void markContactKnown(String deviceId) {
+    if (deviceId.isEmpty || isKnownContact(deviceId)) return;
+    final ids = knownContactIds..add(deviceId);
+    unawaited(_prefs.setString(_prefsKnownContactIdsKey, ids.join(',')));
+  }
+
+  /// One-time migration: chats that existed before this allowlist was
+  /// introduced were all user-accepted or user-created, so they seed the
+  /// set. Runs once — stranger chats created later (e.g. by the FCM
+  /// background path) stay unknown until the user engages.
+  void seedKnownContacts() {
+    if (_prefs.getBool(_prefsKnownContactsSeededKey) == true) return;
+    try {
+      final ids = knownContactIds;
+      for (final chat in getAllChats()) {
+        if (!chat.isGroup) ids.add(chat.id);
+      }
+      unawaited(
+        _prefs.setString(_prefsKnownContactIdsKey, ids.join(',')),
+      );
+      // Mark seeded only after a successful run — a failed run that still
+      // wrote the flag would leave the allowlist permanently empty, and
+      // silence-unknown-callers would then mute EVERY incoming call.
+      unawaited(_prefs.setBool(_prefsKnownContactsSeededKey, true));
+    } catch (e) {
+      debugPrint('⚠️ Known-contact seed failed: $e');
+    }
   }
 
   // User name preference
@@ -543,6 +651,7 @@ class LocalStorageService extends GetxService {
         inviteCode: apiGroup['invite_code']?.toString(),
         avatarUrl: apiGroup['avatar_url']?.toString(),
         maxMembers: apiGroup['max_members'] as int? ?? 50,
+        createdBy: apiGroup['created_by']?.toString(),
       );
 
       final existing = getChat(groupId);

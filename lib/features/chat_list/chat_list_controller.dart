@@ -76,6 +76,66 @@ class ChatListController extends GetxController {
     _syncExistingUsernames();
     _syncMembership();
     _syncGroupsFromServer();
+    unawaited(_reconcileChatPreviews());
+  }
+
+  /// One-shot startup repair for previews/unread badges that drifted from
+  /// the stored message history (e.g. a message's preview persisted onto a
+  /// different chat's entity when `chats` re-sorted mid-handler). For every
+  /// chat that HAS local messages, lastMessage/lastMessageTime/unreadCount
+  /// are rebuilt from the real latest message. Chats with no local messages
+  /// (invite placeholders, fresh FCM rows) are left untouched.
+  bool _didReconcilePreviews = false;
+
+  Future<void> _reconcileChatPreviews() async {
+    if (_didReconcilePreviews) return;
+    _didReconcilePreviews = true;
+    try {
+      for (final chat in _storageService.getAllChats()) {
+        final messages = await _storageService.getChatMessages(chat.id);
+        if (messages.isEmpty) continue;
+
+        // getChatMessages returns ascending timestamp order.
+        final latest = messages.last;
+        final expectedPreview = _previewTextForMessage(latest);
+        final actualUnread = messages
+            .where((m) => !m.isMe && m.status != MessageStatus.read)
+            .length;
+
+        if (chat.lastMessage != expectedPreview ||
+            chat.lastMessageTime != latest.timestamp ||
+            chat.unreadCount != actualUnread) {
+          await _storageService.saveChat(
+            chat.copyWith(
+              lastMessage: expectedPreview,
+              lastMessageTime: latest.timestamp,
+              unreadCount: actualUnread,
+            ),
+          );
+          debugPrint('🩹 Repaired preview/unread for chat ${chat.id}');
+        }
+      }
+      loadChats();
+    } catch (e) {
+      debugPrint('⚠️ Chat preview reconciliation failed: $e');
+    }
+  }
+
+  /// Chat-list preview text for a stored message — mirrors the display
+  /// transforms applied when messages arrive.
+  static String _previewTextForMessage(MessageEntity message) {
+    switch (message.type) {
+      case MessageType.audio:
+        return '🎤 Voice message';
+      case MessageType.image:
+        return message.isViewOnce ? '📷 View once photo' : '📷 Photo';
+      case MessageType.file:
+        return '📄 Document';
+      case MessageType.call:
+        return '📞 Call';
+      default:
+        return message.content;
+    }
   }
 
   /// Sync membership from server in background on app open.
@@ -719,7 +779,6 @@ class ChatListController extends GetxController {
     } else {
       // Update existing chat AFTER message is saved
       debugPrint('📝 Updating existing chat for sender: $senderId');
-      final existingChat = chats[existingChatIndex];
 
       // Calculate actual unread count by counting unread messages (now includes the new message)
       final actualUnreadCount = await _calculateUnreadCount(senderId);
@@ -729,33 +788,50 @@ class ChatListController extends GetxController {
           ? '🎤 Voice message'
           : (isImageMessage ? '📷 Photo' : content);
 
-      final updatedChat = ChatListModel(
-        id: existingChat.id,
-        userName: existingChat.userName,
+      // Re-resolve the target strictly by senderId AFTER the awaits above.
+      // `existingChatIndex` was captured before saveMessage/_calculateUnreadCount
+      // suspended; concurrent handlers, loadChats() rebuilds and move-to-top
+      // re-sort `chats` in between, so indexing the list with it can return a
+      // DIFFERENT chat. Using its id here would persist this message's
+      // preview/unread onto the wrong ChatEntity (cross-chat preview leak).
+      final storedChat = _storageService.getChat(senderId);
+      final liveIndex = chats.indexWhere((chat) => chat.id == senderId);
+      final liveChat = liveIndex != -1 ? chats[liveIndex] : null;
+      final displayName = storedChat?.userName.isNotEmpty == true
+          ? storedChat!.userName
+          : (liveChat?.userName.isNotEmpty == true
+              ? liveChat!.userName
+              : senderId);
+
+      // Persist via copyWith of the stored entity so fields this handler
+      // doesn't own (lock, mute, group meta, disappearing timer, avatar)
+      // survive. The id is senderId — never a possibly-stale list entry.
+      final updatedEntity =
+          (storedChat ?? ChatEntity(id: senderId, userName: displayName))
+              .copyWith(
         lastMessage: displayMessage,
         lastMessageTime: messageTime,
         unreadCount: actualUnreadCount,
         isReply: replyToEntity != null,
         replyContent: replyToEntity?.content,
       );
+      _storageService.saveChat(updatedEntity);
 
-      // Update in storage
-      _storageService.saveChat(
-        ChatEntity(
-          id: updatedChat.id,
-          userName: updatedChat.userName,
-          lastMessage: updatedChat.lastMessage,
-          lastMessageTime: updatedChat.lastMessageTime,
-          unreadCount: updatedChat.unreadCount,
-          isReply: updatedChat.isReply,
-          replyContent: updatedChat.replyContent,
-          avatarUrl:
-              _storageService.getChat(updatedChat.id)?.avatarUrl,
-        ),
+      final updatedChat = ChatListModel(
+        id: senderId,
+        userName: displayName,
+        lastMessage: displayMessage,
+        lastMessageTime: messageTime,
+        unreadCount: actualUnreadCount,
+        isReply: replyToEntity != null,
+        replyContent: replyToEntity?.content,
+        isGroup: liveChat?.isGroup ?? updatedEntity.isGroupChat,
+        avatarUrl: liveChat?.avatarUrl ?? updatedEntity.avatarUrl,
+        isLocked: liveChat?.isLocked ?? updatedEntity.isLocked,
       );
 
-      // Move to top of list
-      chats.removeAt(existingChatIndex);
+      // Move to top of list — remove by id, never by the stale index.
+      chats.removeWhere((chat) => chat.id == senderId);
       chats.insert(0, updatedChat);
 
       // Update filtered chats to trigger UI refresh
@@ -1434,8 +1510,8 @@ class ChatListController extends GetxController {
       } else {
         final existing = _storageService.getChat(deviceId);
         if (existing != null) {
-          await _storageService.saveChat(
-              existing.copyWith(avatarUrl: avatarUrl));
+          await _storageService
+              .saveChat(existing.copyWith(avatarUrl: avatarUrl));
         }
       }
     } catch (e) {
@@ -1453,8 +1529,7 @@ class ChatListController extends GetxController {
       // QR payloads can predate the inviter's latest photo — always pull
       // the live profile so the chat opens with their current avatar.
       if (Get.isRegistered<UserProfileCache>()) {
-        unawaited(
-            Get.find<UserProfileCache>().fetchAndCacheProfile(deviceId));
+        unawaited(Get.find<UserProfileCache>().fetchAndCacheProfile(deviceId));
       }
 
       // Check if chat already exists in memory list
@@ -1531,6 +1606,8 @@ class ChatListController extends GetxController {
           replyContent: null,
         );
         await _storageService.saveChat(newChatEntity);
+        // User explicitly added this contact — known for strict-mode gates.
+        _storageService.markContactKnown(deviceId);
 
         // Add to in-memory list so it shows immediately in the chat list
         final newChatModel = ChatListModel(

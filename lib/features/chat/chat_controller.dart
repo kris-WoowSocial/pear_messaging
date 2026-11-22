@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:pear_messaging/features/chat_list/chat_list_model.dart';
 import 'package:uuid/uuid.dart';
 import '../../core/constants/app_colors.dart';
@@ -12,6 +13,7 @@ import '../../core/services/local_auth_service.dart';
 import '../../core/services/local_storage_service.dart';
 import '../../core/services/socket_service.dart';
 import '../../core/services/block_service.dart';
+import '../../core/services/caller_name_resolver.dart';
 import '../../core/services/encryption_service.dart';
 import '../../core/services/image_cache_service.dart';
 import '../../core/services/media_upload_service.dart';
@@ -101,7 +103,16 @@ class ChatController extends GetxController with WidgetsBindingObserver {
     final admins = _storageService.getChat(chatId)?.admins ?? const [];
     return admins.isEmpty || admins.contains(myDeviceId);
   }
+
   Timer? _expiryPurgeTimer;
+
+  // 1:1 typing indicator state — _typingStopTimer emits `false` after 3s of
+  // inactivity; _typingClearTimer is the 5s safety that clears a stale
+  // "typing..." if the peer's `false` relay is lost.
+  Timer? _typingStopTimer;
+  Timer? _typingClearTimer;
+  int _lastTypingSentMs = 0;
+  bool _groupWasTyping = false;
 
   // Reply state management
   final Rx<ReplyToEntity?> replyToMessage = Rx<ReplyToEntity?>(null);
@@ -122,7 +133,30 @@ class ChatController extends GetxController with WidgetsBindingObserver {
     // Get arguments
     final args = Get.arguments as Map<String, dynamic>;
     chatId = args['chatId'] ?? '';
-    displayName.value = args['userName'] ?? 'Unknown';
+    // Notification taps can carry a stale @user_xxxxx placeholder (the
+    // pending chat was saved before the responder's real name arrived).
+    // Prefer any real name — argument first, then saved contact name —
+    // and never let a placeholder overwrite a real one.
+    final argName = (args['userName'] ?? '').toString();
+    displayName.value = CallerNameResolver.resolveSync(
+          chatId,
+          payloadName: argName,
+          savedNameLookup: (id) => _storageService.getDisplayName(id),
+        ) ??
+        _storageService.getDisplayName(chatId);
+    // Async upgrade: storage may still hold a placeholder even when the
+    // server profile already knows the responder's real name.
+    if (CallerNameResolver.isPlaceholder(displayName.value, chatId)) {
+      unawaited(CallerNameResolver.resolve(
+        chatId,
+        payloadName: argName,
+        savedNameLookup: (id) => _storageService.getDisplayName(id),
+      ).then((name) {
+        if (!CallerNameResolver.isPlaceholder(name, chatId)) {
+          displayName.value = name;
+        }
+      }));
+    }
     recipientDeviceId = args['recipientDeviceId'] ?? '';
     myDeviceId = args['myDeviceId'] ?? '';
     isGroup = args['isGroup'] as bool? ?? false;
@@ -235,6 +269,7 @@ class ChatController extends GetxController with WidgetsBindingObserver {
     disappearingAfterSeconds.value =
         _storageService.getChat(chatId)?.disappearingAfterSeconds ?? 0;
     isChatLocked.value = _storageService.getChat(chatId)?.isLocked ?? false;
+    isMuted.value = _storageService.getChat(chatId)?.isMuted ?? false;
     _expiryPurgeTimer = Timer.periodic(
       const Duration(minutes: 1),
       (_) => _purgeExpiredFromUi(),
@@ -400,6 +435,7 @@ class ChatController extends GetxController with WidgetsBindingObserver {
   Function(Map<String, dynamic>)? _previousReactionHandler;
   Function(Map<String, dynamic>)? _previousDisappearHandler;
   Function(Map<String, dynamic>)? _previousViewOnceHandler;
+  Function(Map<String, dynamic>)? _previousTypingHandler;
 
   /// Check recipient's online presence
   void _checkRecipientPresence() {
@@ -555,20 +591,26 @@ class ChatController extends GetxController with WidgetsBindingObserver {
       }
     }
 
-    if (unreadMessages.isNotEmpty) {
-      debugPrint(
-          '📖 Marked ${unreadMessages.length} messages as read for chat: $chatId');
+    // Always clear the entity-level unread badge when the chat is opened —
+    // not only when unread messages exist. A cross-chat preview leak can
+    // leave a phantom unreadCount > 0 on a chat that contains zero unread
+    // messages, and opening it must still clear the badge.
+    var clearedUnreadBadge = false;
+    try {
+      final chat = _storageService.getChat(chatId);
+      if (chat != null && chat.unreadCount != 0) {
+        await _storageService.saveChat(chat.copyWith(unreadCount: 0));
+        clearedUnreadBadge = true;
+        debugPrint('📖 Reset unreadCount to 0 for chat: $chatId');
+      }
+    } catch (e) {
+      debugPrint('⚠️ Error resetting unreadCount for chat $chatId: $e');
+    }
 
-      // Update chat entity's unreadCount to 0 in storage
-      try {
-        final chat = _storageService.getChat(chatId);
-        if (chat != null) {
-          final updatedChat = chat.copyWith(unreadCount: 0);
-          await _storageService.saveChat(updatedChat);
-          debugPrint('📖 Reset unreadCount to 0 for chat: $chatId');
-        }
-      } catch (e) {
-        debugPrint('⚠️ Error resetting unreadCount for chat $chatId: $e');
+    if (unreadMessages.isNotEmpty || clearedUnreadBadge) {
+      if (unreadMessages.isNotEmpty) {
+        debugPrint(
+            '📖 Marked ${unreadMessages.length} messages as read for chat: $chatId');
       }
 
       // Recalculate total unread count and update badge
@@ -603,6 +645,7 @@ class ChatController extends GetxController with WidgetsBindingObserver {
     _socketService.onDisappearTimerSet = _handleDisappearTimerSet;
     _previousViewOnceHandler = _socketService.onViewOnceOpened;
     _socketService.onViewOnceOpened = _handleViewOnceOpened;
+    _previousTypingHandler = _socketService.onTyping;
 
     // Setup presence listeners when socket connects
     _setupPresenceListeners();
@@ -641,6 +684,24 @@ class ChatController extends GetxController with WidgetsBindingObserver {
       _setupGroupSocketListeners();
       return;
     }
+
+    // 1:1 typing indicator — chain any previous handler, then update the
+    // appbar subtitle. A 5s safety timer clears "typing..." if the peer's
+    // `false` relay is lost (disconnect mid-typing, etc.).
+    _socketService.onTyping = (Map<String, dynamic> data) {
+      _previousTypingHandler?.call(data);
+      final senderId =
+          data['senderId']?.toString() ?? data['chatId']?.toString() ?? '';
+      if (senderId != recipientDeviceId) return;
+      final typing = data['isTyping'] as bool? ?? false;
+      recipientTyping.value = typing;
+      _typingClearTimer?.cancel();
+      if (typing) {
+        _typingClearTimer = Timer(const Duration(seconds: 5), () {
+          recipientTyping.value = false;
+        });
+      }
+    };
 
     // Handle presence status responses
     _socketService.socket?.on('presence_status', (data) {
@@ -1316,6 +1377,10 @@ class ChatController extends GetxController with WidgetsBindingObserver {
     _updateChatListAfterSending(text, timestamp);
 
     if (isGroup) {
+      if (_groupWasTyping) {
+        _groupWasTyping = false;
+        _socketService.sendGroupTyping(groupId: chatId, isTyping: false);
+      }
       // Send via group socket with reply metadata
       _socketService
           .sendGroupMessage(
@@ -1355,6 +1420,8 @@ class ChatController extends GetxController with WidgetsBindingObserver {
     // Schedule timeout so message eventually shows as failed if never delivered
     _scheduleMessageTimeout(messageId);
 
+    if (!isGroup) _emitTyping(false);
+
     _scrollToBottom();
   }
 
@@ -1368,17 +1435,65 @@ class ChatController extends GetxController with WidgetsBindingObserver {
   void onTyping(String text) {
     _syncHasText();
 
-    // Send typing indicator for groups
-    if (isGroup && text.isNotEmpty) {
-      _socketService.sendGroupTyping(groupId: chatId, isTyping: true);
+    // Send typing indicator for groups — emit `false` once when the field
+    // goes empty so members aren't left showing a stale indicator.
+    if (isGroup) {
+      final typing = text.isNotEmpty;
+      if (typing || _groupWasTyping) {
+        _socketService.sendGroupTyping(groupId: chatId, isTyping: typing);
+      }
+      _groupWasTyping = typing;
+    } else {
+      _emitTyping(text.isNotEmpty);
     }
 
     // Handle URL preview
     _handleUrlPreview(text);
   }
 
+  /// Emit a 1:1 typing indicator. `true` is throttled to ~1 emit per 3s
+  /// (each buys ~3s of "typing..." on the peer's screen); `false` always
+  /// fires — on inactivity timeout, on send, and on screen close.
+  void _emitTyping(bool typing) {
+    // For 1:1 chats chatId IS the peer device id — fall back to it if the
+    // recipientDeviceId argument wasn't provided (e.g. opened from the
+    // chat list).
+    final target = recipientDeviceId.isNotEmpty ? recipientDeviceId : chatId;
+    if (target.isEmpty) return;
+    _typingStopTimer?.cancel();
+    if (typing) {
+      final now = DateTime.now().millisecondsSinceEpoch;
+      if (now - _lastTypingSentMs >= 3000) {
+        _lastTypingSentMs = now;
+        _socketService.sendTyping(
+          recipientId: target,
+          isTyping: true,
+        );
+      }
+      _typingStopTimer = Timer(const Duration(seconds: 3), () {
+        _socketService.sendTyping(
+          recipientId: target,
+          isTyping: false,
+        );
+      });
+    } else {
+      _socketService.sendTyping(
+        recipientId: target,
+        isTyping: false,
+      );
+    }
+  }
+
   /// Handle URL preview while typing
   void _handleUrlPreview(String text) {
+    // "Disable link previews" (Settings → Advanced) — never fetch OG
+    // metadata: no request leaves this device, no preview renders.
+    if (_storageService.disableLinkPreviews) {
+      currentUrlPreview.value = null;
+      isPreviewLoading.value = false;
+      return;
+    }
+
     final urls = _urlPreviewService.extractUrls(text);
 
     if (urls.isEmpty) {
@@ -2436,6 +2551,18 @@ class ChatController extends GetxController with WidgetsBindingObserver {
     _socketService.onMessageReaction = _previousReactionHandler;
     _socketService.onDisappearTimerSet = _previousDisappearHandler;
     _socketService.onViewOnceOpened = _previousViewOnceHandler;
+    _socketService.onTyping = _previousTypingHandler;
+    // Stop typing indicators on exit — never leave "typing..." stuck on the
+    // peer's screen.
+    _typingStopTimer?.cancel();
+    _typingClearTimer?.cancel();
+    if (!isGroup) {
+      _emitTyping(false);
+    } else {
+      // Group typing likewise emits `false` on exit so the group member
+      // list doesn't keep showing a stale indicator.
+      _socketService.sendGroupTyping(groupId: chatId, isTyping: false);
+    }
     _expiryPurgeTimer?.cancel();
     _expiryPurgeTimer = null;
     if (_previousGroupMessageHandler != null) {
@@ -2469,19 +2596,100 @@ class ChatController extends GetxController with WidgetsBindingObserver {
     super.onClose();
   }
 
-  /// Toggle mute notifications for this chat
+  /// Mute picker — WhatsApp-style durations, persisted on the ChatEntity so
+  /// mute survives restarts and is honored by notification paths.
   void toggleMute() {
-    isMuted.value = !isMuted.value;
-    Get.snackbar(
-      isMuted.value ? 'Muted' : 'Unmuted',
-      isMuted.value
-          ? 'Notifications muted for this chat'
-          : 'Notifications enabled for this chat',
-      snackPosition: SnackPosition.TOP,
-      backgroundColor: AppColors.primary.withValues(alpha: 0.1),
-      colorText: Colors.black,
-      duration: const Duration(seconds: 2),
+    if (isMuted.value) {
+      _applyMute(0);
+      return;
+    }
+    Get.bottomSheet(
+      SafeArea(
+        child: Container(
+          padding: const EdgeInsets.fromLTRB(24, 16, 24, 24),
+          decoration: const BoxDecoration(
+            color: AppColors.surface,
+            borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Center(
+                child: Container(
+                  width: 40,
+                  height: 4,
+                  margin: const EdgeInsets.only(bottom: 16),
+                  decoration: BoxDecoration(
+                    color: Colors.grey.shade300,
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+              ),
+              const Text(
+                'Mute notifications',
+                style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                  color: AppColors.textPrimary,
+                ),
+              ),
+              const SizedBox(height: 8),
+              _muteOption('8 hours', const Duration(hours: 8)),
+              _muteOption('1 week', const Duration(days: 7)),
+              _muteOption('Always', null),
+            ],
+          ),
+        ),
+      ),
+      isScrollControlled: true,
     );
+  }
+
+  Widget _muteOption(String label, Duration? duration) {
+    return ListTile(
+      contentPadding: EdgeInsets.zero,
+      title: Text(
+        label,
+        style: const TextStyle(color: AppColors.textPrimary),
+      ),
+      onTap: () {
+        Get.back();
+        _applyMute(duration == null
+            ? -1
+            : DateTime.now().add(duration).millisecondsSinceEpoch);
+      },
+    );
+  }
+
+  /// Persist a mute: [untilMs] 0 = unmute, -1 = always, >0 = expiry.
+  Future<void> _applyMute(int untilMs) async {
+    try {
+      final chat = _storageService.getChat(chatId);
+      if (chat == null) return;
+      await _storageService.saveChat(chat.copyWith(mutedUntilMs: untilMs));
+      // Mirror to SharedPreferences so the background FCM isolate can check
+      // mute state without opening Hive.
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        if (untilMs == 0) {
+          await prefs.remove('muted_chat_$chatId');
+        } else {
+          await prefs.setInt('muted_chat_$chatId', untilMs);
+        }
+      } catch (_) {}
+      isMuted.value = untilMs != 0;
+      Get.snackbar(
+        isMuted.value ? 'Muted' : 'Unmuted',
+        isMuted.value
+            ? 'Notifications muted for this chat'
+            : 'Notifications enabled for this chat',
+        snackPosition: SnackPosition.TOP,
+        duration: const Duration(seconds: 2),
+      );
+    } catch (e) {
+      debugPrint('⚠️ Failed to update mute: $e');
+    }
   }
 
   /// Show block confirmation dialog
@@ -2967,8 +3175,7 @@ class ChatController extends GetxController with WidgetsBindingObserver {
     if (message.isMe || !message.isViewOnce || message.isViewOnceOpened) {
       return;
     }
-    final token =
-        message.mediaToken ?? _mediaTokenFromContent(message.content);
+    final token = message.mediaToken ?? _mediaTokenFromContent(message.content);
     if (token == null || token == 'pending') return;
 
     try {
@@ -3001,14 +3208,12 @@ class ChatController extends GetxController with WidgetsBindingObserver {
   /// Recipient-side completion: flag the entity, wipe the local media bytes,
   /// persist a box-level write (no re-encryption), and notify the sender.
   Future<void> markViewOnceAsOpened(String messageId) async {
-    final entityIdx =
-        _allMessageEntities.indexWhere((m) => m.id == messageId);
+    final entityIdx = _allMessageEntities.indexWhere((m) => m.id == messageId);
     final entity = entityIdx >= 0 ? _allMessageEntities[entityIdx] : null;
     if (entity != null && entity.isViewOnceOpened) return; // idempotent
 
     if (entity != null) {
-      _allMessageEntities[entityIdx] =
-          entity.copyWith(isViewOnceOpened: true);
+      _allMessageEntities[entityIdx] = entity.copyWith(isViewOnceOpened: true);
     }
     unawaited(_storageService.setMessageViewOnceOpened(messageId));
 
@@ -3046,8 +3251,7 @@ class ChatController extends GetxController with WidgetsBindingObserver {
   /// Mark the stored entity as opened without emitting the socket event
   /// (used for incoming `view_once_opened` notices).
   Future<void> _applyViewOnceOpened(String messageId) async {
-    final entityIdx =
-        _allMessageEntities.indexWhere((m) => m.id == messageId);
+    final entityIdx = _allMessageEntities.indexWhere((m) => m.id == messageId);
     if (entityIdx < 0 || _allMessageEntities[entityIdx].isViewOnceOpened) {
       return;
     }
@@ -3057,8 +3261,7 @@ class ChatController extends GetxController with WidgetsBindingObserver {
     // Drop the sender's own cached copy — once opened, the media should be
     // unrecoverable on both devices.
     try {
-      unawaited(Get.find<ImageCacheService>()
-          .removeCachedImageById(messageId));
+      unawaited(Get.find<ImageCacheService>().removeCachedImageById(messageId));
     } catch (_) {}
     final uiIdx = messages.indexWhere((m) => m.id == messageId);
     if (uiIdx >= 0 && !messages[uiIdx].isViewOnceOpened) {

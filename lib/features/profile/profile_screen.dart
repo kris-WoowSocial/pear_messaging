@@ -10,6 +10,7 @@ import '../../core/services/membership_service.dart';
 import '../../core/utils/string_utils.dart';
 import '../../routes/app_routes.dart';
 import 'profile_controller.dart';
+import 'advanced_privacy_screen.dart';
 import '../contact/contact_us_screen.dart';
 import '../../widgets/vant_avatar.dart';
 import '../../core/services/user_profile_cache.dart';
@@ -44,8 +45,7 @@ class ProfileScreen extends GetView<ProfileController> {
         ? Get.find<UserProfileCache>().myAvatarUrl.value
         : '';
     // WhatsApp/iMessage crawlers need a public https URL.
-    final avatarUrl =
-        cachedAvatar.startsWith('https://') ? cachedAvatar : '';
+    final avatarUrl = cachedAvatar.startsWith('https://') ? cachedAvatar : '';
     final avatarParam = avatarUrl.isNotEmpty
         ? '&avatar_url=${Uri.encodeComponent(avatarUrl)}'
             '&\$og_image_url=${Uri.encodeComponent(avatarUrl)}'
@@ -168,24 +168,24 @@ class ProfileScreen extends GetView<ProfileController> {
                 // _generateQRData() reads myAvatarUrl, making it a reactive
                 // dependency, so the scanned link always carries the live URL.
                 child: Obx(() => FutureBuilder<String>(
-                  future: _generateQRData(),
-                  builder: (context, snapshot) {
-                    if (snapshot.hasData) {
-                      return QrImageView(
-                        data: snapshot.data!,
-                        version: QrVersions.auto,
-                        size: 220.0,
-                        backgroundColor: Colors.white,
-                        foregroundColor: Colors.black,
-                      );
-                    }
-                    return const SizedBox(
-                      width: 220,
-                      height: 220,
-                      child: Center(child: CircularProgressIndicator()),
-                    );
-                  },
-                )),
+                      future: _generateQRData(),
+                      builder: (context, snapshot) {
+                        if (snapshot.hasData) {
+                          return QrImageView(
+                            data: snapshot.data!,
+                            version: QrVersions.auto,
+                            size: 220.0,
+                            backgroundColor: Colors.white,
+                            foregroundColor: Colors.black,
+                          );
+                        }
+                        return const SizedBox(
+                          width: 220,
+                          height: 220,
+                          child: Center(child: CircularProgressIndicator()),
+                        );
+                      },
+                    )),
               ),
               const SizedBox(height: AppSizes.paddingL),
               Text(
@@ -286,26 +286,21 @@ class ProfileScreen extends GetView<ProfileController> {
                             onChanged: controller.toggleAuth,
                           ),
                         ),
+                        _divider(),
+                        _buildActionTile(
+                          icon: Icons.tune,
+                          iconColor: AppColors.primaryDark,
+                          title: 'Advanced',
+                          subtitle:
+                              'Protect IP address in calls, disable link previews',
+                          trailing: const Icon(Icons.arrow_forward_ios,
+                              size: 14, color: AppColors.textSecondary),
+                          onTap: () =>
+                              Get.to(() => const AdvancedPrivacyScreen()),
+                        ),
                       ],
                     ),
                     const SizedBox(height: AppSizes.paddingM),
-                    // _buildSectionCard(
-                    //   title: 'Calls',
-                    //   children: [
-                    //     Obx(
-                    //       () => _buildSwitchTile(
-                    //         icon: Icons.vpn_key_outlined,
-                    //         iconColor: AppColors.primaryDark,
-                    //         title: 'Protect IP address in calls',
-                    //         subtitle:
-                    //             'To make it harder for people to infer your location, calls will be relayed through Vant servers. This will reduce call quality.',
-                    //         value: controller.protectCallIpAddress.value,
-                    //         onChanged: controller.toggleProtectCallIp,
-                    //       ),
-                    //     ),
-                    //   ],
-                    // ),
-                    // const SizedBox(height: AppSizes.paddingM),
                     _buildSectionCard(
                       title: 'Account',
                       children: [
@@ -382,8 +377,7 @@ class ProfileScreen extends GetView<ProfileController> {
                         ),
                       ],
                     ),
-                                        const SizedBox(height: AppSizes.paddingXL),
-
+                    const SizedBox(height: AppSizes.paddingXL),
                   ],
                 ),
               ),
@@ -419,12 +413,11 @@ class ProfileScreen extends GetView<ProfileController> {
     );
   }
 
-
   /// Row of quick-glance shortcut cards (Scan QR, Share app)
   Widget _buildQuickActionsRow(BuildContext context) {
     return Row(
       children: [
-            Expanded(
+        Expanded(
           child: _buildQuickActionCard(
             icon: Icons.ios_share_rounded,
             label: 'Show my QR code',
@@ -432,8 +425,7 @@ class ProfileScreen extends GetView<ProfileController> {
             onTap: () => _showQrCodeSheet(context),
           ),
         ),
-              const SizedBox(width: AppSizes.paddingM),
-
+        const SizedBox(width: AppSizes.paddingM),
         Expanded(
           child: _buildQuickActionCard(
             icon: Icons.qr_code_scanner,
@@ -442,7 +434,6 @@ class ProfileScreen extends GetView<ProfileController> {
             onTap: () => Get.toNamed('/qr-scanner'),
           ),
         ),
-        
       ],
     );
   }
@@ -859,8 +850,7 @@ class _ProfileHeaderDelegate extends SliverPersistentHeaderDelegate {
                     // of the shrunken 34px collapsed avatar.
                     showEditBadge: t < 0.5,
                     onTap: () => Get.isRegistered<ProfileAvatarService>()
-                        ? Get.find<ProfileAvatarService>()
-                            .showAvatarOptions()
+                        ? Get.find<ProfileAvatarService>().showAvatarOptions()
                         : null,
                   ),
                 ),
@@ -906,8 +896,7 @@ class _ProfileHeaderDelegate extends SliverPersistentHeaderDelegate {
                         child: IconButton(
                           visualDensity: VisualDensity.compact,
                           iconSize: 18,
-                          icon: const Icon(Icons.edit,
-                              color: Colors.black87),
+                          icon: const Icon(Icons.edit, color: Colors.black87),
                           onPressed: onEditName,
                         ),
                       ),
@@ -916,7 +905,6 @@ class _ProfileHeaderDelegate extends SliverPersistentHeaderDelegate {
               );
             }),
           ),
-      
         ],
       ),
     );

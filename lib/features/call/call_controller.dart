@@ -36,6 +36,7 @@ import '../../core/services/callkit_service.dart';
 import '../../core/services/peer_ringing_notifier.dart';
 import '../../core/services/fcm_service.dart';
 import '../../core/services/membership_service.dart';
+import '../../core/services/block_service.dart';
 import '../../core/utils/string_utils.dart';
 import '../../routes/app_routes.dart';
 import '../../storage/models/call_history_entry.dart';
@@ -127,8 +128,8 @@ FriendlyCallMessage friendlyCallMessage(
       );
     case 'busy':
       return FriendlyCallMessage(
-        title: 'Busy',
-        body: '$peerName is on another call.',
+        title: 'On another call',
+        body: '$peerName is on another call. Try again in a moment.',
       );
     case 'declined':
     case 'rejected':
@@ -936,8 +937,9 @@ class CallController extends GetxController {
   /// opens/closes, and when call_video state changes.
   Future<void> _syncPipEligibility() async {
     if (!Platform.isAndroid && !Platform.isIOS) return;
-    final flagService =
-        Get.isRegistered<FeatureFlagService>() ? Get.find<FeatureFlagService>() : null;
+    final flagService = Get.isRegistered<FeatureFlagService>()
+        ? Get.find<FeatureFlagService>()
+        : null;
     final flagOn = Platform.isAndroid
         ? (flagService?.pipAndroidEnabled ?? false)
         : (flagService?.pipIosEnabled ?? false);
@@ -988,8 +990,7 @@ class CallController extends GetxController {
   /// PiP stays eligible. Native attach is idempotent.
   void _syncIosPipTrack() {
     if (!Platform.isIOS || !_pipService.pipEligible) return;
-    final trackId =
-        remoteVideoStream.value?.getVideoTracks().firstOrNull?.id;
+    final trackId = remoteVideoStream.value?.getVideoTracks().firstOrNull?.id;
     if (trackId == null || trackId.isEmpty) return;
     unawaited(_pipService.setPipEligible(true, trackId: trackId));
   }
@@ -1966,6 +1967,11 @@ class CallController extends GetxController {
   /// Turns screen OFF when phone near ear, ON when away
   Future<void> _setupProximitySensor() async {
     try {
+      // Feed isNearEar so the call UI can react (hide controls / dim) when
+      // the phone is held to the ear during voice calls.
+      ProximityService().onProximityChange = (isNear) {
+        isNearEar.value = isNear;
+      };
       // Start the proper proximity service that uses hardware sensor
       await ProximityService().startListening();
       debugPrint('📱 ProximityService: Started for call');
@@ -1978,6 +1984,7 @@ class CallController extends GetxController {
   void _stopProximitySensor() {
     try {
       ProximityService().stopListening();
+      isNearEar.value = false;
       debugPrint('📱 ProximityService: Stopped');
     } catch (e) {
       debugPrint('❌ Failed to stop proximity sensor: $e');
@@ -2133,9 +2140,7 @@ class CallController extends GetxController {
                 callId != null &&
                 callId.isNotEmpty &&
                 currentCallId.value == callId) {
-              if (Get.currentRoute != activeCallRoute) {
-                Get.offAllNamed(activeCallRoute);
-              }
+              _pushCallRoutePreservingStack();
             }
             return null;
           }
@@ -2169,8 +2174,7 @@ class CallController extends GetxController {
               'call_id': callId ?? '',
               'caller_id': callerId ?? '',
               'caller_name': callerName ?? 'Incoming Call',
-              'template_text':
-                  call.arguments['templateText'] as String? ?? '',
+              'template_text': call.arguments['templateText'] as String? ?? '',
               'open_custom_chat':
                   call.arguments['openCustomChat'] == true ? 'true' : 'false',
             });
@@ -2184,14 +2188,12 @@ class CallController extends GetxController {
         if (call.method == 'pipChanged') {
           // iOS PiP state sync (Android PiP arrives via the call_events
           // broadcast stream instead — same _onPipChanged entry point).
-          final inPip =
-              (call.arguments as Map?)?['isPip'] == true;
+          final inPip = (call.arguments as Map?)?['isPip'] == true;
           _onPipChanged(inPip);
           return null;
         }
         if (call.method == 'pipOutcome') {
-          final outcome =
-              (call.arguments as Map?)?['outcome'] as String? ?? '';
+          final outcome = (call.arguments as Map?)?['outcome'] as String? ?? '';
           _onPipOutcome(outcome);
           return null;
         }
@@ -2303,9 +2305,7 @@ class CallController extends GetxController {
               '📞 Notification action: return to ongoing call $callId',
             );
             if (isConnected && currentCallId.value == callId) {
-              if (Get.currentRoute != activeCallRoute) {
-                Get.offAllNamed(activeCallRoute);
-              }
+              _pushCallRoutePreservingStack();
             }
             return;
           }
@@ -2751,6 +2751,35 @@ class CallController extends GetxController {
         return false;
       }
 
+      // Block guard: never dial a contact the user has blocked. The server
+      // also enforces bidirectionally before call_initiate — this is the
+      // immediate UX guard.
+      if (Get.isRegistered<BlockService>() &&
+          Get.find<BlockService>().isUserBlocked(calleeDeviceId)) {
+        debugPrint('🚫 Call blocked locally: $calleeDeviceId is blocked');
+        Get.snackbar('Blocked', 'Unblock contact to place a call');
+        return false;
+      }
+
+      // Dialing them is explicit engagement — known contact for strict-mode
+      // gates (silence unknown callers / media auto-download).
+      _storageService.markContactKnown(calleeDeviceId);
+
+      // "Protect IP address in calls" gathers relay-only candidates — with
+      // no reachable TURN server the call could never connect, so abort
+      // before the ringing UI appears rather than hanging at Connecting.
+      if (_storageService.protectCallIpAddress &&
+          !await _webrtcService.hasTurnRelayForIpProtection()) {
+        debugPrint('📞 IP protection on but no TURN relay — aborting call');
+        Get.snackbar(
+          'Relay unavailable',
+          'Relay server unavailable right now. Try again shortly.',
+          snackPosition: SnackPosition.TOP,
+          duration: const Duration(seconds: 4),
+        );
+        return false;
+      }
+
       final callerDeviceId = _storageService.deviceId;
       if (callerDeviceId == null) {
         debugPrint('❌ Cannot start call: No device ID');
@@ -3059,6 +3088,12 @@ class CallController extends GetxController {
       }
 
       final callId = callData['callId'] as String;
+      // Answering is explicit engagement — known contact for strict-mode
+      // gates so future calls from this person are never silenced.
+      final acceptCallerId = callData['callerId'] as String?;
+      if (acceptCallerId != null) {
+        _storageService.markContactKnown(acceptCallerId);
+      }
       if (Platform.isIOS) {
         _nativePushCallIds.remove(callId);
         await CallKitService().endGhostCallKitForCall(callId, reason: 'accept');
@@ -3205,12 +3240,10 @@ class CallController extends GetxController {
     );
     if ((callData['callId'] as String? ?? '').isEmpty) {
       callData['callId'] = currentCallId.value;
-      callData['callerId'] =
-          callData['callerId'] ?? remoteDeviceId.value;
+      callData['callerId'] = callData['callerId'] ?? remoteDeviceId.value;
     }
     final callId = callData['callId'] as String? ?? '';
-    if (callId.isNotEmpty &&
-        !_handledDeclineMessageCallIds.add(callId)) {
+    if (callId.isNotEmpty && !_handledDeclineMessageCallIds.add(callId)) {
       debugPrint('📞 Decline-with-message already handled for $callId');
       return;
     }
@@ -3238,8 +3271,7 @@ class CallController extends GetxController {
     Map<String, dynamic> data,
   ) async {
     final callId = data['call_id'] as String? ?? '';
-    if (callId.isNotEmpty &&
-        !_handledDeclineMessageCallIds.add(callId)) {
+    if (callId.isNotEmpty && !_handledDeclineMessageCallIds.add(callId)) {
       debugPrint('📞 Duplicate decline_with_message ignored: $callId');
       return;
     }
@@ -3247,8 +3279,8 @@ class CallController extends GetxController {
     final callerId = data['caller_id'] as String? ?? '';
     if (callerId.isEmpty) return;
     final templateText = data['template_text'] as String? ?? '';
-    final openCustom = data['open_custom_chat'] == 'true' ||
-        data['open_custom_chat'] == true;
+    final openCustom =
+        data['open_custom_chat'] == 'true' || data['open_custom_chat'] == true;
     if (openCustom || templateText.isEmpty) {
       openChatForCustomReply(
         callerId,
@@ -3614,6 +3646,22 @@ class CallController extends GetxController {
     Get.toNamed(route);
   }
 
+  /// Bring the call UI forward WITHOUT wiping the route stack. A stale
+  /// OPEN_ONGOING_CALL intent replay (e.g. after the OS destroys and
+  /// recreates MainActivity while a system picker is open) previously hit
+  /// offAllNamed, deleting every route-bound controller — mid-flight flows
+  /// like image sending then died with "ChatController not found". Pushing
+  /// the call route keeps the user's screens (and their controllers) alive
+  /// underneath.
+  void _pushCallRoutePreservingStack() {
+    if (Get.currentRoute == activeCallRoute) return;
+    final navigator = Get.key.currentState;
+    navigator?.popUntil(
+      (r) => !(r.settings.name ?? '').startsWith('/call/'),
+    );
+    Get.toNamed(activeCallRoute);
+  }
+
   /// Create the call-lifetime video renderers once and bind the current
   /// streams. Idempotent and concurrency-safe — callers may fire-and-forget
   /// or await it (the video screen awaits before first build).
@@ -3871,7 +3919,8 @@ class CallController extends GetxController {
   /// black. In the double-tap glare case BOTH devices are initiators, so
   /// ownership falls to the call-role tie-break: the original call caller
   /// offers, the callee skips.
-  Future<void> respondToVideoUpgrade(bool accepted, {bool isGlare = false}) async {
+  Future<void> respondToVideoUpgrade(bool accepted,
+      {bool isGlare = false}) async {
     if (!hasIncomingVideoUpgradeRequest.value) return;
     hasIncomingVideoUpgradeRequest.value = false;
     _socketService.sendVideoUpgradeResponse(
@@ -5115,8 +5164,8 @@ class CallController extends GetxController {
     _updateCallEncryptionState(deviceId);
     // First check locally saved contact name (what the user named them in chat)
     final savedChat = _storageService.getChat(deviceId);
-    final savedAvatarUrl = savedChat?.avatarUrl ??
-        _storageService.getContactAvatarUrl(deviceId);
+    final savedAvatarUrl =
+        savedChat?.avatarUrl ?? _storageService.getContactAvatarUrl(deviceId);
     if (savedAvatarUrl != null && savedAvatarUrl.isNotEmpty) {
       remoteAvatarUrl.value = savedAvatarUrl;
     }
@@ -5589,6 +5638,39 @@ class CallController extends GetxController {
       return;
     }
 
+    // Busy: already in an active/ringing/dialing call and this is a
+    // DIFFERENT callId — emit an explicit reject instead of silently
+    // dropping so the caller hears the busy tone / "On another call".
+    // `_ringingCallId` is exempted: it marks a resync of the same call
+    // already reported by the native layer.
+    if (isInCall && _ringingCallId != incomingCallId) {
+      debugPrint(
+        '📞 Busy — rejecting second incoming call $incomingCallId '
+        '(active: ${currentCallId.value})',
+      );
+      _socketService.rejectCall(
+        callId: incomingCallId,
+        callerId: incomingCallerId,
+        reason: 'busy',
+      );
+      return;
+    }
+
+    // "Silence unknown callers" (Strict account settings) — a call from
+    // someone we never engaged with doesn't ring or surface the
+    // incoming-call UI; the caller still hears normal ringing and the call
+    // logs as missed. Uses the same known-contact allowlist the Android
+    // native layer mirrors for killed pushes and the server enforces
+    // before dispatching wake-up pushes.
+    if (incomingCallerId.isNotEmpty &&
+        _storageService.silenceUnknownCallers &&
+        !_storageService.isKnownContact(incomingCallerId)) {
+      debugPrint(
+        '🔕 Silencing call from unknown caller: $incomingCallerId',
+      );
+      return;
+    }
+
     // Check if this is a resync'd call that user already accepted from CallKit/native notification
     if (_pendingAutoAcceptCallId != null &&
         _pendingAutoAcceptCallId == incomingCallId) {
@@ -5694,8 +5776,10 @@ class CallController extends GetxController {
         }
       }),
     );
-    remoteAvatarUrl.value =
-        data['callerAvatarUrl'] as String? ?? data['avatarUrl'] as String? ?? data['avatar_url'] as String? ?? '';
+    remoteAvatarUrl.value = data['callerAvatarUrl'] as String? ??
+        data['avatarUrl'] as String? ??
+        data['avatar_url'] as String? ??
+        '';
 
     // Mark this callId as handled so FCMService dedup guard skips it if FCM
     // arrives shortly after (server sends both socket + FCM in parallel)
@@ -5895,6 +5979,9 @@ class CallController extends GetxController {
     try {
       final callId = data['callId'] as String;
       final callerId = data['callerId'] as String;
+      // Answering is explicit engagement — known contact for strict-mode
+      // gates so future calls from this person are never silenced.
+      _storageService.markContactKnown(callerId);
       if (Platform.isIOS) _nativePushCallIds.remove(callId);
       // Native accept paths (CallKit, lock screen, notification, socket
       // resync) bypass acceptCall() — apply the same premium gate here.
@@ -5967,8 +6054,10 @@ class CallController extends GetxController {
       // Store call info
       currentCallId.value = callId;
       remoteDeviceId.value = callerId;
-      remoteAvatarUrl.value =
-          data['callerAvatarUrl'] as String? ?? data['avatarUrl'] as String? ?? data['avatar_url'] as String? ?? '';
+      remoteAvatarUrl.value = data['callerAvatarUrl'] as String? ??
+          data['avatarUrl'] as String? ??
+          data['avatar_url'] as String? ??
+          '';
       isCaller.value = false;
       _latestIncomingCallData = null;
       _videoRequested = incomingVideo;

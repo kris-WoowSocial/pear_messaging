@@ -3,10 +3,12 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_image_compress/flutter_image_compress.dart';
 import 'package:get/get.dart';
 import 'package:pear_messaging/core/constants/app_colors.dart';
 import 'package:pear_messaging/core/constants/app_sizes.dart';
 import 'package:pear_messaging/core/constants/app_strings.dart';
+import 'package:pear_messaging/core/services/image_compression.dart';
 import 'package:pear_messaging/core/widgets/url_preview_widget.dart';
 import 'package:pear_messaging/features/chat/chat_controller.dart';
 import 'package:pear_messaging/features/chat/chat_message_bubble.dart';
@@ -17,11 +19,9 @@ import '../../core/services/feature_flag_service.dart';
 import '../../core/services/membership_service.dart';
 import '../../routes/app_routes.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:flutter_image_compress/flutter_image_compress.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:file_picker/file_picker.dart';
 import '../../core/services/encryption_service.dart';
-import '../../core/services/image_compression.dart';
 import '../../core/services/media_upload_service.dart';
 import 'package:social_media_recorder/audio_encoder_type.dart';
 import 'package:social_media_recorder/screen/social_media_recorder.dart';
@@ -44,11 +44,6 @@ class ChatScreen extends GetView<ChatController> {
     debugPrint(
       '🔧 DEBUG: Recipient device ID: ${controller.recipientDeviceId}',
     );
-    // Check if this is a new conversation that needs username setup
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _checkAndAutoOpenEditSheet();
-    });
-
     final widget = PopScope(
       canPop: false,
       onPopInvoked: (didPop) async {
@@ -63,429 +58,440 @@ class ChatScreen extends GetView<ChatController> {
           Get.offAllNamed('/main');
         }
       },
-      child: Scaffold(
-        appBar: AppBar(
-          backgroundColor: AppColors.surface,
-          title: Row(
+      child: SafeArea(
+        child: Scaffold(
+          body: Column(
             children: [
-              Obx(
-                () => VantAvatar(
-                  userId:
-                      controller.isGroup ? null : controller.recipientDeviceId,
-                  name: controller.displayName.value.isNotEmpty
-                      ? controller.displayName.value
-                      : StringUtils.generateFriendlyName(
-                          controller.recipientDeviceId),
-                  avatarUrl: controller.peerAvatarUrl,
-                  size: 36,
-                  isGroup: controller.isGroup,
-                  borderRadius: 18,
-                ),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Obx(
-                () => Text(
-                  controller.isGroup
-                      ? controller.displayName.value
-                      : (controller.displayName.value.isNotEmpty &&
-                              controller.recipientDeviceId !=
-                                  controller.displayName.value)
-                          ? controller.displayName.value
-                          : StringUtils.generateFriendlyName(
-                              controller.recipientDeviceId,
-                            ),
-                  style: const TextStyle(
-                    fontSize: AppSizes.fontM,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.black,
+              Container(
+                height: 60,
+                color: AppColors.surface,
+                child: Row(children: [
+                  IconButton(
+                    icon: const Icon(Icons.arrow_back, color: Colors.black),
+                    onPressed: () => Get.back(),
                   ),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
+                  Expanded(
+                    child: Row(
+                      children: [
+                        Obx(
+                          () => VantAvatar(
+                            userId: controller.isGroup
+                                ? null
+                                : controller.recipientDeviceId,
+                            name: controller.displayName.value.isNotEmpty
+                                ? controller.displayName.value
+                                : StringUtils.generateFriendlyName(
+                                    controller.recipientDeviceId),
+                            avatarUrl: controller.peerAvatarUrl,
+                            size: 36,
+                            isGroup: controller.isGroup,
+                            borderRadius: 18,
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Obx(
+                                () => Text(
+                                  controller.isGroup
+                                      ? controller.displayName.value
+                                      : (controller.displayName.value
+                                                  .isNotEmpty &&
+                                              controller.recipientDeviceId !=
+                                                  controller.displayName.value)
+                                          ? controller.displayName.value
+                                          : StringUtils.generateFriendlyName(
+                                              controller.recipientDeviceId,
+                                            ),
+                                  style: const TextStyle(
+                                    fontSize: AppSizes.fontM,
+                                    fontWeight: FontWeight.bold,
+                                    color: Colors.black,
+                                  ),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                              Obx(
+                                () => controller.isGroup
+                                    ? Text(
+                                        controller.groupMemberCount.value > 0
+                                            ? '${controller.groupMemberCount.value} members'
+                                            : 'Group',
+                                        style: const TextStyle(
+                                          fontSize: AppSizes.fontS,
+                                          fontWeight: FontWeight.w600,
+                                          color: Colors.grey,
+                                        ),
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                      )
+                                    : Text(
+                                        controller.recipientTyping.value
+                                            ? 'typing...'
+                                            : controller.recipientStatus.value,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: TextStyle(
+                                          fontSize: AppSizes.fontS,
+                                          fontWeight: FontWeight.w600,
+                                          color: controller
+                                                  .recipientTyping.value
+                                              ? AppColors.primary
+                                              : (controller.recipientOnline
+                                                          .value ||
+                                                      (controller.recipientLastSeen
+                                                                  .value !=
+                                                              null &&
+                                                          DateTime.now()
+                                                                  .difference(
+                                                                    controller
+                                                                        .recipientLastSeen
+                                                                        .value!,
+                                                                  )
+                                                                  .inHours <
+                                                              24)
+                                                  ? Colors.green
+                                                  : Colors.grey),
+                                        ),
+                                      ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  if (!controller.isGroup)
+                    IconButton(
+                      icon: const Icon(Icons.call, color: Colors.black),
+                      onPressed: () {
+                        debugPrint('📞 Call button pressed');
+                        _startAudioCall();
+                      },
+                      tooltip: 'Audio Call',
+                    ),
+                  if (!controller.isGroup &&
+                      Get.isRegistered<FeatureFlagService>())
+                    Obx(
+                      () => Get.find<FeatureFlagService>().videoCalling.value
+                          ? IconButton(
+                              icon: const Icon(Icons.videocam,
+                                  color: Colors.black),
+                              onPressed: () {
+                                debugPrint('📞 Video call button pressed');
+                                _startVideoCall();
+                              },
+                              tooltip: 'Video Call',
+                            )
+                          : const SizedBox.shrink(),
+                    ),
+                  IconButton(
+                    icon: const Icon(Icons.settings, color: Colors.black),
+                    onPressed: () {
+                      debugPrint('🔧 DEBUG: settings button pressed');
+                      if (controller.isGroup) {
+                        Get.to(() => const GroupSettingsScreen());
+                      } else {
+                        Get.to(() => const ChatSettingsScreen());
+                      }
+                    },
+                    tooltip:
+                        controller.isGroup ? 'Group Settings' : 'Chat Settings',
+                  ),
+                ]),
               ),
-              Obx(
-                () => controller.isGroup
-                    ? Text(
-                        controller.groupMemberCount.value > 0
-                            ? '${controller.groupMemberCount.value} members'
-                            : 'Group',
-                        style: const TextStyle(
-                          fontSize: AppSizes.fontS,
-                          fontWeight: FontWeight.w600,
-                          color: Colors.grey,
-                        ),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      )
-                    : Text(
-                        controller.recipientStatus.value,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontSize: AppSizes.fontS,
-                          fontWeight: FontWeight.w600,
-                          color: controller.recipientOnline.value ||
-                                  (controller.recipientLastSeen.value != null &&
-                                      DateTime.now()
-                                              .difference(
-                                                controller
-                                                    .recipientLastSeen.value!,
-                                              )
-                                              .inHours <
-                                          24)
-                              ? Colors.green
-                              : Colors.grey,
-                        ),
-                      ),
+              Expanded(
+                child: Stack(
+                  children: [
+                    Positioned.fill(
+                      child: Obx(() {
+                        if (controller.messages.isEmpty) {
+                          return Center(
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                _buildChatHeader(),
+                                const SizedBox(height: 16),
+                                const Text(
+                                  'No messages yet. Start a conversation!',
+                                  style: TextStyle(color: Colors.black),
+                                ),
+                              ],
+                            ),
+                          );
+                        }
+
+                        // Build the complete items list with headers
+                        final itemsList = _buildItemsListWithHeaders();
+
+                        return NotificationListener<ScrollNotification>(
+                          onNotification: (scrollInfo) {
+                            // Load more messages when scrolled near the top (oldest messages)
+                            // With reverse:true, maxScrollExtent = top (oldest)
+                            if (scrollInfo.metrics.pixels >=
+                                scrollInfo.metrics.maxScrollExtent - 200) {
+                              controller.loadMoreMessages();
+                            }
+                            return false;
+                          },
+                          child: ListView.builder(
+                            controller: controller.scrollController,
+                            reverse: true,
+                            padding: const EdgeInsets.all(AppSizes.paddingM),
+                            itemCount: itemsList.length + 1,
+                            itemBuilder: (context, index) {
+                              // With reverse=true: index 0 = bottom (newest)
+                              // Last index = top (header)
+                              if (index == itemsList.length) {
+                                return Column(
+                                  children: [
+                                    _buildChatHeader(),
+                                    // Show loading indicator when loading more
+                                    Obx(
+                                      () => controller.isLoadingMore.value
+                                          ? const Padding(
+                                              padding: EdgeInsets.all(8.0),
+                                              child: Center(
+                                                child: SizedBox(
+                                                  width: 24,
+                                                  height: 24,
+                                                  child:
+                                                      CircularProgressIndicator(
+                                                    strokeWidth: 2,
+                                                  ),
+                                                ),
+                                              ),
+                                            )
+                                          : const SizedBox.shrink(),
+                                    ),
+                                  ],
+                                );
+                              }
+
+                              final item = itemsList[index];
+                              if (item['isHeader'] == true) {
+                                return _buildDateHeader(item['text'] as String);
+                              }
+
+                              final messageIndex = item['messageIndex'] as int;
+                              final message = controller.messages[messageIndex];
+                              return ChatMessageBubble(
+                                key: ValueKey(
+                                  'msg_${message.id}_${message.timestamp.millisecondsSinceEpoch}',
+                                ),
+                                message: message,
+                                isGroup: controller.isGroup,
+                              );
+                            },
+                          ),
+                        );
+                      }),
+                    ),
+                    Positioned(
+                      bottom: 10,
+                      right: 10,
+                      child: Obx(() {
+                        // Show floating button when not at bottom (scrolled up to read old messages)
+                        // Note: With reverse: true, 0.0 = bottom (newest), maxScrollExtent = top (oldest)
+                        final scrollPos = controller.scrollPosition.value;
+
+                        // Show button when scrolled away from bottom (newest messages)
+                        // With reverse: true, bottom is 0.0, so we check if we're not near 0
+                        final isScrolledUp = scrollPos > 50.0;
+
+                        return isScrolledUp
+                            ? FloatingActionButton(
+                                mini: true,
+                                backgroundColor: AppColors.surface,
+                                child: const Icon(
+                                  Icons.keyboard_double_arrow_down,
+                                  color: Colors.black,
+                                  size: 20,
+                                ),
+                                onPressed: () {
+                                  controller.scrollToBottom();
+                                },
+                              )
+                            : const SizedBox.shrink(); // Hide when at bottom
+                      }),
                     ),
                   ],
                 ),
               ),
-            ],
-          ),
-          centerTitle: false,
-          leading: IconButton(
-            icon: const Icon(Icons.arrow_back, color: Colors.black),
-            onPressed: () {
-              // Check if we can navigate back in the navigation stack
-              if (Navigator.of(context).canPop()) {
-                Navigator.of(context).pop();
-              } else {
-                // No navigation stack - navigate to chat list as fallback
-                debugPrint(
-                  '📱 No navigation stack found, navigating to chat list',
-                );
-                Get.offAllNamed('/main');
-              }
-            },
-          ),
-          actions: [
-            if (!controller.isGroup)
-              IconButton(
-                icon: const Icon(Icons.call, color: Colors.black),
-                onPressed: () {
-                  debugPrint('📞 Call button pressed');
-                  _startAudioCall();
-                },
-                tooltip: 'Audio Call',
-              ),
-            if (!controller.isGroup &&
-                Get.isRegistered<FeatureFlagService>())
-              Obx(() =>
-                    Get.find<FeatureFlagService>().videoCalling.value
-                        ? IconButton(
-                            icon: const Icon(Icons.videocam, color: Colors.black),
-                            onPressed: () {
-                              debugPrint('📞 Video call button pressed');
-                              _startVideoCall();
-                            },
-                            tooltip: 'Video Call',
-                          )
-                        : const SizedBox.shrink(),
-              ),
-            IconButton(
-              icon: const Icon(Icons.settings, color: Colors.black),
-              onPressed: () {
-                debugPrint('🔧 DEBUG: settings button pressed');
-                if (controller.isGroup) {
-                  Get.to(() => const GroupSettingsScreen());
-                } else {
-                  Get.to(() => const ChatSettingsScreen());
+              Obx(() {
+                // Check if user is blocked by recipient
+                if (controller.hasBlockedMe.value) {
+                  // Recipient blocked the current user
+                  return Container(
+                    padding: const EdgeInsets.all(AppSizes.paddingM),
+                    decoration: BoxDecoration(
+                      color: Colors.red.shade50,
+                      border:
+                          Border(top: BorderSide(color: Colors.red.shade200)),
+                    ),
+                    child: SafeArea(
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(Icons.block,
+                              color: Colors.red.shade400, size: 20),
+                          const SizedBox(width: 8),
+                          Text(
+                            "You can't reply to this conversation.",
+                            style: TextStyle(
+                              color: Colors.red.shade700,
+                              fontSize: 13,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
                 }
-              },
-              tooltip: controller.isGroup ? 'Group Settings' : 'Chat Settings',
-            ),
-          ],
-        ),
-        body: Column(
-          children: [
-            Expanded(
-              child: Stack(
-                children: [
-                  Positioned.fill(
-                    child: Obx(() {
-                      if (controller.messages.isEmpty) {
-                        return Center(
-                          child: Column(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              _buildChatHeader(),
-                              const SizedBox(height: 16),
-                              const Text(
-                                'No messages yet. Start a conversation!',
-                                style: TextStyle(color: Colors.black),
+
+                // Check if current user has blocked the recipient
+                if (controller.isBlockedByMe.value) {
+                  // Current user blocked the recipient
+                  return Container(
+                    padding: const EdgeInsets.all(AppSizes.paddingM),
+                    decoration: BoxDecoration(
+                      color: Colors.orange.shade50,
+                      border: Border(
+                        top: BorderSide(color: Colors.orange.shade200),
+                      ),
+                    ),
+                    child: SafeArea(
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(
+                            Icons.block,
+                            color: Colors.orange.shade400,
+                            size: 20,
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              "You have blocked this user. Unblock to send messages.",
+                              style: TextStyle(
+                                color: Colors.orange.shade700,
+                                fontSize: 13,
+                                fontWeight: FontWeight.w500,
                               ),
-                            ],
+                              textAlign: TextAlign.center,
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          IconButton(
+                            onPressed: () {
+                              controller.unblockUser();
+                            },
+                            icon: Icon(
+                              Icons.lock_open,
+                              color: Colors.orange.shade600,
+                              size: 20,
+                            ),
+                            tooltip: 'Unblock User',
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
+                }
+
+                // Normal input field
+                return Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    // URL Preview (shown while typing)
+                    Obx(() {
+                      if (controller.currentUrlPreview.value != null) {
+                        return Container(
+                          margin: const EdgeInsets.only(
+                            left: AppSizes.paddingM,
+                            right: AppSizes.paddingM,
+                            bottom: AppSizes.paddingS,
+                          ),
+                          child: UrlPreviewWidget(
+                            preview: controller.currentUrlPreview.value!,
+                            isMe: true,
                           ),
                         );
                       }
 
-                      // Build the complete items list with headers
-                      final itemsList = _buildItemsListWithHeaders();
+                      // Loading state
+                      if (controller.isPreviewLoading.value) {
+                        return Container(
+                          margin: const EdgeInsets.only(
+                            left: AppSizes.paddingM,
+                            right: AppSizes.paddingM,
+                            bottom: AppSizes.paddingS,
+                          ),
+                          height: 100,
+                          decoration: BoxDecoration(
+                            color: Colors.grey.shade100,
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: Colors.grey.shade300),
+                          ),
+                          child:
+                              const Center(child: CircularProgressIndicator()),
+                        );
+                      }
 
-                      return NotificationListener<ScrollNotification>(
-                        onNotification: (scrollInfo) {
-                          // Load more messages when scrolled near the top (oldest messages)
-                          // With reverse:true, maxScrollExtent = top (oldest)
-                          if (scrollInfo.metrics.pixels >=
-                              scrollInfo.metrics.maxScrollExtent - 200) {
-                            controller.loadMoreMessages();
-                          }
-                          return false;
-                        },
-                        child: ListView.builder(
-                          controller: controller.scrollController,
-                          reverse: true,
-                          padding: const EdgeInsets.all(AppSizes.paddingM),
-                          itemCount: itemsList.length + 1,
-                          itemBuilder: (context, index) {
-                            // With reverse=true: index 0 = bottom (newest)
-                            // Last index = top (header)
-                            if (index == itemsList.length) {
-                              return Column(
-                                children: [
-                                  _buildChatHeader(),
-                                  // Show loading indicator when loading more
-                                  Obx(
-                                    () => controller.isLoadingMore.value
-                                        ? const Padding(
-                                            padding: EdgeInsets.all(8.0),
-                                            child: Center(
-                                              child: SizedBox(
-                                                width: 24,
-                                                height: 24,
-                                                child:
-                                                    CircularProgressIndicator(
-                                                  strokeWidth: 2,
-                                                ),
-                                              ),
-                                            ),
-                                          )
-                                        : const SizedBox.shrink(),
-                                  ),
-                                ],
-                              );
-                            }
-
-                            final item = itemsList[index];
-                            if (item['isHeader'] == true) {
-                              return _buildDateHeader(item['text'] as String);
-                            }
-
-                            final messageIndex = item['messageIndex'] as int;
-                            final message = controller.messages[messageIndex];
-                            return ChatMessageBubble(
-                              key: ValueKey(
-                                'msg_${message.id}_${message.timestamp.millisecondsSinceEpoch}',
-                              ),
-                              message: message,
-                              isGroup: controller.isGroup,
-                            );
-                          },
-                        ),
-                      );
+                      return const SizedBox.shrink();
                     }),
-                  ),
-                  Positioned(
-                    bottom: 10,
-                    right: 10,
-                    child: Obx(() {
-                      // Show floating button when not at bottom (scrolled up to read old messages)
-                      // Note: With reverse: true, 0.0 = bottom (newest), maxScrollExtent = top (oldest)
-                      final scrollPos = controller.scrollPosition.value;
 
-                      // Show button when scrolled away from bottom (newest messages)
-                      // With reverse: true, bottom is 0.0, so we check if we're not near 0
-                      final isScrolledUp = scrollPos > 50.0;
-
-                      return isScrolledUp
-                          ? FloatingActionButton(
-                              mini: true,
-                              backgroundColor: AppColors.surface,
-                              child: const Icon(
-                                Icons.keyboard_double_arrow_down,
-                                color: Colors.black,
-                                size: 20,
-                              ),
-                              onPressed: () {
-                                controller.scrollToBottom();
-                              },
-                            )
-                          : const SizedBox.shrink(); // Hide when at bottom
-                    }),
-                  ),
-                ],
-              ),
-            ),
-            Obx(() {
-              // Check if user is blocked by recipient
-              if (controller.hasBlockedMe.value) {
-                // Recipient blocked the current user
-                return Container(
-                  padding: const EdgeInsets.all(AppSizes.paddingM),
-                  decoration: BoxDecoration(
-                    color: Colors.red.shade50,
-                    border: Border(top: BorderSide(color: Colors.red.shade200)),
-                  ),
-                  child: SafeArea(
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(Icons.block, color: Colors.red.shade400, size: 20),
-                        const SizedBox(width: 8),
-                        Text(
-                          "You can't reply to this conversation.",
-                          style: TextStyle(
-                            color: Colors.red.shade700,
-                            fontSize: 13,
-                            fontWeight: FontWeight.w500,
+                    // Input field container
+                    Container(
+                      padding: const EdgeInsets.all(AppSizes.paddingM),
+                      decoration: BoxDecoration(
+                        color: AppColors.surface,
+                        boxShadow: [
+                          BoxShadow(
+                            color: AppColors.shadow,
+                            blurRadius: 4,
+                            offset: const Offset(0, -2),
                           ),
-                        ),
-                      ],
-                    ),
-                  ),
-                );
-              }
-
-              // Check if current user has blocked the recipient
-              if (controller.isBlockedByMe.value) {
-                // Current user blocked the recipient
-                return Container(
-                  padding: const EdgeInsets.all(AppSizes.paddingM),
-                  decoration: BoxDecoration(
-                    color: Colors.orange.shade50,
-                    border: Border(
-                      top: BorderSide(color: Colors.orange.shade200),
-                    ),
-                  ),
-                  child: SafeArea(
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(
-                          Icons.block,
-                          color: Colors.orange.shade400,
-                          size: 20,
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(
-                            "You have blocked this user. Unblock to send messages.",
-                            style: TextStyle(
-                              color: Colors.orange.shade700,
-                              fontSize: 13,
-                              fontWeight: FontWeight.w500,
-                            ),
-                            textAlign: TextAlign.center,
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        IconButton(
-                          onPressed: () {
-                            controller.unblockUser();
-                          },
-                          icon: Icon(
-                            Icons.lock_open,
-                            color: Colors.orange.shade600,
-                            size: 20,
-                          ),
-                          tooltip: 'Unblock User',
-                        ),
-                      ],
-                    ),
-                  ),
-                );
-              }
-
-              // Normal input field
-              return Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  // URL Preview (shown while typing)
-                  Obx(() {
-                    if (controller.currentUrlPreview.value != null) {
-                      return Container(
-                        margin: const EdgeInsets.only(
-                          left: AppSizes.paddingM,
-                          right: AppSizes.paddingM,
-                          bottom: AppSizes.paddingS,
-                        ),
-                        child: UrlPreviewWidget(
-                          preview: controller.currentUrlPreview.value!,
-                          isMe: true,
-                        ),
-                      );
-                    }
-
-                    // Loading state
-                    if (controller.isPreviewLoading.value) {
-                      return Container(
-                        margin: const EdgeInsets.only(
-                          left: AppSizes.paddingM,
-                          right: AppSizes.paddingM,
-                          bottom: AppSizes.paddingS,
-                        ),
-                        height: 100,
-                        decoration: BoxDecoration(
-                          color: Colors.grey.shade100,
-                          borderRadius: BorderRadius.circular(12),
-                          border: Border.all(color: Colors.grey.shade300),
-                        ),
-                        child: const Center(child: CircularProgressIndicator()),
-                      );
-                    }
-
-                    return const SizedBox.shrink();
-                  }),
-
-                  // Input field container
-                  Container(
-                    padding: const EdgeInsets.all(AppSizes.paddingM),
-                    decoration: BoxDecoration(
-                      color: AppColors.surface,
-                      boxShadow: [
-                        BoxShadow(
-                          color: AppColors.shadow,
-                          blurRadius: 4,
-                          offset: const Offset(0, -2),
-                        ),
-                      ],
-                    ),
-                    child: SafeArea(
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          // Reply preview bar
-                          Obx(() {
-                            if (controller.isReplying &&
-                                controller.replyToMessage.value != null) {
-                              return ReplyPreviewBar(
-                                replyTo: controller.replyToMessage.value!,
-                                onCancel: controller.cancelReply,
-                                onTap: () {
-                                  controller.scrollToMessage(
-                                    controller.replyToMessage.value!.messageId,
-                                  );
-                                },
-                              );
-                            }
-                            return const SizedBox.shrink();
-                          }),
-
-                          // Message input / recording area
-                          _buildMessageInput(context),
                         ],
                       ),
+                      child: SafeArea(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            // Reply preview bar
+                            Obx(() {
+                              if (controller.isReplying &&
+                                  controller.replyToMessage.value != null) {
+                                return ReplyPreviewBar(
+                                  replyTo: controller.replyToMessage.value!,
+                                  onCancel: controller.cancelReply,
+                                  onTap: () {
+                                    controller.scrollToMessage(
+                                      controller
+                                          .replyToMessage.value!.messageId,
+                                    );
+                                  },
+                                );
+                              }
+                              return const SizedBox.shrink();
+                            }),
+
+                            // Message input / recording area
+                            _buildMessageInput(context),
+                          ],
+                        ),
+                      ),
                     ),
-                  ),
-                ],
-              );
-            }),
-          ],
+                  ],
+                );
+              }),
+            ],
+          ),
         ),
       ),
     );
@@ -747,84 +753,15 @@ class ChatScreen extends GetView<ChatController> {
     }
   }
 
-  void _checkAndAutoOpenEditSheet() {
-    debugPrint('🔧 DEBUG: Checking if auto-open edit sheet is needed');
-    debugPrint('🔧 DEBUG: Display name: "${controller.displayName.value}"');
-    debugPrint('🔧 DEBUG: Messages count: ${controller.messages.length}');
-
-    // Check conditions for auto-opening edit sheet:
-    // 1. Display name starts with "@user" (not saved in local storage)
-    // 2. This is a new conversation (first message only or no messages yet)
-    // 3. User just started the conversation
-
-    final displayName = controller.displayName.value.trim();
-    final isDefaultUsername =
-        displayName.startsWith('@user') || displayName == 'Unknown';
-    final isNewConversation = controller.messages.length <= 1; // 0 or 1 message
-
-    debugPrint('🔧 DEBUG: isDefaultUsername: $isDefaultUsername');
-    debugPrint('🔧 DEBUG: isNewConversation: $isNewConversation');
-
-    if (isDefaultUsername && isNewConversation) {
-      debugPrint(
-        '🔧 DEBUG: Auto-opening edit sheet for new conversation with default username',
-      );
-
-      // Add a small delay to ensure the UI is fully rendered
-      Future.delayed(const Duration(milliseconds: 500), () {
-        if (Get.context != null) {
-          _showEditSheet(Get.context!);
-        }
-      });
-    } else {
-      debugPrint('🔧 DEBUG: Not auto-opening edit sheet - conditions not met');
-    }
-  }
-
-  void _showEditSheet(BuildContext context) {
-    // Add debug logging to track when this is called
-    debugPrint('🔧 DEBUG: _showEditSheet called');
-    debugPrint(
-      '🔧 DEBUG: Current display name: ${controller.displayName.value}',
-    );
-    debugPrint('🔧 DEBUG: Stack trace: ${StackTrace.current}');
-
-    // Check if this might be an automatic call for new connections
-    final stackTrace = StackTrace.current;
-    final stackTraceString = stackTrace.toString();
-
-    // If this is called automatically during initialization from build/onInit, prevent it
-    // But allow it if called from _checkAndAutoOpenEditSheet (which has a delay)
-    if (controller.displayName.value == 'Unknown' &&
-        (stackTraceString.contains('onInit') ||
-            stackTraceString.contains('build') ||
-            stackTraceString.contains('initState')) &&
-        !stackTraceString.contains('_checkAndAutoOpenEditSheet')) {
-      debugPrint(
-        '🔧 DEBUG: Preventing automatic edit sheet opening during initialization',
-      );
-      return;
-    }
-
-    // The StatefulWidget owns the field's controller/focus node so they're
-    // disposed on real unmount (after the exit animation), never mid-transition.
-    Get.bottomSheet(
-      _EditContactNameSheet(
-        initialName: controller.displayName.value,
-        onSave: (newName) {
-          controller.updateDisplayName(newName);
-          try {
-            Get.back();
-          } catch (_) {}
-        },
-      ),
-      isScrollControlled:
-          true, // Allow sheet to be scrollable and handle keyboard
-    );
-  }
-
   Future<void> _pickAndSendImage(ImagePicker picker, ImageSource source) async {
     String? pendingMsgId;
+    // Snapshot the controller + chat flags BEFORE the first await: a route
+    // teardown while the picker is open (e.g. a stale call-intent replay
+    // during an ongoing call) unregisters ChatController, and the lazy
+    // GetView.controller getter would throw mid-flow. The captured instance
+    // still completes the send — messages persist to storage and the socket.
+    final ctrl = controller;
+    final isGroupChat = ctrl.isGroup;
     try {
       // Request permission before picking image (required for Samsung gallery)
       if (source == ImageSource.gallery) {
@@ -891,7 +828,8 @@ class ChatScreen extends GetView<ChatController> {
 
       // Step 2: Preview sheet — view-once toggle + HD pill.
       // Returns null if the user cancelled.
-      final preview = await _showImageSendPreview([compressedBytes]);
+      final preview =
+          await _showImageSendPreview([compressedBytes], isGroup: isGroupChat);
       if (preview == null) return;
 
       // HD selected — re-compress from the source file at 2560px/~88%.
@@ -905,7 +843,7 @@ class ChatScreen extends GetView<ChatController> {
       }
 
       // Step 3: Add bubble immediately so user sees it with upload progress
-      pendingMsgId = await controller.createPendingImageMessage(
+      pendingMsgId = await ctrl.createPendingImageMessage(
         sendBytes,
         isViewOnce: preview.viewOnce,
       );
@@ -918,20 +856,20 @@ class ChatScreen extends GetView<ChatController> {
       final token = await MediaUploadService.uploadImage(
         encryptedBlob,
         onProgress: (progress) {
-          controller.uploadProgressMap[pendingMsgId]?.value = progress;
+          ctrl.uploadProgressMap[pendingMsgId]?.value = progress;
         },
         isViewOnce: preview.viewOnce,
       );
 
       // Step 4: Finalize bubble content + send token via socket
-      await controller.finalizeImageMessage(pendingMsgId, token);
+      await ctrl.finalizeImageMessage(pendingMsgId, token);
       debugPrint('✅ Image sent via media server, token=$token');
     } catch (e) {
       debugPrint('❌ Error sending image: $e');
       // Remove the pending bubble on failure
       if (pendingMsgId != null) {
-        controller.uploadProgressMap.remove(pendingMsgId);
-        controller.messages.removeWhere((msg) => msg.id == pendingMsgId);
+        ctrl.uploadProgressMap.remove(pendingMsgId);
+        ctrl.messages.removeWhere((msg) => msg.id == pendingMsgId);
       }
 
       String errorMessage = 'Failed to send image. Please try again.';
@@ -963,7 +901,9 @@ class ChatScreen extends GetView<ChatController> {
   /// the top corner, and the send button.
   /// Returns the chosen options, `null` on cancel.
   Future<({bool viewOnce, bool hd})?> _showImageSendPreview(
-      List<Uint8List> images) {
+    List<Uint8List> images, {
+    required bool isGroup,
+  }) {
     final isViewOnce = false.obs;
     final isHd = false.obs;
     return Get.bottomSheet<({bool viewOnce, bool hd})>(
@@ -1059,53 +999,53 @@ class ChatScreen extends GetView<ChatController> {
                 children: [
                   // View-once "1" toggle — 1:1 chats only (the group socket
                   // payload doesn't carry the flag).
-                  if (!controller.isGroup)
+                  if (!isGroup)
                     Obx(() => GestureDetector(
-                        onTap: () => isViewOnce.value = !isViewOnce.value,
-                        child: Row(
-                          children: [
-                            Container(
-                              width: 40,
-                              height: 40,
-                              decoration: BoxDecoration(
-                                shape: BoxShape.circle,
-                                color: isViewOnce.value
-                                    ? const Color(0xFF25D366)
-                                    : Colors.transparent,
-                                border: Border.all(
+                          onTap: () => isViewOnce.value = !isViewOnce.value,
+                          child: Row(
+                            children: [
+                              Container(
+                                width: 40,
+                                height: 40,
+                                decoration: BoxDecoration(
+                                  shape: BoxShape.circle,
                                   color: isViewOnce.value
                                       ? const Color(0xFF25D366)
-                                      : Colors.grey[500]!,
-                                  width: 2,
-                                ),
-                              ),
-                              child: Center(
-                                child: Text(
-                                  '1',
-                                  style: TextStyle(
+                                      : Colors.transparent,
+                                  border: Border.all(
                                     color: isViewOnce.value
-                                        ? Colors.white
-                                        : Colors.grey[600],
-                                    fontSize: 16,
-                                    fontWeight: FontWeight.bold,
+                                        ? const Color(0xFF25D366)
+                                        : Colors.grey[500]!,
+                                    width: 2,
+                                  ),
+                                ),
+                                child: Center(
+                                  child: Text(
+                                    '1',
+                                    style: TextStyle(
+                                      color: isViewOnce.value
+                                          ? Colors.white
+                                          : Colors.grey[600],
+                                      fontSize: 16,
+                                      fontWeight: FontWeight.bold,
+                                    ),
                                   ),
                                 ),
                               ),
-                            ),
-                            const SizedBox(width: 8),
-                            Text(
-                              'View once',
-                              style: TextStyle(
-                                color: isViewOnce.value
-                                    ? const Color(0xFF25D366)
-                                    : Colors.grey[700],
-                                fontSize: 14,
-                                fontWeight: FontWeight.w500,
+                              const SizedBox(width: 8),
+                              Text(
+                                'View once',
+                                style: TextStyle(
+                                  color: isViewOnce.value
+                                      ? const Color(0xFF25D366)
+                                      : Colors.grey[700],
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w500,
+                                ),
                               ),
-                            ),
-                          ],
-                        ),
-                      ))
+                            ],
+                          ),
+                        ))
                   else
                     const SizedBox.shrink(),
                   // Send button
@@ -1144,6 +1084,10 @@ class ChatScreen extends GetView<ChatController> {
   static const int _maxImagesPerSend = 5;
 
   Future<void> _pickAndSendImages(ImagePicker picker) async {
+    // See _pickAndSendImage — capture before awaits so a mid-flow route
+    // teardown (stale call-intent replay) can't break the send.
+    final ctrl = controller;
+    final isGroupChat = ctrl.isGroup;
     try {
       final permissionStatus = await _requestGalleryPermission();
       if (permissionStatus != PermissionStatus.granted) {
@@ -1157,7 +1101,18 @@ class ChatScreen extends GetView<ChatController> {
         return;
       }
 
-      var picked = await picker.pickMultiImage(limit: _maxImagesPerSend);
+      // file_picker first — same mechanism the single-image gallery path
+      // uses for Samsung compatibility. image_picker's pickMultiImage can
+      // throw PlatformException (e.g. its activity-result delegate wedges
+      // while a call keeps the host activity paused/destroyed), which used
+      // to surface as the generic "Failed to send images" snackbar.
+      List<XFile> picked;
+      try {
+        picked = await _pickImagesWithFilePicker(_maxImagesPerSend) ?? [];
+      } catch (e) {
+        debugPrint('⚠️ file_picker multi failed ($e) — trying image_picker');
+        picked = await picker.pickMultiImage(limit: _maxImagesPerSend);
+      }
       if (picked.isEmpty) return;
       if (picked.length > _maxImagesPerSend) {
         picked = picked.take(_maxImagesPerSend).toList();
@@ -1198,7 +1153,8 @@ class ChatScreen extends GetView<ChatController> {
 
       // Same preview sheet the single-image path uses — view-once toggle
       // + HD pill. Returns null if the user cancelled.
-      final preview = await _showImageSendPreview(compressed);
+      final preview =
+          await _showImageSendPreview(compressed, isGroup: isGroupChat);
       if (preview == null) return;
 
       // HD selected — re-compress each source file at 2560px/~88%.
@@ -1215,13 +1171,13 @@ class ChatScreen extends GetView<ChatController> {
         if (hdList.isNotEmpty) sendList = hdList;
       }
 
-      await controller.sendImagesSequentially(
+      await ctrl.sendImagesSequentially(
         sendList,
         maxPerBatch: _maxImagesPerSend,
         isViewOnce: preview.viewOnce,
       );
-    } catch (e) {
-      debugPrint('❌ Error in multi-image send: $e');
+    } catch (e, st) {
+      debugPrint('❌ Error in multi-image send: $e\n$st');
       Get.snackbar(
         'Error',
         'Failed to send images. Please try again.',
@@ -1271,27 +1227,58 @@ class ChatScreen extends GetView<ChatController> {
         debugPrint('⚠️ file_picker returned null');
         return null;
       }
-      final file = result.files.first;
-      final path = file.path;
-      if (path != null) {
-        debugPrint('📸 file_picker selected: $path');
-        return XFile(path);
-      }
-      // Fallback: save bytes to temp file if path is unavailable
-      if (file.bytes != null) {
-        final tempDir = await Directory.systemTemp.createTemp('vant_chat_');
-        final tempFile = File(
-            '${tempDir.path}/picked_image_${DateTime.now().millisecondsSinceEpoch}.jpg');
-        await tempFile.writeAsBytes(file.bytes!);
-        debugPrint('📸 file_picker saved bytes to temp file: ${tempFile.path}');
-        return XFile(tempFile.path);
-      }
-      debugPrint('⚠️ file_picker returned null path and no bytes');
-      return null;
+      return _platformFileToXFile(result.files.first);
     } catch (e) {
       debugPrint('❌ file_picker error: $e');
       return null;
     }
+  }
+
+  /// Multi-image picker via file_picker — same mechanism as the
+  /// single-image gallery path (more reliable than image_picker's
+  /// pickMultiImage while the host activity is juggling a call).
+  /// Returns null when the user cancels.
+  Future<List<XFile>?> _pickImagesWithFilePicker(int maxCount) async {
+    debugPrint('📸 Opening file_picker for multi-image selection');
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.image,
+      allowMultiple: true,
+      withData: true,
+    );
+    if (result == null || result.files.isEmpty) {
+      debugPrint('⚠️ file_picker multi returned null/empty');
+      return null;
+    }
+    final picked = <XFile>[];
+    for (final file in result.files.take(maxCount)) {
+      final xfile = await _platformFileToXFile(file);
+      if (xfile != null) {
+        picked.add(xfile);
+      } else {
+        debugPrint('⚠️ file_picker entry had no path/bytes: ${file.name}');
+      }
+    }
+    return picked;
+  }
+
+  /// Resolve a file_picker PlatformFile to an XFile: prefer its real path,
+  /// otherwise persist the picked bytes to a temp file.
+  Future<XFile?> _platformFileToXFile(PlatformFile file) async {
+    final path = file.path;
+    if (path != null) {
+      debugPrint('📸 file_picker selected: $path');
+      return XFile(path);
+    }
+    if (file.bytes != null) {
+      final tempDir = await Directory.systemTemp.createTemp('vant_chat_');
+      final tempFile = File(
+          '${tempDir.path}/picked_image_${DateTime.now().millisecondsSinceEpoch}.jpg');
+      await tempFile.writeAsBytes(file.bytes!);
+      debugPrint('📸 file_picker saved bytes to temp file: ${tempFile.path}');
+      return XFile(tempFile.path);
+    }
+    debugPrint('⚠️ file_picker returned null path and no bytes');
+    return null;
   }
 
   /// Format date like WhatsApp: Today, Yesterday, day names for last week, then full dates
@@ -1651,9 +1638,9 @@ Future<Uint8List> _compressImageBytes(String filePath,
   }
 }
 
-/// WhatsApp-style input row: text field on the left, attachment + mic buttons
-/// on the right. Attachment hides while typing or recording; send appears
-/// when there is text.
+/// WhatsApp-style input row: the attachment (paperclip) button lives inside
+/// the input pill and stays visible while typing; only the trailing circle
+/// outside the pill swaps between Mic (empty) and Send (has text).
 class _MessageInput extends StatefulWidget {
   final ChatController controller;
   final VoidCallback onAttachmentTap;
@@ -1674,61 +1661,50 @@ class _MessageInputState extends State<_MessageInput> {
 
   @override
   Widget build(BuildContext context) {
-    return Stack(
-      clipBehavior: Clip.none,
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.end,
       children: [
-        TextField(
-          controller: widget.controller.messageController,
-          focusNode: widget.controller.messageFocusNode,
-          onChanged: widget.controller.onTyping,
-          maxLines: 7,
-          minLines: 1,
-          keyboardType: TextInputType.multiline,
-          textInputAction: TextInputAction.newline,
-          enableInteractiveSelection: true,
-          selectionControls: MaterialTextSelectionControls(),
-          decoration: InputDecoration(
-            hintText: AppStrings.typeMessage,
-            filled: true,
-            fillColor: AppColors.background,
-            contentPadding: const EdgeInsets.only(
-              left: AppSizes.paddingM,
-              right: 108,
-              top: AppSizes.paddingS,
-              bottom: AppSizes.paddingS,
-            ),
-            border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(
-                AppSizes.radiusCircular,
-              ),
-              borderSide: BorderSide.none,
-            ),
-          ),
-        ),
-        Positioned(
-          right: 0,
-          top: 0,
-          bottom: 0,
-          child: Center(
-            child: Obx(() {
-              if (widget.controller.hasText.value) {
-                return CircleAvatar(
-                  backgroundColor: AppColors.primary,
-                  child: IconButton(
-                    icon: const Icon(
-                      Icons.send,
-                      color: AppColors.textLight,
-                    ),
-                    onPressed: widget.controller.sendMessage,
+        // Input pill: text field with the attach button permanently inside
+        // on the right (visible whether the field is empty or not).
+        Expanded(
+          child: Stack(
+            clipBehavior: Clip.none,
+            children: [
+              TextField(
+                controller: widget.controller.messageController,
+                focusNode: widget.controller.messageFocusNode,
+                onChanged: widget.controller.onTyping,
+                maxLines: 7,
+                minLines: 1,
+                keyboardType: TextInputType.multiline,
+                textInputAction: TextInputAction.newline,
+                enableInteractiveSelection: true,
+                selectionControls: MaterialTextSelectionControls(),
+                decoration: InputDecoration(
+                  hintText: AppStrings.typeMessage,
+                  filled: true,
+                  fillColor: AppColors.background,
+                  contentPadding: const EdgeInsets.only(
+                    left: AppSizes.paddingM,
+                    right: 56,
+                    top: AppSizes.paddingS,
+                    bottom: AppSizes.paddingS,
                   ),
-                );
-              }
-
-              return Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  if (!_isRecording)
-                    GestureDetector(
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(
+                      AppSizes.radiusCircular,
+                    ),
+                    borderSide: BorderSide.none,
+                  ),
+                ),
+              ),
+              if (!_isRecording)
+                Positioned(
+                  right: 4,
+                  top: 0,
+                  bottom: 0,
+                  child: Center(
+                    child: GestureDetector(
                       onTap: widget.onAttachmentTap,
                       child: CircleAvatar(
                         radius: 18,
@@ -1740,8 +1716,30 @@ class _MessageInputState extends State<_MessageInput> {
                         ),
                       ),
                     ),
-                  if (!_isRecording) const SizedBox(width: 4),
-                  SocialMediaRecorder(
+                  ),
+                ),
+            ],
+          ),
+        ),
+        const SizedBox(width: 8),
+        // Trailing circle: Mic when empty, Send when there's text.
+        Obx(
+          () => AnimatedSwitcher(
+            duration: const Duration(milliseconds: 150),
+            child: widget.controller.hasText.value
+                ? CircleAvatar(
+                    key: const ValueKey('send'),
+                    backgroundColor: AppColors.primary,
+                    child: IconButton(
+                      icon: const Icon(
+                        Icons.send,
+                        color: AppColors.textLight,
+                      ),
+                      onPressed: widget.controller.sendMessage,
+                    ),
+                  )
+                : SocialMediaRecorder(
+                    key: const ValueKey('mic'),
                     initRecordPackageWidth: 48,
                     fullRecordPackageHeight: 48,
                     radius: BorderRadius.circular(24),
@@ -1793,158 +1791,9 @@ class _MessageInputState extends State<_MessageInput> {
                     slideToCancelText: ' Slide to cancel',
                     cancelText: 'Cancel',
                   ),
-                ],
-              );
-            }),
           ),
         ),
       ],
-    );
-  }
-}
-
-/// WhatsApp-style single-line contact-name editor. Owns its
-/// TextEditingController and FocusNode for the sheet's real lifecycle —
-/// created in initState, disposed only when the sheet fully unmounts, so no
-/// exit-animation rebuild ever touches a disposed node.
-class _EditContactNameSheet extends StatefulWidget {
-  const _EditContactNameSheet({
-    required this.initialName,
-    required this.onSave,
-  });
-
-  final String initialName;
-  final void Function(String newName) onSave;
-
-  @override
-  State<_EditContactNameSheet> createState() => _EditContactNameSheetState();
-}
-
-class _EditContactNameSheetState extends State<_EditContactNameSheet> {
-  late final TextEditingController _controller;
-  late final FocusNode _focusNode;
-
-  @override
-  void initState() {
-    super.initState();
-    _controller = TextEditingController(text: widget.initialName);
-    // Cursor parked at the end of the text — never select-all on tap.
-    _controller.selection =
-        TextSelection.collapsed(offset: _controller.text.length);
-    _focusNode = FocusNode();
-    // Request focus after the first frame — autofocus during the entrance
-    // animation can trigger a stray word-selection on some keyboards.
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted && _focusNode.canRequestFocus) _focusNode.requestFocus();
-    });
-  }
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    _focusNode.dispose();
-    super.dispose();
-  }
-
-  void _submit([String? value]) {
-    FocusScope.of(context).unfocus();
-    final newName = (value ?? _controller.text).trim();
-    if (newName.isNotEmpty && newName.length <= 100) {
-      widget.onSave(newName);
-    } else {
-      Get.snackbar(
-        'Error',
-        'Name must be 1-100 characters',
-        snackPosition: SnackPosition.TOP,
-        backgroundColor: Colors.red.shade100,
-        colorText: Colors.red.shade800,
-      );
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return SafeArea(
-      child: Container(
-        decoration: const BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-        ),
-        padding: const EdgeInsets.all(AppSizes.paddingL),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Row(
-              children: [
-                IconButton(
-                  onPressed: () => Get.back(),
-                  icon: const Icon(Icons.close),
-                ),
-                const SizedBox(width: AppSizes.paddingM),
-                const Expanded(
-                  child: Text(
-                    'Edit Contact',
-                    style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: AppSizes.paddingL),
-            TextField(
-              controller: _controller,
-              focusNode: _focusNode,
-              maxLines: 1,
-              maxLength: 100,
-              keyboardType: TextInputType.name,
-              textCapitalization: TextCapitalization.words,
-              textInputAction: TextInputAction.done,
-              scrollPhysics: const ClampingScrollPhysics(),
-              decoration: InputDecoration(
-                counterText: '',
-                labelText: 'Contact Name',
-                hintText: 'Enter contact name',
-                hintStyle: TextStyle(color: Colors.grey.shade400),
-                filled: true,
-                fillColor: Colors.grey.shade50,
-                contentPadding: const EdgeInsets.symmetric(
-                  horizontal: AppSizes.paddingM,
-                  vertical: AppSizes.paddingM,
-                ),
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12),
-                  borderSide: BorderSide(color: Colors.grey.shade300),
-                ),
-                enabledBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12),
-                  borderSide: BorderSide(color: Colors.grey.shade300),
-                ),
-                focusedBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12),
-                  borderSide: const BorderSide(
-                    color: AppColors.primary,
-                    width: 2,
-                  ),
-                ),
-              ),
-              onSubmitted: _submit,
-            ),
-            const SizedBox(height: AppSizes.paddingL),
-            SizedBox(
-              width: double.infinity,
-              child: ElevatedButton(
-                onPressed: _submit,
-                child: const Text('Save'),
-              ),
-            ),
-            const SizedBox(
-              height: AppSizes.paddingS,
-            ), // Add some padding at bottom
-          ],
-        ),
-      ),
     );
   }
 }

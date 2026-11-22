@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:get/get.dart';
 import 'call_controller.dart';
+import '../../widgets/vant_avatar.dart';
 import 'call_encryption_indicator.dart';
 
 /// Outgoing Call Screen - Full-screen overlay for outgoing audio calls
@@ -83,7 +84,9 @@ class _OutgoingCallScreenState extends State<OutgoingCallScreen> {
                   child: Column(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      // Avatar
+                      // Avatar — same VantAvatar pattern as the incoming
+                      // screen: profile photo from remoteAvatarUrl (seeded in
+                      // startCall) with person-icon fallback.
                       Container(
                         width: 120,
                         height: 120,
@@ -95,10 +98,18 @@ class _OutgoingCallScreenState extends State<OutgoingCallScreen> {
                             width: 2,
                           ),
                         ),
-                        child: const Icon(
-                          Icons.person,
-                          size: 60,
-                          color: Colors.white,
+                        child: ClipOval(
+                          child: Obx(
+                            () => VantAvatar(
+                              userId: controller.remoteDeviceId.value.isNotEmpty
+                                  ? controller.remoteDeviceId.value
+                                  : null,
+                              name: controller.remoteDisplayName.value,
+                              avatarUrl: controller.remoteAvatarUrl.value,
+                              size: 120,
+                              borderRadius: 60,
+                            ),
+                          ),
                         ),
                       ),
                       const SizedBox(height: 32),

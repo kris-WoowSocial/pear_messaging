@@ -19,6 +19,11 @@ class ProximityService {
   bool _isActive = false;
   bool _isSpeakerOn = false;
 
+  /// Notified on every near/far transition so callers (CallController's
+  /// `isNearEar`) can drive UI state — e.g. hiding controls while the phone
+  /// is at the ear.
+  void Function(bool isNear)? onProximityChange;
+
   /// Start listening to proximity sensor
   Future<void> startListening() async {
     if (_isActive) return;
@@ -58,6 +63,7 @@ class ProximityService {
         debugPrint(
           '📱 ProximityService: Phone near ear - Screen OFF (native wake lock + manual fallback)',
         );
+        onProximityChange?.call(true);
         // Fallback: manually dim screen if native wake lock doesn't work on this device
         _turnScreenOff();
       }
@@ -68,6 +74,7 @@ class ProximityService {
         debugPrint(
           '📱 ProximityService: Phone away from ear - Screen ON (native wake lock + manual fallback)',
         );
+        onProximityChange?.call(false);
         // Fallback: manually restore screen brightness
         _turnScreenOn();
       }
@@ -79,6 +86,11 @@ class ProximityService {
     _isActive = false;
     _proximitySubscription?.cancel();
     _proximitySubscription = null;
+    if (_isNear) {
+      _isNear = false;
+      onProximityChange?.call(false);
+    }
+    onProximityChange = null;
 
     // Release native proximity wake lock
     _releaseProximityWakeLock();
