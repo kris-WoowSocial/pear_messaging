@@ -101,15 +101,16 @@
                 <data android:scheme="vantchat" />
             </intent-filter>
 
-            <!-- Branch.io App Links - verified. Single clean filter covering the
+            <!-- First-party App Links - verified against vant.chat's
+                 /.well-known/assetlinks.json. Single clean filter covering the
                  bare host and all paths; no pathPattern entries (those generate
                  the Play Console ".*" misconfigured deep link warnings). -->
             <intent-filter android:autoVerify="true">
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
-                <data android:scheme="https" android:host="vantchatting.app.link" />
-                <data android:scheme="https" android:host="vantchatting-alternate.app.link" />
+                <data android:scheme="https" android:host="vant.chat" />
+                <data android:scheme="https" android:host="www.vant.chat" />
             </intent-filter>
 
             <!-- Specifies an Android theme to apply to this Activity as soon as
@@ -230,11 +231,6 @@
         <meta-data
             android:name="com.google.firebase.messaging.default_notification_color"
             android:resource="@color/colorAccent" />
-
-        <!-- Branch SDK Configuration -->
-        <meta-data 
-            android:name="io.branch.sdk.BranchKey" 
-            android:value="key_live_duxqKkJhod2Xdn2FEQ0Aujgjvxhu3F0E" />
 
         <!-- Google Pay integration -->
         <meta-data

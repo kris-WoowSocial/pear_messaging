@@ -85,14 +85,5 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
-	<key>branch_app_id</key>
-	<string>6758916131</string>
-	<key>branch_key</key>
-	<string>key_live_duxqKkJhod2Xdn2FEQ0Aujgjvxhu3F0E</string>
-	<key>branch_universal_link_domains</key>
-	<array>
-		<string>vantchatting.app.link</string>
-		<string>vantchatting-alternate.app.link</string>
-	</array>
 </dict>
 </plist>

@@ -64,7 +64,7 @@ class UserProfileCache extends GetxService {
           avatarByDeviceId[chat.id] = url;
         }
       }
-      // Contact-level avatars saved before their chat existed (QR/Branch).
+      // Contact-level avatars saved before their chat existed (QR/invite link).
       avatarByDeviceId.addAll(_storage.getAllContactAvatarUrls());
     } catch (e) {
       debugPrint('⚠️ UserProfileCache hydrate failed: $e');
@@ -210,7 +210,7 @@ class UserProfileCache extends GetxService {
   }
 
   /// Pull the freshest server-side profile (username + avatar) for a
-  /// contact and apply it — QR/Branch payloads can predate the inviter's
+  /// contact and apply it — QR/invite-link payloads can predate the inviter's
   /// latest photo, so scanning always fetches the live record.
   Future<void> fetchAndCacheProfile(String deviceId) async {
     if (deviceId.isEmpty || !Get.isRegistered<ApiService>()) return;

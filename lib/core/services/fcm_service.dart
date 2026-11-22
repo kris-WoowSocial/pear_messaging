@@ -778,10 +778,10 @@ class FCMService extends GetxService {
           }
         }
 
-        // On an iOS first launch this prompt must not stack with the Branch
-        // paste prompt — wait until the invite step (name sheet → paste
-        // explainer → invite match or fallback sheet) is done. Timed out so
-        // a stuck gate can never kill notifications.
+        // On an iOS first launch this prompt must not stack with the invite
+        // flow — wait until the invite step (name sheet → invite match or
+        // fallback sheet) is done. Timed out so a stuck gate can never kill
+        // notifications.
         if (Platform.isIOS) {
           final prefs = await SharedPreferences.getInstance();
           final nameSetupDone =

@@ -517,7 +517,7 @@ class SplashController extends GetxController {
   }
 
   /// iOS first launch only: hold until the (non-dismissible) name sheet is
-  /// done, then show the paste explainer before Branch reads the pasteboard.
+  /// done before any invite surfaces on top of it.
   Future<void> _waitForInitialNameSetup(SharedPreferences prefs) async {
     for (var i = 0; i < 400; i++) {
       if (prefs.getBool('initial_name_setup_completed') ?? false) return;
@@ -529,22 +529,17 @@ class SplashController extends GetxController {
   /// Check for pending invitations and navigate accordingly
   Future<void> _checkPendingInvitationAndNavigate() async {
     final prefs = await SharedPreferences.getInstance();
-    // iOS first launch: the name sheet, the paste explainer, the Branch
-    // pasteboard prompt, and the notification prompt must not stack. Hold
-    // Branch init (which triggers the paste prompt) until the explainer is
-    // seen; the notification prompt waits for inviteStepDone below.
+    // iOS first launch: the name sheet, the invite fallback sheet, and the
+    // notification prompt must not stack. Hold until the name sheet is done;
+    // the notification prompt waits for inviteStepDone below.
     final iosInviteOnboarding = Platform.isIOS &&
         !(prefs.getBool('initial_name_setup_completed') ?? false);
     if (iosInviteOnboarding) {
       await _waitForInitialNameSetup(prefs);
-      await InviteFallbackSheet.showPasteExplainer();
-      InvitePromptGate.allowPasteCheck();
-    } else {
-      InvitePromptGate.allowPasteCheck();
     }
 
     try {
-      // Check if we're already in a chat route (Branch SDK handled navigation)
+      // Check if we're already in a chat route (deep link handled navigation)
       final currentRoute = Get.currentRoute;
       if (currentRoute == '/call/active' ||
           (Get.isRegistered<CallController>() &&
@@ -589,17 +584,12 @@ class SplashController extends GetxController {
 
       final invitationService = Get.find<InvitationStorageService>();
 
-      // Wait a bit more for BranchService to finish processing and storing deep link data
-      // This handles deferred deep linking where Branch SDK needs time to process the link.
-      // On iOS first launch Branch init is gated behind the paste explainer,
-      // so poll longer there.
-      final maxWaitMs = iosInviteOnboarding ? 8000 : 1500;
+      // Wait briefly for DeepLinkService to finish processing an initial link
+      // or Play Install Referrer and store the pending invitation. Both are
+      // resolved during service init (before runApp), so a short poll covers
+      // the edge cases.
       var waited = 0;
-      while (!invitationService.hasPendingInvitation() &&
-          waited < maxWaitMs) {
-        debugPrint(
-          '📋 No pending invitation yet, waiting for BranchService to process...',
-        );
+      while (!invitationService.hasPendingInvitation() && waited < 1500) {
         await Future.delayed(const Duration(milliseconds: 500));
         waited += 500;
       }
@@ -679,8 +669,9 @@ class SplashController extends GetxController {
         Get.offAllNamed(AppRoutes.main);
         debugPrint('🏠 Navigating to chat list (no pending invitation)');
 
-        // iOS: the Branch match failed (paste denied, no link, fingerprint
-        // miss). Offer the manual recovery paths once, on top of the
+        // iOS: no deferred deep-link mechanism exists on this platform, so a
+        // fresh install that didn't arrive via a universal link has no invite
+        // to match. Offer the manual recovery paths once, on top of the
         // (probably empty) chat list.
         if (iosInviteOnboarding) {
           await InviteFallbackSheet.show();
@@ -699,7 +690,7 @@ class SplashController extends GetxController {
       _checkAndShowReview();
     } finally {
       // Release the notification permission request — it must never fire
-      // while the paste prompt or the invite sheet is up.
+      // while the invite sheet is up.
       InvitePromptGate.inviteStepDone();
     }
   }

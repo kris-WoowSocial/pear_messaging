@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import '../../core/constants/app_colors.dart';
 import '../../core/services/call_history_service.dart';
-import '../../core/services/branch_service.dart';
+import '../../core/services/deep_link_service.dart';
 import '../chat_list/chat_list_screen.dart';
 import '../call_history/call_history_screen.dart';
 import '../call_history/call_history_controller.dart';
@@ -134,22 +134,21 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
   }
 
   /// Show share sheet for inviting friends
-  /// Uses Branch SDK share (same as old FAB behavior)
+  /// Generates a first-party vant.chat invite link + opens the native share sheet
   void _showShareSheet() async {
     try {
-      // Get or initialize Branch service
-      BranchService branchService;
+      // Get or initialize deep link service
+      DeepLinkService deepLinkService;
       try {
-        branchService = Get.find<BranchService>();
+        deepLinkService = Get.find<DeepLinkService>();
       } catch (e) {
-        // Branch service not initialized, create one
-        branchService = BranchService();
-        Get.put(branchService);
-        await branchService.init();
+        deepLinkService = DeepLinkService();
+        Get.put(deepLinkService);
+        await deepLinkService.init();
       }
 
-      // Share via Branch (generates link + opens native share sheet)
-      await branchService.shareApp(
+      // Generates link + opens native share sheet
+      await deepLinkService.shareApp(
         sharePositionOrigin: _sharePositionOrigin(),
       );
     } catch (e) {

@@ -63,7 +63,7 @@ dependencies:
   mobile_scanner: ^6.0.11
 
   # Deep Linking & Sharing
-  flutter_branch_sdk: ^7.0.1
+  android_play_install_referrer: ^0.4.0
   share_plus: ^10.0.0
   http: ^1.1.0
 

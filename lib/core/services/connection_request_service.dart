@@ -613,7 +613,7 @@ class ConnectionRequestService extends GetxService {
       colorText: Colors.green.shade800,
     );
 
-    // Referral attribution: if this user installed via a referral/branch invite
+    // Referral attribution: if this user installed via a referral invite
     // from this sender, claim the attribution now that they've accepted.
     _claimReferralIfApplicable(senderDeviceId);
   }
@@ -621,7 +621,7 @@ class ConnectionRequestService extends GetxService {
   /// Claim referral attribution for a freshly-referred user on invite accept.
   ///
   /// Only fires when the accepted request's sender matches the referral context
-  /// captured from the Branch install link. This guarantees attribution is never
+  /// captured from the install link. This guarantees attribution is never
   /// retroactive for existing users and is only ever claimed once.
   Future<void> _claimReferralIfApplicable(String senderDeviceId) async {
     try {

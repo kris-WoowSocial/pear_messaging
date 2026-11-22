@@ -52,7 +52,7 @@ class QRScannerController extends GetxController {
       String? avatarUrl;
 
       // 2. Fall back to URL format: https://vant.chat/chat?device_id=XXXX
-      //    (and the Branch quick-link QR: ...app.link/?device_id=X&user_name=Y)
+      //    (and retired quick-link QRs carrying the same query params)
       if (deviceId == null) {
         final urlParts = _extractDeviceIdFromUrl(qrData);
         deviceId = urlParts?.$1;
@@ -80,8 +80,8 @@ class QRScannerController extends GetxController {
   }
 
   /// Extract device_id (and user_name when present) from an invitation URL.
-  /// Handles https://vant.chat/chat?device_id=XXXX, the Branch quick-link
-  /// (vantchatting.app.link/?device_id=X&user_name=Y), and any URL carrying
+  /// Handles https://vant.chat/chat?device_id=XXXX, retired quick-link
+  /// QRs (?device_id=X&user_name=Y), and any URL carrying
   /// a device_id query param. Returns (deviceId, userName, avatarUrl).
   (String, String?, String?)? _extractDeviceIdFromUrl(String qrData) {
     try {

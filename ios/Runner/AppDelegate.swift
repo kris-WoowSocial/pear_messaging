@@ -30,6 +30,11 @@ import os.log
   private var interruptedWhileInCall = false
   private var lastCallEndedAt: Date?
 
+  // First-party deep links (vant.chat universal links + vantchat:// scheme)
+  private var deepLinkChannel: FlutterMethodChannel?
+  private var pendingDeepLinkUrl: String?
+  private var pendingDeepLinkAt: Date?
+
   override func application(
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
@@ -50,8 +55,8 @@ import os.log
     UIApplication.shared.statusBarStyle = .darkContent
     
     // Request notification permissions early — but NOT on first launch.
-    // On a fresh install the system prompt would stack with the Branch
-    // pasteboard prompt and the in-app name sheet; FCMService asks later,
+    // On a fresh install the system prompt would stack with the invite
+    // flow and the in-app name sheet; FCMService asks later,
     // after the invite step completes. The flag is the SharedPreferences
     // key ("flutter."-prefixed) written by the Dart name-setup flow.
     if UserDefaults.standard.bool(forKey: "flutter.initial_name_setup_completed") {
@@ -85,6 +90,39 @@ import os.log
     
     // Set up App Group UserDefaults method channel
     let controller = window?.rootViewController as! FlutterViewController
+
+    // First-party deep links: push incoming URLs to Dart over the deeplink
+    // channel and serve cold-start URLs via getInitialLink on the applinks
+    // channel (same contract as MainActivity on Android).
+    deepLinkChannel = FlutterMethodChannel(
+      name: "com.pear.messaging/deeplink",
+      binaryMessenger: controller.binaryMessenger
+    )
+    let appLinksChannel = FlutterMethodChannel(
+      name: "com.pear.messaging.pear_messaging/applinks",
+      binaryMessenger: controller.binaryMessenger
+    )
+    appLinksChannel.setMethodCallHandler { [weak self] (call, result) in
+      switch call.method {
+      case "getInitialLink":
+        // Only hand out a fresh pending link — a stale one from a previous
+        // session must not re-trigger invite processing.
+        if let url = self?.pendingDeepLinkUrl,
+           let at = self?.pendingDeepLinkAt,
+           Date().timeIntervalSince(at) < 120 {
+          self?.pendingDeepLinkUrl = nil
+          self?.pendingDeepLinkAt = nil
+          result(url)
+        } else {
+          self?.pendingDeepLinkUrl = nil
+          self?.pendingDeepLinkAt = nil
+          result(nil)
+        }
+      default:
+        result(FlutterMethodNotImplemented)
+      }
+    }
+
     let appGroupChannel = FlutterMethodChannel(
       name: "com.vant.chatting/app_group",
       binaryMessenger: controller.binaryMessenger
@@ -123,26 +161,60 @@ import os.log
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
   }
 
-  // Handle Branch.io and other custom URL scheme deep links
+  // Handle vantchat:// custom-scheme deep links
   override func application(
     _ app: UIApplication,
     open url: URL,
     options: [UIApplication.OpenURLOptionsKey: Any] = [:]
   ) -> Bool {
+    if url.scheme == "vantchat" {
+      forwardDeepLink(url)
+      return true
+    }
     return super.application(app, open: url, options: options)
   }
 
-  // Handle Branch.io universal links (AASA / app.link domains)
+  // Handle first-party universal links (applinks:vant.chat / www.vant.chat)
   override func application(
     _ application: UIApplication,
     continue userActivity: NSUserActivity,
     restorationHandler: @escaping ([UIUserActivityRestoring]?) -> Void
   ) -> Bool {
+    if userActivity.activityType == NSUserActivityTypeBrowsingWeb,
+       let url = userActivity.webpageURL,
+       let host = url.host?.lowercased(),
+       host == "vant.chat" || host == "www.vant.chat" {
+      forwardDeepLink(url)
+      return true
+    }
     return super.application(
       application,
       continue: userActivity,
       restorationHandler: restorationHandler
     )
+  }
+
+  /// Push a deep link to Dart and stash it so a cold-start `getInitialLink`
+  /// query still sees it when the Dart handler wasn't attached yet.
+  private func forwardDeepLink(_ url: URL) {
+    pendingDeepLinkUrl = url.absoluteString
+    pendingDeepLinkAt = Date()
+
+    var queryParameters: [String: String] = [:]
+    if let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+       let items = components.queryItems {
+      for item in items {
+        queryParameters[item.name] = item.value
+      }
+    }
+
+    deepLinkChannel?.invokeMethod("onDeepLink", arguments: [
+      "url": url.absoluteString,
+      "scheme": url.scheme ?? "",
+      "host": url.host ?? "",
+      "path": url.path,
+      "queryParameters": queryParameters,
+    ])
   }
   
   // Handle remote notification registration

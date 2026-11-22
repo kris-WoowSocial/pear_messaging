@@ -26,9 +26,4 @@ class NetworkConstants {
   static const String appStoreLookupUrl = 'https://itunes.apple.com/lookup';
   static const String playStoreUrl =
       'https://play.google.com/store/apps/details';
-
-  // Branch.io URLs
-  static const String branchApiUrl = 'https://api2.branch.io/v1/url';
-  static const String branchWebsiteUrl = 'https://vant.chat';
-  static const String branchIconUrl = 'https://vant.chat/icon.png';
 }

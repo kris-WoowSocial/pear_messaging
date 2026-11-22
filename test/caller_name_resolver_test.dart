@@ -148,10 +148,11 @@ void main() {
   });
 
   group('QR invite carries the inviter name', () {
-    test('QR Branch link includes user_name like the share link does', () {
+    test('QR invite link includes user_name like the share link does', () {
       final profile = source('lib/features/profile/profile_screen.dart');
       final fn = section(profile, '_generateQRData', '_showLinkInfluencerDialog');
-      expect(fn, contains('user_name='));
+      expect(fn, contains("'user_name'"));
+      expect(fn, contains("Uri.https('vant.chat', '/chat'"));
     });
 
     test('payload QR signs userName and round-trips deviceId + name', () async {

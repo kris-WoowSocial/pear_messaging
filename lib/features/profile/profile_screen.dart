@@ -21,40 +21,25 @@ class ProfileScreen extends GetView<ProfileController> {
 
   Future<String> _generateQRData() async {
     final deviceId = controller.deviceId.value;
-    // Branch quick-link: vantchatting.app.link resolves to the app when
-    // installed (deep-link data includes device_id) and falls back to the
-    // app store when it is not. The in-app scanner reads the device_id
-    // query param directly, so Vant users still go straight to chat.
-    // user_name rides the link the same way it does on share links — Branch
-    // delivers link params on open AND deferred after an install, so the
-    // inviter's real name reaches the first-launch invite path.
-    final userName = Uri.encodeComponent(
-      controller.userName.value.isNotEmpty
-          ? controller.userName.value
-          : StringUtils.generateFriendlyName(deviceId),
-    );
-    final playStore = Uri.encodeComponent(
-      '${NetworkConstants.playStoreUrl}?id=com.vant.chat',
-    );
-    final appStore = Uri.encodeComponent(
-      '${NetworkConstants.appStoreReviewUrl}6758916131',
-    );
-    // Inviter avatar rides the link for both the in-app scanner and the
-    // OpenGraph preview ($og_image_url) shown by iMessage/WhatsApp/Telegram.
+    // First-party vant.chat link: the in-app scanner reads the device_id
+    // query param directly so Vant users go straight to chat; outside the
+    // app the same URL is a verified App Link / Universal Link that opens
+    // Vant when installed and renders the store-redirect landing page when
+    // it is not. user_name + avatar_url ride the query so the inviter's real
+    // name and photo reach the first-launch invite path.
+    final userName = controller.userName.value.isNotEmpty
+        ? controller.userName.value
+        : StringUtils.generateFriendlyName(deviceId);
     final cachedAvatar = Get.isRegistered<UserProfileCache>()
         ? Get.find<UserProfileCache>().myAvatarUrl.value
         : '';
     // WhatsApp/iMessage crawlers need a public https URL.
     final avatarUrl = cachedAvatar.startsWith('https://') ? cachedAvatar : '';
-    final avatarParam = avatarUrl.isNotEmpty
-        ? '&avatar_url=${Uri.encodeComponent(avatarUrl)}'
-            '&\$og_image_url=${Uri.encodeComponent(avatarUrl)}'
-        : '';
-    return 'https://vantchatting.app.link/?device_id=$deviceId'
-        '&user_name=$userName$avatarParam'
-        '&\$android_url=$playStore'
-        '&\$ios_url=$appStore'
-        '&\$fallback_url=$playStore';
+    return Uri.https('vant.chat', '/chat', {
+      'device_id': deviceId,
+      'user_name': userName,
+      if (avatarUrl.isNotEmpty) 'avatar_url': avatarUrl,
+    }).toString();
   }
 
   /// Show dialog to enter influencer link token

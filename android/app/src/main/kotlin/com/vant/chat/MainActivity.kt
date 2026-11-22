@@ -931,11 +931,11 @@ class MainActivity : FlutterFragmentActivity() {
             if (data != null) {
                 println("Deep link received: $data")
                 
-                // Handle both custom scheme and Branch.io links
-                if (data.scheme == "vantchat" || 
-                    data.host?.contains("vantchatting.app.link") == true ||
-                    data.host?.contains("pearmessaging.app.link") == true) {
-                    
+                // Handle both the custom scheme and first-party vant.chat links
+                if (data.scheme == "vantchat" ||
+                    data.host == "vant.chat" ||
+                    data.host == "www.vant.chat") {
+
                     // Check if Flutter engine is available before proceeding
                     val engine = flutterEngine
                     if (engine == null) {
@@ -994,10 +994,10 @@ class MainActivity : FlutterFragmentActivity() {
             if (data != null) {
                 println("Initial link found: $data")
                 
-                // Handle both custom scheme and Branch.io links
-                if (data.scheme == "vantchat" || 
-                    data.host?.contains("vantchatting.app.link") == true ||
-                    data.host?.contains("pearmessaging.app.link") == true) {
+                // Handle both the custom scheme and first-party vant.chat links
+                if (data.scheme == "vantchat" ||
+                    data.host == "vant.chat" ||
+                    data.host == "www.vant.chat") {
                     return data.toString()
                 }
             }
@@ -1013,7 +1013,7 @@ class MainActivity : FlutterFragmentActivity() {
     private fun isDefaultLinkHandler(): Boolean {
         return try {
             val intent = Intent(Intent.ACTION_VIEW).apply {
-                data = Uri.parse("https://vantchatting.app.link")
+                data = Uri.parse("https://vant.chat")
                 addCategory(Intent.CATEGORY_BROWSABLE)
             }
             val resolveInfo = packageManager.resolveActivity(intent, 0)
