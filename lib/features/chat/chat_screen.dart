@@ -166,7 +166,111 @@ class ChatScreen extends GetView<ChatController> {
             },
           ),
           actions: [
-            if (!controller.isGroup)
+         
+          ],
+        ),
+        body: Column(
+          children: [
+            Container(
+              height: 60,
+              color: AppColors.surface,
+              child: Row(children: [
+                IconButton(
+                  icon: const Icon(Icons.arrow_back, color: Colors.black),
+                  onPressed: () => Get.back(),
+                ),
+
+                Expanded(child:  Row(
+            children: [
+              Obx(
+                () => VantAvatar(
+                  userId:
+                      controller.isGroup ? null : controller.recipientDeviceId,
+                  name: controller.displayName.value.isNotEmpty
+                      ? controller.displayName.value
+                      : StringUtils.generateFriendlyName(
+                          controller.recipientDeviceId),
+                  avatarUrl: controller.peerAvatarUrl,
+                  size: 36,
+                  isGroup: controller.isGroup,
+                  borderRadius: 18,
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Obx(
+                      () => Text(
+                        controller.isGroup
+                            ? controller.displayName.value
+                            : (controller.displayName.value.isNotEmpty &&
+                                    controller.recipientDeviceId !=
+                                        controller.displayName.value)
+                                ? controller.displayName.value
+                                : StringUtils.generateFriendlyName(
+                                    controller.recipientDeviceId,
+                                  ),
+                        style: const TextStyle(
+                          fontSize: AppSizes.fontM,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.black,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    Obx(
+                      () => controller.isGroup
+                          ? Text(
+                              controller.groupMemberCount.value > 0
+                                  ? '${controller.groupMemberCount.value} members'
+                                  : 'Group',
+                              style: const TextStyle(
+                                fontSize: AppSizes.fontS,
+                                fontWeight: FontWeight.w600,
+                                color: Colors.grey,
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            )
+                          : Text(
+                              controller.recipientTyping.value
+                                  ? 'typing...'
+                                  : controller.recipientStatus.value,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontSize: AppSizes.fontS,
+                                fontWeight: FontWeight.w600,
+                                color: controller.recipientTyping.value
+                                    ? AppColors.primary
+                                    : (controller.recipientOnline.value ||
+                                            (controller.recipientLastSeen
+                                                        .value !=
+                                                    null &&
+                                                DateTime.now()
+                                                        .difference(
+                                                          controller
+                                                              .recipientLastSeen
+                                                              .value!,
+                                                        )
+                                                        .inHours <
+                                                    24)
+                                        ? Colors.green
+                                        : Colors.grey),
+                              ),
+                            ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),)
+              
+                 ,if (!controller.isGroup)
               IconButton(
                 icon: const Icon(Icons.call, color: Colors.black),
                 onPressed: () {
@@ -200,10 +304,9 @@ class ChatScreen extends GetView<ChatController> {
               },
               tooltip: controller.isGroup ? 'Group Settings' : 'Chat Settings',
             ),
-          ],
-        ),
-        body: Column(
-          children: [
+        
+              ]),
+            ),
             Expanded(
               child: Stack(
                 children: [
@@ -1082,7 +1185,18 @@ class ChatScreen extends GetView<ChatController> {
         return;
       }
 
-      var picked = await picker.pickMultiImage(limit: _maxImagesPerSend);
+      // file_picker first — same mechanism the single-image gallery path
+      // uses for Samsung compatibility. image_picker's pickMultiImage can
+      // throw PlatformException (e.g. its activity-result delegate wedges
+      // while a call keeps the host activity paused/destroyed), which used
+      // to surface as the generic "Failed to send images" snackbar.
+      List<XFile> picked;
+      try {
+        picked = await _pickImagesWithFilePicker(_maxImagesPerSend) ?? [];
+      } catch (e) {
+        debugPrint('⚠️ file_picker multi failed ($e) — trying image_picker');
+        picked = await picker.pickMultiImage(limit: _maxImagesPerSend);
+      }
       if (picked.isEmpty) return;
       if (picked.length > _maxImagesPerSend) {
         picked = picked.take(_maxImagesPerSend).toList();
@@ -1145,8 +1259,8 @@ class ChatScreen extends GetView<ChatController> {
         maxPerBatch: _maxImagesPerSend,
         isViewOnce: preview.viewOnce,
       );
-    } catch (e) {
-      debugPrint('❌ Error in multi-image send: $e');
+    } catch (e, st) {
+      debugPrint('❌ Error in multi-image send: $e\n$st');
       Get.snackbar(
         'Error',
         'Failed to send images. Please try again.',
@@ -1196,27 +1310,58 @@ class ChatScreen extends GetView<ChatController> {
         debugPrint('⚠️ file_picker returned null');
         return null;
       }
-      final file = result.files.first;
-      final path = file.path;
-      if (path != null) {
-        debugPrint('📸 file_picker selected: $path');
-        return XFile(path);
-      }
-      // Fallback: save bytes to temp file if path is unavailable
-      if (file.bytes != null) {
-        final tempDir = await Directory.systemTemp.createTemp('vant_chat_');
-        final tempFile = File(
-            '${tempDir.path}/picked_image_${DateTime.now().millisecondsSinceEpoch}.jpg');
-        await tempFile.writeAsBytes(file.bytes!);
-        debugPrint('📸 file_picker saved bytes to temp file: ${tempFile.path}');
-        return XFile(tempFile.path);
-      }
-      debugPrint('⚠️ file_picker returned null path and no bytes');
-      return null;
+      return _platformFileToXFile(result.files.first);
     } catch (e) {
       debugPrint('❌ file_picker error: $e');
       return null;
     }
+  }
+
+  /// Multi-image picker via file_picker — same mechanism as the
+  /// single-image gallery path (more reliable than image_picker's
+  /// pickMultiImage while the host activity is juggling a call).
+  /// Returns null when the user cancels.
+  Future<List<XFile>?> _pickImagesWithFilePicker(int maxCount) async {
+    debugPrint('📸 Opening file_picker for multi-image selection');
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.image,
+      allowMultiple: true,
+      withData: true,
+    );
+    if (result == null || result.files.isEmpty) {
+      debugPrint('⚠️ file_picker multi returned null/empty');
+      return null;
+    }
+    final picked = <XFile>[];
+    for (final file in result.files.take(maxCount)) {
+      final xfile = await _platformFileToXFile(file);
+      if (xfile != null) {
+        picked.add(xfile);
+      } else {
+        debugPrint('⚠️ file_picker entry had no path/bytes: ${file.name}');
+      }
+    }
+    return picked;
+  }
+
+  /// Resolve a file_picker PlatformFile to an XFile: prefer its real path,
+  /// otherwise persist the picked bytes to a temp file.
+  Future<XFile?> _platformFileToXFile(PlatformFile file) async {
+    final path = file.path;
+    if (path != null) {
+      debugPrint('📸 file_picker selected: $path');
+      return XFile(path);
+    }
+    if (file.bytes != null) {
+      final tempDir = await Directory.systemTemp.createTemp('vant_chat_');
+      final tempFile = File(
+          '${tempDir.path}/picked_image_${DateTime.now().millisecondsSinceEpoch}.jpg');
+      await tempFile.writeAsBytes(file.bytes!);
+      debugPrint('📸 file_picker saved bytes to temp file: ${tempFile.path}');
+      return XFile(tempFile.path);
+    }
+    debugPrint('⚠️ file_picker returned null path and no bytes');
+    return null;
   }
 
   /// Format date like WhatsApp: Today, Yesterday, day names for last week, then full dates
