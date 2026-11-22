@@ -171,41 +171,44 @@ class _OutgoingCallScreenState extends State<OutgoingCallScreen> {
 
   Widget _buildCallControls(CallController controller) {
     return Column(
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: [
-        // Minimize button - keeps the call running behind the
-        // CallBanner so the user can continue using the app
-        _buildControlButton(
-          icon: Icons.close_fullscreen,
-          label: 'Minimize',
-          isActive: false,
-          onTap: () => controller.minimizeCallScreen(context),
-        ),
-        const SizedBox(height: 24),
-        // Second row: Mute and Speaker (Obx for reactive updates)
-        Obx(
-          () => Row(
-            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-            children: [
-              _buildControlButton(
-                icon: controller.isMuted.value ? Icons.mic_off : Icons.mic,
-                label: controller.isMuted.value ? 'Unmute' : 'Mute',
-                isActive: controller.isMuted.value,
-                onTap: controller.toggleMute,
-              ),
-              _buildControlButton(
-                icon: Icons.volume_up,
-                label: 'Speaker',
-                isActive: controller.isSpeakerOn.value,
-                onTap: () => controller.toggleSpeaker(),
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 32),
-        // Third row: End call
-        _buildEndCallButton(controller),
-      ],
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      // Minimize button - keeps the call running behind the
+                      // CallBanner so the user can continue using the app
+                      _buildControlButton(
+                        icon: Icons.close_fullscreen,
+                        label: 'Minimize',
+                        isActive: false,
+                        onTap: () => controller.minimizeCallScreen(context),
+                      ),
+                      const SizedBox(height: 24),
+                      // Second row: Mute and Speaker (Obx for reactive updates)
+                      Obx(
+                        () => Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                          children: [
+                            _buildControlButton(
+                              icon: controller.isMuted.value
+                                  ? Icons.mic_off
+                                  : Icons.mic,
+                              label:
+                                  controller.isMuted.value ? 'Unmute' : 'Mute',
+                              isActive: controller.isMuted.value,
+                              onTap: controller.toggleMute,
+                            ),
+                            _buildControlButton(
+                              icon: Icons.volume_up,
+                              label: 'Speaker',
+                              isActive: controller.isSpeakerOn.value,
+                              onTap: () => controller.toggleSpeaker(),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 32),
+                      // Third row: End call
+                      _buildEndCallButton(controller),
+                    ],
     );
   }
 
@@ -272,22 +275,21 @@ class _OutgoingCallScreenState extends State<OutgoingCallScreen> {
           child: Opacity(
             opacity: onTap == null ? 0.4 : 1.0,
             child: Container(
-              width: 64,
-              height: 64,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: isActive ? Colors.white : Colors.grey[800],
-                border: Border.all(
-                  color:
-                      isActive ? Colors.white : Colors.white.withOpacity(0.3),
-                  width: 2,
-                ),
+            width: 64,
+            height: 64,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: isActive ? Colors.white : Colors.grey[800],
+              border: Border.all(
+                color: isActive ? Colors.white : Colors.white.withOpacity(0.3),
+                width: 2,
               ),
-              child: Icon(
-                icon,
-                size: 28,
-                color: isActive ? Colors.black : Colors.white,
-              ),
+            ),
+            child: Icon(
+              icon,
+              size: 28,
+              color: isActive ? Colors.black : Colors.white,
+            ),
             ),
           ),
         ),
