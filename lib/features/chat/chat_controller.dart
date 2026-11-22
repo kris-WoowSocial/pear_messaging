@@ -591,20 +591,26 @@ class ChatController extends GetxController with WidgetsBindingObserver {
       }
     }
 
-    if (unreadMessages.isNotEmpty) {
-      debugPrint(
-          '📖 Marked ${unreadMessages.length} messages as read for chat: $chatId');
+    // Always clear the entity-level unread badge when the chat is opened —
+    // not only when unread messages exist. A cross-chat preview leak can
+    // leave a phantom unreadCount > 0 on a chat that contains zero unread
+    // messages, and opening it must still clear the badge.
+    var clearedUnreadBadge = false;
+    try {
+      final chat = _storageService.getChat(chatId);
+      if (chat != null && chat.unreadCount != 0) {
+        await _storageService.saveChat(chat.copyWith(unreadCount: 0));
+        clearedUnreadBadge = true;
+        debugPrint('📖 Reset unreadCount to 0 for chat: $chatId');
+      }
+    } catch (e) {
+      debugPrint('⚠️ Error resetting unreadCount for chat $chatId: $e');
+    }
 
-      // Update chat entity's unreadCount to 0 in storage
-      try {
-        final chat = _storageService.getChat(chatId);
-        if (chat != null) {
-          final updatedChat = chat.copyWith(unreadCount: 0);
-          await _storageService.saveChat(updatedChat);
-          debugPrint('📖 Reset unreadCount to 0 for chat: $chatId');
-        }
-      } catch (e) {
-        debugPrint('⚠️ Error resetting unreadCount for chat $chatId: $e');
+    if (unreadMessages.isNotEmpty || clearedUnreadBadge) {
+      if (unreadMessages.isNotEmpty) {
+        debugPrint(
+            '📖 Marked ${unreadMessages.length} messages as read for chat: $chatId');
       }
 
       // Recalculate total unread count and update badge
