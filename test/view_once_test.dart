@@ -90,7 +90,8 @@ void main() {
       expect(bubble, contains('_buildViewOnceContent()'));
       expect(
         bubble,
-        contains('widget.message.isViewOnce\n              ? _buildViewOnceContent()'),
+        contains(
+            'widget.message.isViewOnce\n              ? _buildViewOnceContent()'),
       );
     });
 
@@ -128,14 +129,14 @@ void main() {
     test('preview sheet exposes the "1" view-once toggle', () {
       expect(screen, contains('_showImageSendPreview'));
       expect(screen, contains('isViewOnce.value = !isViewOnce.value'));
-      expect(screen, contains('if (!controller.isGroup)'));
+      expect(screen, contains('if (!isGroup)'));
     });
 
     test('flag threads pending -> upload -> finalize -> socket', () {
       expect(
         screen,
         contains(
-          'await controller.createPendingImageMessage(\n        sendBytes,\n        isViewOnce: preview.viewOnce,',
+          'await ctrl.createPendingImageMessage(\n        sendBytes,\n        isViewOnce: preview.viewOnce,',
         ),
         reason: 'screen passes the toggle into the pending bubble',
       );
@@ -205,8 +206,7 @@ void main() {
       expect(fn, contains('sendViewOnceOpened('));
     });
 
-    test('storage write is box-level (no re-encryption of stored content)',
-        () {
+    test('storage write is box-level (no re-encryption of stored content)', () {
       final fn = storage.substring(
         storage.indexOf('Future<bool> setMessageViewOnceOpened'),
       );
@@ -241,7 +241,8 @@ void main() {
       expect(list, contains('onViewOnceOpened = _handleViewOnceOpened'));
       expect(controller, contains('onViewOnceOpened = _handleViewOnceOpened'));
       // handler swap restores the previous handler on dispose
-      expect(controller, contains('onViewOnceOpened = _previousViewOnceHandler'));
+      expect(
+          controller, contains('onViewOnceOpened = _previousViewOnceHandler'));
     });
   });
 }

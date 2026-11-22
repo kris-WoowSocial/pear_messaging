@@ -2140,9 +2140,7 @@ class CallController extends GetxController {
                 callId != null &&
                 callId.isNotEmpty &&
                 currentCallId.value == callId) {
-              if (Get.currentRoute != activeCallRoute) {
-                Get.offAllNamed(activeCallRoute);
-              }
+              _pushCallRoutePreservingStack();
             }
             return null;
           }
@@ -2307,9 +2305,7 @@ class CallController extends GetxController {
               '📞 Notification action: return to ongoing call $callId',
             );
             if (isConnected && currentCallId.value == callId) {
-              if (Get.currentRoute != activeCallRoute) {
-                Get.offAllNamed(activeCallRoute);
-              }
+              _pushCallRoutePreservingStack();
             }
             return;
           }
@@ -2765,6 +2761,10 @@ class CallController extends GetxController {
         return false;
       }
 
+      // Dialing them is explicit engagement — known contact for strict-mode
+      // gates (silence unknown callers / media auto-download).
+      _storageService.markContactKnown(calleeDeviceId);
+
       // "Protect IP address in calls" gathers relay-only candidates — with
       // no reachable TURN server the call could never connect, so abort
       // before the ringing UI appears rather than hanging at Connecting.
@@ -3088,6 +3088,12 @@ class CallController extends GetxController {
       }
 
       final callId = callData['callId'] as String;
+      // Answering is explicit engagement — known contact for strict-mode
+      // gates so future calls from this person are never silenced.
+      final acceptCallerId = callData['callerId'] as String?;
+      if (acceptCallerId != null) {
+        _storageService.markContactKnown(acceptCallerId);
+      }
       if (Platform.isIOS) {
         _nativePushCallIds.remove(callId);
         await CallKitService().endGhostCallKitForCall(callId, reason: 'accept');
@@ -3638,6 +3644,22 @@ class CallController extends GetxController {
             ? '/call/outgoing'
             : '/call/active';
     Get.toNamed(route);
+  }
+
+  /// Bring the call UI forward WITHOUT wiping the route stack. A stale
+  /// OPEN_ONGOING_CALL intent replay (e.g. after the OS destroys and
+  /// recreates MainActivity while a system picker is open) previously hit
+  /// offAllNamed, deleting every route-bound controller — mid-flight flows
+  /// like image sending then died with "ChatController not found". Pushing
+  /// the call route keeps the user's screens (and their controllers) alive
+  /// underneath.
+  void _pushCallRoutePreservingStack() {
+    if (Get.currentRoute == activeCallRoute) return;
+    final navigator = Get.key.currentState;
+    navigator?.popUntil(
+      (r) => !(r.settings.name ?? '').startsWith('/call/'),
+    );
+    Get.toNamed(activeCallRoute);
   }
 
   /// Create the call-lifetime video renderers once and bind the current
@@ -5957,6 +5979,9 @@ class CallController extends GetxController {
     try {
       final callId = data['callId'] as String;
       final callerId = data['callerId'] as String;
+      // Answering is explicit engagement — known contact for strict-mode
+      // gates so future calls from this person are never silenced.
+      _storageService.markContactKnown(callerId);
       if (Platform.isIOS) _nativePushCallIds.remove(callId);
       // Native accept paths (CallKit, lock screen, notification, socket
       // resync) bypass acceptCall() — apply the same premium gate here.

@@ -3,10 +3,12 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_image_compress/flutter_image_compress.dart';
 import 'package:get/get.dart';
 import 'package:pear_messaging/core/constants/app_colors.dart';
 import 'package:pear_messaging/core/constants/app_sizes.dart';
 import 'package:pear_messaging/core/constants/app_strings.dart';
+import 'package:pear_messaging/core/services/image_compression.dart';
 import 'package:pear_messaging/core/widgets/url_preview_widget.dart';
 import 'package:pear_messaging/features/chat/chat_controller.dart';
 import 'package:pear_messaging/features/chat/chat_message_bubble.dart';
@@ -17,11 +19,9 @@ import '../../core/services/feature_flag_service.dart';
 import '../../core/services/membership_service.dart';
 import '../../routes/app_routes.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:flutter_image_compress/flutter_image_compress.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:file_picker/file_picker.dart';
 import '../../core/services/encryption_service.dart';
-import '../../core/services/image_compression.dart';
 import '../../core/services/media_upload_service.dart';
 import 'package:social_media_recorder/audio_encoder_type.dart';
 import 'package:social_media_recorder/screen/social_media_recorder.dart';
@@ -58,538 +58,440 @@ class ChatScreen extends GetView<ChatController> {
           Get.offAllNamed('/main');
         }
       },
-      child: Scaffold(
-        appBar: AppBar(
-          backgroundColor: AppColors.surface,
-          title: Row(
+      child: SafeArea(
+        child: Scaffold(
+          body: Column(
             children: [
-              Obx(
-                () => VantAvatar(
-                  userId:
-                      controller.isGroup ? null : controller.recipientDeviceId,
-                  name: controller.displayName.value.isNotEmpty
-                      ? controller.displayName.value
-                      : StringUtils.generateFriendlyName(
-                          controller.recipientDeviceId),
-                  avatarUrl: controller.peerAvatarUrl,
-                  size: 36,
-                  isGroup: controller.isGroup,
-                  borderRadius: 18,
-                ),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Obx(
-                      () => Text(
-                        controller.isGroup
-                            ? controller.displayName.value
-                            : (controller.displayName.value.isNotEmpty &&
-                                    controller.recipientDeviceId !=
-                                        controller.displayName.value)
+              Container(
+                height: 60,
+                color: AppColors.surface,
+                child: Row(children: [
+                  IconButton(
+                    icon: const Icon(Icons.arrow_back, color: Colors.black),
+                    onPressed: () => Get.back(),
+                  ),
+                  Expanded(
+                    child: Row(
+                      children: [
+                        Obx(
+                          () => VantAvatar(
+                            userId: controller.isGroup
+                                ? null
+                                : controller.recipientDeviceId,
+                            name: controller.displayName.value.isNotEmpty
                                 ? controller.displayName.value
                                 : StringUtils.generateFriendlyName(
-                                    controller.recipientDeviceId,
-                                  ),
-                        style: const TextStyle(
-                          fontSize: AppSizes.fontM,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.black,
+                                    controller.recipientDeviceId),
+                            avatarUrl: controller.peerAvatarUrl,
+                            size: 36,
+                            isGroup: controller.isGroup,
+                            borderRadius: 18,
+                          ),
                         ),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ),
-                    Obx(
-                      () => controller.isGroup
-                          ? Text(
-                              controller.groupMemberCount.value > 0
-                                  ? '${controller.groupMemberCount.value} members'
-                                  : 'Group',
-                              style: const TextStyle(
-                                fontSize: AppSizes.fontS,
-                                fontWeight: FontWeight.w600,
-                                color: Colors.grey,
-                              ),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            )
-                          : Text(
-                              controller.recipientTyping.value
-                                  ? 'typing...'
-                                  : controller.recipientStatus.value,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: TextStyle(
-                                fontSize: AppSizes.fontS,
-                                fontWeight: FontWeight.w600,
-                                color: controller.recipientTyping.value
-                                    ? AppColors.primary
-                                    : (controller.recipientOnline.value ||
-                                            (controller.recipientLastSeen
-                                                        .value !=
-                                                    null &&
-                                                DateTime.now()
-                                                        .difference(
-                                                          controller
-                                                              .recipientLastSeen
-                                                              .value!,
-                                                        )
-                                                        .inHours <
-                                                    24)
-                                        ? Colors.green
-                                        : Colors.grey),
-                              ),
-                            ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-          centerTitle: false,
-          leading: IconButton(
-            icon: const Icon(Icons.arrow_back, color: Colors.black),
-            onPressed: () {
-              // Check if we can navigate back in the navigation stack
-              if (Navigator.of(context).canPop()) {
-                Navigator.of(context).pop();
-              } else {
-                // No navigation stack - navigate to chat list as fallback
-                debugPrint(
-                  '📱 No navigation stack found, navigating to chat list',
-                );
-                Get.offAllNamed('/main');
-              }
-            },
-          ),
-          actions: [
-         
-          ],
-        ),
-        body: Column(
-          children: [
-            Container(
-              height: 60,
-              color: AppColors.surface,
-              child: Row(children: [
-                IconButton(
-                  icon: const Icon(Icons.arrow_back, color: Colors.black),
-                  onPressed: () => Get.back(),
-                ),
-
-                Expanded(child:  Row(
-            children: [
-              Obx(
-                () => VantAvatar(
-                  userId:
-                      controller.isGroup ? null : controller.recipientDeviceId,
-                  name: controller.displayName.value.isNotEmpty
-                      ? controller.displayName.value
-                      : StringUtils.generateFriendlyName(
-                          controller.recipientDeviceId),
-                  avatarUrl: controller.peerAvatarUrl,
-                  size: 36,
-                  isGroup: controller.isGroup,
-                  borderRadius: 18,
-                ),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Obx(
-                      () => Text(
-                        controller.isGroup
-                            ? controller.displayName.value
-                            : (controller.displayName.value.isNotEmpty &&
-                                    controller.recipientDeviceId !=
-                                        controller.displayName.value)
-                                ? controller.displayName.value
-                                : StringUtils.generateFriendlyName(
-                                    controller.recipientDeviceId,
-                                  ),
-                        style: const TextStyle(
-                          fontSize: AppSizes.fontM,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.black,
-                        ),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ),
-                    Obx(
-                      () => controller.isGroup
-                          ? Text(
-                              controller.groupMemberCount.value > 0
-                                  ? '${controller.groupMemberCount.value} members'
-                                  : 'Group',
-                              style: const TextStyle(
-                                fontSize: AppSizes.fontS,
-                                fontWeight: FontWeight.w600,
-                                color: Colors.grey,
-                              ),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            )
-                          : Text(
-                              controller.recipientTyping.value
-                                  ? 'typing...'
-                                  : controller.recipientStatus.value,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: TextStyle(
-                                fontSize: AppSizes.fontS,
-                                fontWeight: FontWeight.w600,
-                                color: controller.recipientTyping.value
-                                    ? AppColors.primary
-                                    : (controller.recipientOnline.value ||
-                                            (controller.recipientLastSeen
-                                                        .value !=
-                                                    null &&
-                                                DateTime.now()
-                                                        .difference(
-                                                          controller
-                                                              .recipientLastSeen
-                                                              .value!,
-                                                        )
-                                                        .inHours <
-                                                    24)
-                                        ? Colors.green
-                                        : Colors.grey),
-                              ),
-                            ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),)
-              
-                 ,if (!controller.isGroup)
-              IconButton(
-                icon: const Icon(Icons.call, color: Colors.black),
-                onPressed: () {
-                  debugPrint('📞 Call button pressed');
-                  _startAudioCall();
-                },
-                tooltip: 'Audio Call',
-              ),
-            if (!controller.isGroup && Get.isRegistered<FeatureFlagService>())
-              Obx(
-                () => Get.find<FeatureFlagService>().videoCalling.value
-                    ? IconButton(
-                        icon: const Icon(Icons.videocam, color: Colors.black),
-                        onPressed: () {
-                          debugPrint('📞 Video call button pressed');
-                          _startVideoCall();
-                        },
-                        tooltip: 'Video Call',
-                      )
-                    : const SizedBox.shrink(),
-              ),
-            IconButton(
-              icon: const Icon(Icons.settings, color: Colors.black),
-              onPressed: () {
-                debugPrint('🔧 DEBUG: settings button pressed');
-                if (controller.isGroup) {
-                  Get.to(() => const GroupSettingsScreen());
-                } else {
-                  Get.to(() => const ChatSettingsScreen());
-                }
-              },
-              tooltip: controller.isGroup ? 'Group Settings' : 'Chat Settings',
-            ),
-        
-              ]),
-            ),
-            Expanded(
-              child: Stack(
-                children: [
-                  Positioned.fill(
-                    child: Obx(() {
-                      if (controller.messages.isEmpty) {
-                        return Center(
+                        const SizedBox(width: 10),
+                        Expanded(
                           child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
                             mainAxisAlignment: MainAxisAlignment.center,
                             children: [
-                              _buildChatHeader(),
-                              const SizedBox(height: 16),
-                              const Text(
-                                'No messages yet. Start a conversation!',
-                                style: TextStyle(color: Colors.black),
+                              Obx(
+                                () => Text(
+                                  controller.isGroup
+                                      ? controller.displayName.value
+                                      : (controller.displayName.value
+                                                  .isNotEmpty &&
+                                              controller.recipientDeviceId !=
+                                                  controller.displayName.value)
+                                          ? controller.displayName.value
+                                          : StringUtils.generateFriendlyName(
+                                              controller.recipientDeviceId,
+                                            ),
+                                  style: const TextStyle(
+                                    fontSize: AppSizes.fontM,
+                                    fontWeight: FontWeight.bold,
+                                    color: Colors.black,
+                                  ),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                              Obx(
+                                () => controller.isGroup
+                                    ? Text(
+                                        controller.groupMemberCount.value > 0
+                                            ? '${controller.groupMemberCount.value} members'
+                                            : 'Group',
+                                        style: const TextStyle(
+                                          fontSize: AppSizes.fontS,
+                                          fontWeight: FontWeight.w600,
+                                          color: Colors.grey,
+                                        ),
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                      )
+                                    : Text(
+                                        controller.recipientTyping.value
+                                            ? 'typing...'
+                                            : controller.recipientStatus.value,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: TextStyle(
+                                          fontSize: AppSizes.fontS,
+                                          fontWeight: FontWeight.w600,
+                                          color: controller
+                                                  .recipientTyping.value
+                                              ? AppColors.primary
+                                              : (controller.recipientOnline
+                                                          .value ||
+                                                      (controller.recipientLastSeen
+                                                                  .value !=
+                                                              null &&
+                                                          DateTime.now()
+                                                                  .difference(
+                                                                    controller
+                                                                        .recipientLastSeen
+                                                                        .value!,
+                                                                  )
+                                                                  .inHours <
+                                                              24)
+                                                  ? Colors.green
+                                                  : Colors.grey),
+                                        ),
+                                      ),
                               ),
                             ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  if (!controller.isGroup)
+                    IconButton(
+                      icon: const Icon(Icons.call, color: Colors.black),
+                      onPressed: () {
+                        debugPrint('📞 Call button pressed');
+                        _startAudioCall();
+                      },
+                      tooltip: 'Audio Call',
+                    ),
+                  if (!controller.isGroup &&
+                      Get.isRegistered<FeatureFlagService>())
+                    Obx(
+                      () => Get.find<FeatureFlagService>().videoCalling.value
+                          ? IconButton(
+                              icon: const Icon(Icons.videocam,
+                                  color: Colors.black),
+                              onPressed: () {
+                                debugPrint('📞 Video call button pressed');
+                                _startVideoCall();
+                              },
+                              tooltip: 'Video Call',
+                            )
+                          : const SizedBox.shrink(),
+                    ),
+                  IconButton(
+                    icon: const Icon(Icons.settings, color: Colors.black),
+                    onPressed: () {
+                      debugPrint('🔧 DEBUG: settings button pressed');
+                      if (controller.isGroup) {
+                        Get.to(() => const GroupSettingsScreen());
+                      } else {
+                        Get.to(() => const ChatSettingsScreen());
+                      }
+                    },
+                    tooltip:
+                        controller.isGroup ? 'Group Settings' : 'Chat Settings',
+                  ),
+                ]),
+              ),
+              Expanded(
+                child: Stack(
+                  children: [
+                    Positioned.fill(
+                      child: Obx(() {
+                        if (controller.messages.isEmpty) {
+                          return Center(
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                _buildChatHeader(),
+                                const SizedBox(height: 16),
+                                const Text(
+                                  'No messages yet. Start a conversation!',
+                                  style: TextStyle(color: Colors.black),
+                                ),
+                              ],
+                            ),
+                          );
+                        }
+
+                        // Build the complete items list with headers
+                        final itemsList = _buildItemsListWithHeaders();
+
+                        return NotificationListener<ScrollNotification>(
+                          onNotification: (scrollInfo) {
+                            // Load more messages when scrolled near the top (oldest messages)
+                            // With reverse:true, maxScrollExtent = top (oldest)
+                            if (scrollInfo.metrics.pixels >=
+                                scrollInfo.metrics.maxScrollExtent - 200) {
+                              controller.loadMoreMessages();
+                            }
+                            return false;
+                          },
+                          child: ListView.builder(
+                            controller: controller.scrollController,
+                            reverse: true,
+                            padding: const EdgeInsets.all(AppSizes.paddingM),
+                            itemCount: itemsList.length + 1,
+                            itemBuilder: (context, index) {
+                              // With reverse=true: index 0 = bottom (newest)
+                              // Last index = top (header)
+                              if (index == itemsList.length) {
+                                return Column(
+                                  children: [
+                                    _buildChatHeader(),
+                                    // Show loading indicator when loading more
+                                    Obx(
+                                      () => controller.isLoadingMore.value
+                                          ? const Padding(
+                                              padding: EdgeInsets.all(8.0),
+                                              child: Center(
+                                                child: SizedBox(
+                                                  width: 24,
+                                                  height: 24,
+                                                  child:
+                                                      CircularProgressIndicator(
+                                                    strokeWidth: 2,
+                                                  ),
+                                                ),
+                                              ),
+                                            )
+                                          : const SizedBox.shrink(),
+                                    ),
+                                  ],
+                                );
+                              }
+
+                              final item = itemsList[index];
+                              if (item['isHeader'] == true) {
+                                return _buildDateHeader(item['text'] as String);
+                              }
+
+                              final messageIndex = item['messageIndex'] as int;
+                              final message = controller.messages[messageIndex];
+                              return ChatMessageBubble(
+                                key: ValueKey(
+                                  'msg_${message.id}_${message.timestamp.millisecondsSinceEpoch}',
+                                ),
+                                message: message,
+                                isGroup: controller.isGroup,
+                              );
+                            },
+                          ),
+                        );
+                      }),
+                    ),
+                    Positioned(
+                      bottom: 10,
+                      right: 10,
+                      child: Obx(() {
+                        // Show floating button when not at bottom (scrolled up to read old messages)
+                        // Note: With reverse: true, 0.0 = bottom (newest), maxScrollExtent = top (oldest)
+                        final scrollPos = controller.scrollPosition.value;
+
+                        // Show button when scrolled away from bottom (newest messages)
+                        // With reverse: true, bottom is 0.0, so we check if we're not near 0
+                        final isScrolledUp = scrollPos > 50.0;
+
+                        return isScrolledUp
+                            ? FloatingActionButton(
+                                mini: true,
+                                backgroundColor: AppColors.surface,
+                                child: const Icon(
+                                  Icons.keyboard_double_arrow_down,
+                                  color: Colors.black,
+                                  size: 20,
+                                ),
+                                onPressed: () {
+                                  controller.scrollToBottom();
+                                },
+                              )
+                            : const SizedBox.shrink(); // Hide when at bottom
+                      }),
+                    ),
+                  ],
+                ),
+              ),
+              Obx(() {
+                // Check if user is blocked by recipient
+                if (controller.hasBlockedMe.value) {
+                  // Recipient blocked the current user
+                  return Container(
+                    padding: const EdgeInsets.all(AppSizes.paddingM),
+                    decoration: BoxDecoration(
+                      color: Colors.red.shade50,
+                      border:
+                          Border(top: BorderSide(color: Colors.red.shade200)),
+                    ),
+                    child: SafeArea(
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(Icons.block,
+                              color: Colors.red.shade400, size: 20),
+                          const SizedBox(width: 8),
+                          Text(
+                            "You can't reply to this conversation.",
+                            style: TextStyle(
+                              color: Colors.red.shade700,
+                              fontSize: 13,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
+                }
+
+                // Check if current user has blocked the recipient
+                if (controller.isBlockedByMe.value) {
+                  // Current user blocked the recipient
+                  return Container(
+                    padding: const EdgeInsets.all(AppSizes.paddingM),
+                    decoration: BoxDecoration(
+                      color: Colors.orange.shade50,
+                      border: Border(
+                        top: BorderSide(color: Colors.orange.shade200),
+                      ),
+                    ),
+                    child: SafeArea(
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(
+                            Icons.block,
+                            color: Colors.orange.shade400,
+                            size: 20,
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              "You have blocked this user. Unblock to send messages.",
+                              style: TextStyle(
+                                color: Colors.orange.shade700,
+                                fontSize: 13,
+                                fontWeight: FontWeight.w500,
+                              ),
+                              textAlign: TextAlign.center,
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          IconButton(
+                            onPressed: () {
+                              controller.unblockUser();
+                            },
+                            icon: Icon(
+                              Icons.lock_open,
+                              color: Colors.orange.shade600,
+                              size: 20,
+                            ),
+                            tooltip: 'Unblock User',
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
+                }
+
+                // Normal input field
+                return Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    // URL Preview (shown while typing)
+                    Obx(() {
+                      if (controller.currentUrlPreview.value != null) {
+                        return Container(
+                          margin: const EdgeInsets.only(
+                            left: AppSizes.paddingM,
+                            right: AppSizes.paddingM,
+                            bottom: AppSizes.paddingS,
+                          ),
+                          child: UrlPreviewWidget(
+                            preview: controller.currentUrlPreview.value!,
+                            isMe: true,
                           ),
                         );
                       }
 
-                      // Build the complete items list with headers
-                      final itemsList = _buildItemsListWithHeaders();
+                      // Loading state
+                      if (controller.isPreviewLoading.value) {
+                        return Container(
+                          margin: const EdgeInsets.only(
+                            left: AppSizes.paddingM,
+                            right: AppSizes.paddingM,
+                            bottom: AppSizes.paddingS,
+                          ),
+                          height: 100,
+                          decoration: BoxDecoration(
+                            color: Colors.grey.shade100,
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: Colors.grey.shade300),
+                          ),
+                          child:
+                              const Center(child: CircularProgressIndicator()),
+                        );
+                      }
 
-                      return NotificationListener<ScrollNotification>(
-                        onNotification: (scrollInfo) {
-                          // Load more messages when scrolled near the top (oldest messages)
-                          // With reverse:true, maxScrollExtent = top (oldest)
-                          if (scrollInfo.metrics.pixels >=
-                              scrollInfo.metrics.maxScrollExtent - 200) {
-                            controller.loadMoreMessages();
-                          }
-                          return false;
-                        },
-                        child: ListView.builder(
-                          controller: controller.scrollController,
-                          reverse: true,
-                          padding: const EdgeInsets.all(AppSizes.paddingM),
-                          itemCount: itemsList.length + 1,
-                          itemBuilder: (context, index) {
-                            // With reverse=true: index 0 = bottom (newest)
-                            // Last index = top (header)
-                            if (index == itemsList.length) {
-                              return Column(
-                                children: [
-                                  _buildChatHeader(),
-                                  // Show loading indicator when loading more
-                                  Obx(
-                                    () => controller.isLoadingMore.value
-                                        ? const Padding(
-                                            padding: EdgeInsets.all(8.0),
-                                            child: Center(
-                                              child: SizedBox(
-                                                width: 24,
-                                                height: 24,
-                                                child:
-                                                    CircularProgressIndicator(
-                                                  strokeWidth: 2,
-                                                ),
-                                              ),
-                                            ),
-                                          )
-                                        : const SizedBox.shrink(),
-                                  ),
-                                ],
-                              );
-                            }
-
-                            final item = itemsList[index];
-                            if (item['isHeader'] == true) {
-                              return _buildDateHeader(item['text'] as String);
-                            }
-
-                            final messageIndex = item['messageIndex'] as int;
-                            final message = controller.messages[messageIndex];
-                            return ChatMessageBubble(
-                              key: ValueKey(
-                                'msg_${message.id}_${message.timestamp.millisecondsSinceEpoch}',
-                              ),
-                              message: message,
-                              isGroup: controller.isGroup,
-                            );
-                          },
-                        ),
-                      );
+                      return const SizedBox.shrink();
                     }),
-                  ),
-                  Positioned(
-                    bottom: 10,
-                    right: 10,
-                    child: Obx(() {
-                      // Show floating button when not at bottom (scrolled up to read old messages)
-                      // Note: With reverse: true, 0.0 = bottom (newest), maxScrollExtent = top (oldest)
-                      final scrollPos = controller.scrollPosition.value;
 
-                      // Show button when scrolled away from bottom (newest messages)
-                      // With reverse: true, bottom is 0.0, so we check if we're not near 0
-                      final isScrolledUp = scrollPos > 50.0;
-
-                      return isScrolledUp
-                          ? FloatingActionButton(
-                              mini: true,
-                              backgroundColor: AppColors.surface,
-                              child: const Icon(
-                                Icons.keyboard_double_arrow_down,
-                                color: Colors.black,
-                                size: 20,
-                              ),
-                              onPressed: () {
-                                controller.scrollToBottom();
-                              },
-                            )
-                          : const SizedBox.shrink(); // Hide when at bottom
-                    }),
-                  ),
-                ],
-              ),
-            ),
-            Obx(() {
-              // Check if user is blocked by recipient
-              if (controller.hasBlockedMe.value) {
-                // Recipient blocked the current user
-                return Container(
-                  padding: const EdgeInsets.all(AppSizes.paddingM),
-                  decoration: BoxDecoration(
-                    color: Colors.red.shade50,
-                    border: Border(top: BorderSide(color: Colors.red.shade200)),
-                  ),
-                  child: SafeArea(
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(Icons.block, color: Colors.red.shade400, size: 20),
-                        const SizedBox(width: 8),
-                        Text(
-                          "You can't reply to this conversation.",
-                          style: TextStyle(
-                            color: Colors.red.shade700,
-                            fontSize: 13,
-                            fontWeight: FontWeight.w500,
+                    // Input field container
+                    Container(
+                      padding: const EdgeInsets.all(AppSizes.paddingM),
+                      decoration: BoxDecoration(
+                        color: AppColors.surface,
+                        boxShadow: [
+                          BoxShadow(
+                            color: AppColors.shadow,
+                            blurRadius: 4,
+                            offset: const Offset(0, -2),
                           ),
-                        ),
-                      ],
-                    ),
-                  ),
-                );
-              }
-
-              // Check if current user has blocked the recipient
-              if (controller.isBlockedByMe.value) {
-                // Current user blocked the recipient
-                return Container(
-                  padding: const EdgeInsets.all(AppSizes.paddingM),
-                  decoration: BoxDecoration(
-                    color: Colors.orange.shade50,
-                    border: Border(
-                      top: BorderSide(color: Colors.orange.shade200),
-                    ),
-                  ),
-                  child: SafeArea(
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(
-                          Icons.block,
-                          color: Colors.orange.shade400,
-                          size: 20,
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(
-                            "You have blocked this user. Unblock to send messages.",
-                            style: TextStyle(
-                              color: Colors.orange.shade700,
-                              fontSize: 13,
-                              fontWeight: FontWeight.w500,
-                            ),
-                            textAlign: TextAlign.center,
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        IconButton(
-                          onPressed: () {
-                            controller.unblockUser();
-                          },
-                          icon: Icon(
-                            Icons.lock_open,
-                            color: Colors.orange.shade600,
-                            size: 20,
-                          ),
-                          tooltip: 'Unblock User',
-                        ),
-                      ],
-                    ),
-                  ),
-                );
-              }
-
-              // Normal input field
-              return Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  // URL Preview (shown while typing)
-                  Obx(() {
-                    if (controller.currentUrlPreview.value != null) {
-                      return Container(
-                        margin: const EdgeInsets.only(
-                          left: AppSizes.paddingM,
-                          right: AppSizes.paddingM,
-                          bottom: AppSizes.paddingS,
-                        ),
-                        child: UrlPreviewWidget(
-                          preview: controller.currentUrlPreview.value!,
-                          isMe: true,
-                        ),
-                      );
-                    }
-
-                    // Loading state
-                    if (controller.isPreviewLoading.value) {
-                      return Container(
-                        margin: const EdgeInsets.only(
-                          left: AppSizes.paddingM,
-                          right: AppSizes.paddingM,
-                          bottom: AppSizes.paddingS,
-                        ),
-                        height: 100,
-                        decoration: BoxDecoration(
-                          color: Colors.grey.shade100,
-                          borderRadius: BorderRadius.circular(12),
-                          border: Border.all(color: Colors.grey.shade300),
-                        ),
-                        child: const Center(child: CircularProgressIndicator()),
-                      );
-                    }
-
-                    return const SizedBox.shrink();
-                  }),
-
-                  // Input field container
-                  Container(
-                    padding: const EdgeInsets.all(AppSizes.paddingM),
-                    decoration: BoxDecoration(
-                      color: AppColors.surface,
-                      boxShadow: [
-                        BoxShadow(
-                          color: AppColors.shadow,
-                          blurRadius: 4,
-                          offset: const Offset(0, -2),
-                        ),
-                      ],
-                    ),
-                    child: SafeArea(
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          // Reply preview bar
-                          Obx(() {
-                            if (controller.isReplying &&
-                                controller.replyToMessage.value != null) {
-                              return ReplyPreviewBar(
-                                replyTo: controller.replyToMessage.value!,
-                                onCancel: controller.cancelReply,
-                                onTap: () {
-                                  controller.scrollToMessage(
-                                    controller.replyToMessage.value!.messageId,
-                                  );
-                                },
-                              );
-                            }
-                            return const SizedBox.shrink();
-                          }),
-
-                          // Message input / recording area
-                          _buildMessageInput(context),
                         ],
                       ),
+                      child: SafeArea(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            // Reply preview bar
+                            Obx(() {
+                              if (controller.isReplying &&
+                                  controller.replyToMessage.value != null) {
+                                return ReplyPreviewBar(
+                                  replyTo: controller.replyToMessage.value!,
+                                  onCancel: controller.cancelReply,
+                                  onTap: () {
+                                    controller.scrollToMessage(
+                                      controller
+                                          .replyToMessage.value!.messageId,
+                                    );
+                                  },
+                                );
+                              }
+                              return const SizedBox.shrink();
+                            }),
+
+                            // Message input / recording area
+                            _buildMessageInput(context),
+                          ],
+                        ),
+                      ),
                     ),
-                  ),
-                ],
-              );
-            }),
-          ],
+                  ],
+                );
+              }),
+            ],
+          ),
         ),
       ),
     );
@@ -853,6 +755,13 @@ class ChatScreen extends GetView<ChatController> {
 
   Future<void> _pickAndSendImage(ImagePicker picker, ImageSource source) async {
     String? pendingMsgId;
+    // Snapshot the controller + chat flags BEFORE the first await: a route
+    // teardown while the picker is open (e.g. a stale call-intent replay
+    // during an ongoing call) unregisters ChatController, and the lazy
+    // GetView.controller getter would throw mid-flow. The captured instance
+    // still completes the send — messages persist to storage and the socket.
+    final ctrl = controller;
+    final isGroupChat = ctrl.isGroup;
     try {
       // Request permission before picking image (required for Samsung gallery)
       if (source == ImageSource.gallery) {
@@ -919,7 +828,8 @@ class ChatScreen extends GetView<ChatController> {
 
       // Step 2: Preview sheet — view-once toggle + HD pill.
       // Returns null if the user cancelled.
-      final preview = await _showImageSendPreview([compressedBytes]);
+      final preview =
+          await _showImageSendPreview([compressedBytes], isGroup: isGroupChat);
       if (preview == null) return;
 
       // HD selected — re-compress from the source file at 2560px/~88%.
@@ -933,7 +843,7 @@ class ChatScreen extends GetView<ChatController> {
       }
 
       // Step 3: Add bubble immediately so user sees it with upload progress
-      pendingMsgId = await controller.createPendingImageMessage(
+      pendingMsgId = await ctrl.createPendingImageMessage(
         sendBytes,
         isViewOnce: preview.viewOnce,
       );
@@ -946,20 +856,20 @@ class ChatScreen extends GetView<ChatController> {
       final token = await MediaUploadService.uploadImage(
         encryptedBlob,
         onProgress: (progress) {
-          controller.uploadProgressMap[pendingMsgId]?.value = progress;
+          ctrl.uploadProgressMap[pendingMsgId]?.value = progress;
         },
         isViewOnce: preview.viewOnce,
       );
 
       // Step 4: Finalize bubble content + send token via socket
-      await controller.finalizeImageMessage(pendingMsgId, token);
+      await ctrl.finalizeImageMessage(pendingMsgId, token);
       debugPrint('✅ Image sent via media server, token=$token');
     } catch (e) {
       debugPrint('❌ Error sending image: $e');
       // Remove the pending bubble on failure
       if (pendingMsgId != null) {
-        controller.uploadProgressMap.remove(pendingMsgId);
-        controller.messages.removeWhere((msg) => msg.id == pendingMsgId);
+        ctrl.uploadProgressMap.remove(pendingMsgId);
+        ctrl.messages.removeWhere((msg) => msg.id == pendingMsgId);
       }
 
       String errorMessage = 'Failed to send image. Please try again.';
@@ -991,7 +901,9 @@ class ChatScreen extends GetView<ChatController> {
   /// the top corner, and the send button.
   /// Returns the chosen options, `null` on cancel.
   Future<({bool viewOnce, bool hd})?> _showImageSendPreview(
-      List<Uint8List> images) {
+    List<Uint8List> images, {
+    required bool isGroup,
+  }) {
     final isViewOnce = false.obs;
     final isHd = false.obs;
     return Get.bottomSheet<({bool viewOnce, bool hd})>(
@@ -1087,7 +999,7 @@ class ChatScreen extends GetView<ChatController> {
                 children: [
                   // View-once "1" toggle — 1:1 chats only (the group socket
                   // payload doesn't carry the flag).
-                  if (!controller.isGroup)
+                  if (!isGroup)
                     Obx(() => GestureDetector(
                           onTap: () => isViewOnce.value = !isViewOnce.value,
                           child: Row(
@@ -1172,6 +1084,10 @@ class ChatScreen extends GetView<ChatController> {
   static const int _maxImagesPerSend = 5;
 
   Future<void> _pickAndSendImages(ImagePicker picker) async {
+    // See _pickAndSendImage — capture before awaits so a mid-flow route
+    // teardown (stale call-intent replay) can't break the send.
+    final ctrl = controller;
+    final isGroupChat = ctrl.isGroup;
     try {
       final permissionStatus = await _requestGalleryPermission();
       if (permissionStatus != PermissionStatus.granted) {
@@ -1237,7 +1153,8 @@ class ChatScreen extends GetView<ChatController> {
 
       // Same preview sheet the single-image path uses — view-once toggle
       // + HD pill. Returns null if the user cancelled.
-      final preview = await _showImageSendPreview(compressed);
+      final preview =
+          await _showImageSendPreview(compressed, isGroup: isGroupChat);
       if (preview == null) return;
 
       // HD selected — re-compress each source file at 2560px/~88%.
@@ -1254,7 +1171,7 @@ class ChatScreen extends GetView<ChatController> {
         if (hdList.isNotEmpty) sendList = hdList;
       }
 
-      await controller.sendImagesSequentially(
+      await ctrl.sendImagesSequentially(
         sendList,
         maxPerBatch: _maxImagesPerSend,
         isViewOnce: preview.viewOnce,

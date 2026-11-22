@@ -260,11 +260,20 @@ class LocalStorageService extends GetxService {
   // app is killed (shared_preferences encodes StringList values — a plain
   // String survives as a readable string natively).
   static const String _prefsKnownContactIdsKey = 'known_contact_ids';
-  static const String _prefsKnownContactsSeededKey = 'known_contact_ids_seeded';
+  // v2: v1 could mark itself seeded while the seed threw on the unmodifiable
+  // empty set, leaving a permanently empty allowlist. The new key forces one
+  // re-seed on the next launch for every device — same merge semantics.
+  static const String _prefsKnownContactsSeededKey =
+      'known_contact_ids_seeded_v2';
 
   Set<String> get knownContactIds {
     final raw = _prefs.getString(_prefsKnownContactIdsKey) ?? '';
-    if (raw.isEmpty) return const <String>{};
+    // Always a mutable copy — markContactKnown/seedKnownContacts add to the
+    // returned set before re-joining. Returning `const {}` on the empty path
+    // threw "Cannot change an unmodifiable set", which silently aborted the
+    // seed while its flag still got written — a permanently empty allowlist
+    // that made silence-unknown-callers mute EVERY incoming call.
+    if (raw.isEmpty) return <String>{};
     return raw.split(',').where((id) => id.isNotEmpty).toSet();
   }
 
@@ -291,10 +300,13 @@ class LocalStorageService extends GetxService {
       unawaited(
         _prefs.setString(_prefsKnownContactIdsKey, ids.join(',')),
       );
+      // Mark seeded only after a successful run — a failed run that still
+      // wrote the flag would leave the allowlist permanently empty, and
+      // silence-unknown-callers would then mute EVERY incoming call.
+      unawaited(_prefs.setBool(_prefsKnownContactsSeededKey, true));
     } catch (e) {
       debugPrint('⚠️ Known-contact seed failed: $e');
     }
-    unawaited(_prefs.setBool(_prefsKnownContactsSeededKey, true));
   }
 
   // User name preference
