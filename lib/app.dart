@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:get/get.dart';
 import 'config/flavor_config.dart';
+import 'core/constants/app_colors.dart';
 import 'core/theme/app_theme.dart';
 import 'core/services/socket_service.dart';
 import 'core/services/fcm_service.dart';
@@ -237,6 +238,27 @@ class _PearMessagingAppState extends State<PearMessagingApp>
             ],
           );
 
+          // White base under the status-bar strip, app-wide. Edge-to-edge
+          // Android ignores statusBarColor, and screens that wrap SafeArea
+          // outside their Scaffold (e.g. the chat screen) leave the strip
+          // unpainted — exposing the black route backdrop. Painting under
+          // the content only shows through where a screen doesn't draw;
+          // screens that intentionally extend color there (CallBanner,
+          // call screens) still cover it.
+          final withStatusBarBase = Stack(
+            fit: StackFit.expand,
+            children: [
+              Positioned(
+                top: 0,
+                left: 0,
+                right: 0,
+                height: MediaQuery.viewPaddingOf(context).top,
+                child: const ColoredBox(color: AppColors.surface),
+              ),
+              withCallBanner,
+            ],
+          );
+
           // Add DEV banner for dev flavor
           if (FlavorConfig.isDev()) {
             return Banner(
@@ -249,7 +271,7 @@ class _PearMessagingAppState extends State<PearMessagingApp>
                   statusBarIconBrightness: Brightness.dark,
                   statusBarBrightness: Brightness.light,
                 ),
-                child: withCallBanner,
+                child: withStatusBarBase,
               ),
             );
           }
@@ -260,7 +282,7 @@ class _PearMessagingAppState extends State<PearMessagingApp>
               statusBarIconBrightness: Brightness.dark,
               statusBarBrightness: Brightness.light,
             ),
-            child: withCallBanner,
+            child: withStatusBarBase,
           );
         },
         unknownRoute: GetPage(
