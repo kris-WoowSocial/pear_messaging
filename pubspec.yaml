@@ -2,7 +2,7 @@ name: pear_messaging
 description: "Secure local chat application"
 publish_to: "none"
 
-version: 2.4.6+246
+version: 2.4.7+247
 
 environment:
   sdk: ^3.5.4
@@ -63,7 +63,7 @@ dependencies:
   mobile_scanner: ^6.0.11
 
   # Deep Linking & Sharing
-  flutter_branch_sdk: ^7.0.1
+  android_play_install_referrer: ^0.4.0
   share_plus: ^10.0.0
   http: ^1.1.0
 

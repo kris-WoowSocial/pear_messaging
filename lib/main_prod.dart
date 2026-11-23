@@ -24,8 +24,7 @@ import 'core/services/block_service.dart';
 import 'core/services/connection_request_service.dart';
 import 'core/services/username_sync_service.dart';
 import 'core/services/invitation_storage_service.dart';
-import 'core/services/branch_service.dart';
-import 'core/services/app_link_service.dart';
+import 'core/services/deep_link_service.dart';
 import 'core/services/app_update_service.dart';
 import 'core/services/review_service.dart';
 import 'core/services/region_service.dart';
@@ -528,8 +527,8 @@ void initializeNonCriticalServices() async {
   }
 
   try {
-    // IMPORTANT: Initialize InvitationStorageService FIRST before BranchService
-    // BranchService depends on InvitationStorageService to store deep link data
+    // IMPORTANT: Initialize InvitationStorageService FIRST before DeepLinkService
+    // DeepLinkService depends on InvitationStorageService to store deep link data
     // for deferred deep linking (when user installs app from Play Store after clicking link)
     await Get.putAsync(() => InvitationStorageService().init());
     debugPrint('✅ InvitationStorageService initialized');
@@ -606,20 +605,14 @@ void initializeNonCriticalServices() async {
     }),
   );
 
-  // Deep linking services - must run AFTER InvitationStorageService is ready
+  // Deep linking service - must run AFTER InvitationStorageService is ready.
+  // Handles vant.chat universal/app links, the vantchat:// scheme, and the
+  // Play Install Referrer for Android deferred attribution.
   futures.add(
-    Get.putAsync(() => BranchService().init()).catchError((e) {
-      debugPrint('❌ BranchService initialization failed: $e');
-      debugPrint('⚠️ App will continue without Branch deep linking');
-      return Get.put(BranchService());
-    }),
-  );
-
-  futures.add(
-    Get.putAsync(() => AppLinkService().init()).catchError((e) {
-      debugPrint('❌ AppLinkService initialization failed: $e');
-      debugPrint('⚠️ App will continue without app linking');
-      return Get.put(AppLinkService());
+    Get.putAsync(() => DeepLinkService().init()).catchError((e) {
+      debugPrint('❌ DeepLinkService initialization failed: $e');
+      debugPrint('⚠️ App will continue without deep linking');
+      return Get.put(DeepLinkService());
     }),
   );
 
@@ -819,8 +812,8 @@ void _initializeFirebaseAnalytics() async {
 /// Check app link handler status (non-blocking)
 void _checkAppLinkHandler() async {
   try {
-    final appLinkService = Get.find<AppLinkService>();
-    final isDefault = await appLinkService.isDefaultLinkHandler();
+    final deepLinkService = Get.find<DeepLinkService>();
+    final isDefault = await deepLinkService.isDefaultLinkHandler();
     if (!isDefault) {
       debugPrint('⚠️ App is not set as default link handler');
     } else {

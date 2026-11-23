@@ -1,22 +1,23 @@
 import 'package:flutter/material.dart';
-import 'package:flutter_branch_sdk/flutter_branch_sdk.dart';
 import 'package:get/get.dart';
 
+import '../../core/services/api_service.dart';
 import '../../core/services/invite_link_parser.dart';
+import '../../core/services/invitation_storage_service.dart';
 import '../../features/chat_list/chat_list_controller.dart';
 import '../../routes/app_routes.dart';
 
 /// iOS first-launch invite recovery.
 ///
-/// When the Branch install match fails (paste prompt denied, "Get the App
-/// without Copying", or a fingerprint miss) no invite arrives automatically.
+/// iOS has no first-party deferred deep-link mechanism: when a fresh install
+/// doesn't arrive via a universal link, no invite shows up automatically.
 /// This sheet offers the two remaining paths into the same connection
-/// request flow the Branch path uses:
+/// request flow the deep-link service uses:
 ///  1. scan the friend's in-app QR code → [initializeChatFromQR]
 ///  2. paste the invite link into a normal text field (a user-initiated
 ///     paste does NOT trigger the iOS pasteboard permission prompt) →
-///     device_id links go to [initializeChatFromQR]; Branch short links go
-///     through [FlutterBranchSdk.handleDeepLink] → the Branch listener.
+///     `vant.chat` / `vantchat://` links go to [initializeChatFromQR];
+///     retired `*.app.link` URLs show an "expired" message.
 ///
 /// Fully dismissible — nothing about the flow blocks on it.
 class InviteFallbackSheet {
@@ -39,31 +40,52 @@ class InviteFallbackSheet {
                   'That does not look like a Vant Chat invite link');
               return;
             }
+            if (parsed.isLegacyLink) {
+              setState(() => errorText =
+                  'This legacy invite link has expired. Ask your contact for a new Vant Chat link.');
+              return;
+            }
             setState(() {
               errorText = null;
               submitting = true;
             });
             try {
-              if (parsed.isBranchLink) {
-                // Hand the short link back to the Branch SDK — it resolves
-                // the link data and delivers it to the Branch listener,
-                // which runs the normal invite/connection-request flow.
-                FlutterBranchSdk.handleDeepLink(parsed.branchUrl!);
-                Get.back();
-                Get.snackbar(
-                  'Connecting',
-                  'Checking your invite…',
-                  snackPosition: SnackPosition.TOP,
-                  duration: const Duration(seconds: 3),
-                );
-              } else {
-                Get.back();
-                await Get.find<ChatListController>().initializeChatFromQR(
-                  parsed.deviceId!,
-                  userName: parsed.userName,
-                  avatarUrl: parsed.avatarUrl,
+              // Opaque /chat/<code> short link — params live server-side.
+              String? deviceId = parsed.deviceId;
+              String? userName = parsed.userName;
+              String? avatarUrl = parsed.avatarUrl;
+              String? referralCode = parsed.referralCode;
+              if (parsed.shortCode != null) {
+                final payload = await ApiService.to
+                    .resolveShortInviteLink(parsed.shortCode!);
+                if (payload == null ||
+                    (payload['device_id'] as String?) == null) {
+                  setState(() {
+                    submitting = false;
+                    errorText =
+                        'That invite link could not be resolved. Ask your contact for a new link.';
+                  });
+                  return;
+                }
+                deviceId = payload['device_id'] as String;
+                userName = payload['user_name'] as String?;
+                avatarUrl = payload['avatar_url'] as String?;
+                referralCode = payload['referral_code'] as String?;
+              }
+              if (referralCode != null &&
+                  Get.isRegistered<InvitationStorageService>()) {
+                await Get.find<InvitationStorageService>()
+                    .storeReferralContext(
+                  inviterDeviceId: deviceId!,
+                  influencerCode: referralCode,
                 );
               }
+              Get.back();
+              await Get.find<ChatListController>().initializeChatFromQR(
+                deviceId!,
+                userName: userName,
+                avatarUrl: avatarUrl,
+              );
             } catch (e) {
               setState(() {
                 submitting = false;
@@ -167,63 +189,5 @@ class InviteFallbackSheet {
         borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
       ),
     ).whenComplete(linkController.dispose);
-  }
-
-  /// Pre-explanation shown BEFORE the Branch SDK reads the pasteboard, so the
-  /// iOS system paste prompt is not a surprise. [onContinue] releases the
-  /// deferred Branch init. Dismissible only via the button — the whole point
-  /// is that the user sees it.
-  static Future<void> showPasteExplainer() {
-    return Get.bottomSheet<void>(
-      SafeArea(
-        top: false,
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(24, 12, 24, 24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Container(
-                width: 42,
-                height: 4,
-                decoration: BoxDecoration(
-                  color: Colors.grey.shade300,
-                  borderRadius: BorderRadius.circular(2),
-                ),
-              ),
-              const SizedBox(height: 24),
-              const Icon(Icons.content_paste, size: 40, color: Colors.black54),
-              const SizedBox(height: 16),
-              const Text(
-                'Connect with your friend',
-                style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
-              ),
-              const SizedBox(height: 10),
-              const Text(
-                "If you installed Vant Chat from a friend's link or QR code, "
-                'iOS will ask to paste it. Tap "Allow Paste" so we can '
-                'connect you automatically.',
-                textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 15, color: Colors.black54),
-              ),
-              const SizedBox(height: 24),
-              SizedBox(
-                width: double.infinity,
-                height: 50,
-                child: ElevatedButton(
-                  onPressed: Get.back,
-                  child: const Text('Continue'),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-      isDismissible: false,
-      enableDrag: false,
-      backgroundColor: Colors.white,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
-      ),
-    );
   }
 }

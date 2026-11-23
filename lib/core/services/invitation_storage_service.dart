@@ -10,7 +10,7 @@ class InvitationStorageService extends GetxService {
   static const String _pendingUserNameKey = 'pending_user_name';
   static const String _invitationTimestampKey = 'invitation_timestamp';
 
-  // Referral attribution context (captured from a Branch install link).
+  // Referral attribution context (captured from an install link).
   // Used once, when the referred user accepts the invite that brought them in.
   static const String _referralInviterDeviceIdKey = 'referral_inviter_device_id';
   static const String _referralInfluencerCodeKey = 'referral_influencer_code';
@@ -116,49 +116,7 @@ class InvitationStorageService extends GetxService {
     }
   }
 
-  /// Store invitation data from Branch link (for first-time installs)
-  Future<void> storeBranchInvitation(Map<String, dynamic> branchData) async {
-    try {
-      String? deviceId;
-      String? userName = 'Unknown User';
-
-      // Extract device ID from branch data
-      if (branchData.containsKey('device_id')) {
-        deviceId = branchData['device_id'] as String?;
-      } else if (branchData.containsKey('~canonical_identifier')) {
-        final canonical = branchData['~canonical_identifier'] as String?;
-        if (canonical != null && canonical.startsWith('chat/')) {
-          deviceId = canonical.substring(5);
-        }
-      }
-
-      // Extract user name
-      if (branchData.containsKey('user_name')) {
-        userName = branchData['user_name'] as String?;
-      }
-
-      // Extract influencer referral code (present on influencer referral links)
-      String? influencerCode;
-      if (branchData.containsKey('referral_code')) {
-        influencerCode = branchData['referral_code'] as String?;
-      }
-
-      if (deviceId != null && deviceId.isNotEmpty) {
-        await storePendingInvitation(
-            deviceId: deviceId, userName: userName ?? 'Unknown User');
-        // Persist referral context so attribution can be claimed on accept.
-        await storeReferralContext(
-          inviterDeviceId: deviceId,
-          influencerCode: influencerCode,
-        );
-        debugPrint('📋 Stored Branch invitation for post-install processing');
-      }
-    } catch (e) {
-      debugPrint('❌ Error storing Branch invitation: $e');
-    }
-  }
-
-  /// Store referral attribution context captured from a Branch install link.
+  /// Store referral attribution context captured from an install link.
   /// [inviterDeviceId] is the device id embedded in the link (influencer's Vant
   /// account for influencer links, or a referred user for chat invites).
   /// [influencerCode] is only present for influencer referral links.
@@ -224,47 +182,4 @@ class InvitationStorageService extends GetxService {
     }
   }
 
-  /// Store invitation data from URL parameters (fallback mechanism)
-  Future<void> storeInvitationFromUrl(String url) async {
-    try {
-      debugPrint('📋 Attempting to extract invitation from URL: $url');
-
-      // Parse the URL to extract device ID
-      final uri = Uri.parse(url);
-
-      // Try to get device ID from various possible parameters
-      String? deviceId;
-      String? userName = 'Unknown User';
-
-      // Check query parameters
-      if (uri.queryParameters.containsKey('device_id')) {
-        deviceId = uri.queryParameters['device_id'];
-      }
-      if (uri.queryParameters.containsKey('user_name')) {
-        userName = uri.queryParameters['user_name'];
-      }
-
-      // Check path segments
-      if (deviceId == null && uri.pathSegments.isNotEmpty) {
-        for (final segment in uri.pathSegments) {
-          if (segment.length > 10 && segment.length < 50) {
-            // Assume it's a device ID if it's reasonably long
-            deviceId = segment;
-            break;
-          }
-        }
-      }
-
-      if (deviceId != null && deviceId.isNotEmpty) {
-        await storePendingInvitation(
-            deviceId: deviceId, userName: userName ?? 'Unknown User');
-        debugPrint('📋 Stored invitation from URL: $deviceId ($userName)');
-        return;
-      }
-
-      debugPrint('⚠️ Could not extract device ID from URL');
-    } catch (e) {
-      debugPrint('❌ Error storing invitation from URL: $e');
-    }
-  }
 }

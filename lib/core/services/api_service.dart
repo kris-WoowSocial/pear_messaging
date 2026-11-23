@@ -66,6 +66,34 @@ class ApiService extends GetxService {
     return data;
   }
 
+  // ── Invite links ────────────────────────────────────────────────────────────
+
+  /// Store invite params server-side and get back an opaque short link:
+  /// `https://vant.chat/chat/<code>` — hides device_id/user_name from the
+  /// shared URL behind an opaque slug.
+  /// Returns null on any failure so callers can fall back to the verbose URL.
+  Future<String?> createShortInviteLink(Map<String, String> params) async {
+    try {
+      final res = await _post('/api/invite-link', params);
+      final data = _decode(res, 'createShortInviteLink');
+      return data['url'] as String?;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  /// Resolve an opaque /chat/<code> link back to its invite params.
+  /// Returns null when the code is unknown or the request fails.
+  Future<Map<String, dynamic>?> resolveShortInviteLink(String code) async {
+    try {
+      final res = await _get('/api/invite-link/$code');
+      if (res.statusCode != 200) return null;
+      return jsonDecode(res.body) as Map<String, dynamic>;
+    } catch (e) {
+      return null;
+    }
+  }
+
   // ── Region ──────────────────────────────────────────────────────────────────
 
   Future<Map<String, dynamic>> detectRegion() async {

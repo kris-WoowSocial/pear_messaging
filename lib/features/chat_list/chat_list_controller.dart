@@ -1501,7 +1501,7 @@ class ChatListController extends GetxController {
   }
 
   /// Initialize chat from scanned QR code - now sends connection request
-  /// Persist an inviter's avatar (from QR/Branch payloads) onto the ChatEntity
+  /// Persist an inviter's avatar (from QR/invite-link payloads) onto the ChatEntity
   /// and the live profile cache so every surface shows it immediately.
   Future<void> _applyInviterAvatar(String deviceId, String avatarUrl) async {
     try {

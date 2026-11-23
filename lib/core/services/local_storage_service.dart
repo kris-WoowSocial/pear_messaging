@@ -33,6 +33,8 @@ class LocalStorageService extends GetxService {
   static const String _prefsDisableLinkPreviewsKey = 'disable_link_previews';
   static const String _prefsStrictAccountSettingsKey =
       'strict_account_settings';
+  static const String _prefsInstallReferrerCheckedKey =
+      'install_referrer_checked';
   static const String _prefsSilenceUnknownCallersKey =
       'silence_unknown_callers';
 
@@ -246,6 +248,15 @@ class LocalStorageService extends GetxService {
 
   Future<void> setSilenceUnknownCallers(bool enabled) async {
     await _prefs.setBool(_prefsSilenceUnknownCallersKey, enabled);
+  }
+
+  // Play Install Referrer is a one-time query — once consumed (or found
+  // empty) the flag stops re-checks from re-processing stale invite params.
+  bool get hasCheckedInstallReferrer =>
+      _prefs.getBool(_prefsInstallReferrerCheckedKey) ?? false;
+
+  Future<void> setHasCheckedInstallReferrer(bool checked) async {
+    await _prefs.setBool(_prefsInstallReferrerCheckedKey, checked);
   }
 
   // "Known contacts" allowlist — the peers we treat as real connections for

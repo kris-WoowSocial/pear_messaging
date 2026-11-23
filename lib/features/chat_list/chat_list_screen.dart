@@ -215,9 +215,10 @@ class ChatListScreen extends GetView<ChatListController> {
                   title: AppStrings.noChats,
                   subtitle: AppStrings.startChatting,
                   icon: Icons.chat_bubble_outline,
-                  // iOS only: recovery for invite installs where the paste
-                  // prompt was denied or the match missed. Android uses the
-                  // Play Install Referrer and needs no manual entry point.
+                  // iOS only: recovery for invite installs that didn't arrive
+                  // via a universal link (iOS has no deferred deep-link
+                  // mechanism). Android uses the Play Install Referrer and
+                  // needs no manual entry point.
                   action: Platform.isIOS
                       ? TextButton.icon(
                           onPressed: InviteFallbackSheet.show,

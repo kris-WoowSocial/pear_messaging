@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import '../../core/constants/app_colors.dart';
+import '../../core/services/api_service.dart';
 import '../../core/services/qr_service.dart';
 import '../chat_list/chat_list_controller.dart';
 
@@ -52,12 +53,31 @@ class QRScannerController extends GetxController {
       String? avatarUrl;
 
       // 2. Fall back to URL format: https://vant.chat/chat?device_id=XXXX
-      //    (and the Branch quick-link QR: ...app.link/?device_id=X&user_name=Y)
+      //    (and retired quick-link QRs carrying the same query params)
       if (deviceId == null) {
         final urlParts = _extractDeviceIdFromUrl(qrData);
         deviceId = urlParts?.$1;
         userName ??= urlParts?.$2;
         avatarUrl = urlParts?.$3;
+      }
+
+      // 3. Opaque short link: https://vant.chat/chat/<code> — the params
+      //    live server-side so the QR doesn't expose them; resolve now.
+      if (deviceId == null) {
+        final code = _shortLinkCode(qrData);
+        if (code != null) {
+          try {
+            final payload =
+                await ApiService.to.resolveShortInviteLink(code);
+            if (payload != null) {
+              deviceId = payload['device_id'] as String?;
+              userName ??= payload['user_name'] as String?;
+              avatarUrl = payload['avatar_url'] as String?;
+            }
+          } catch (e) {
+            debugPrint('⚠️ Short invite link resolve failed: $e');
+          }
+        }
       }
 
       if (deviceId != null) {
@@ -80,8 +100,8 @@ class QRScannerController extends GetxController {
   }
 
   /// Extract device_id (and user_name when present) from an invitation URL.
-  /// Handles https://vant.chat/chat?device_id=XXXX, the Branch quick-link
-  /// (vantchatting.app.link/?device_id=X&user_name=Y), and any URL carrying
+  /// Handles https://vant.chat/chat?device_id=XXXX, retired quick-link
+  /// QRs (?device_id=X&user_name=Y), and any URL carrying
   /// a device_id query param. Returns (deviceId, userName, avatarUrl).
   (String, String?, String?)? _extractDeviceIdFromUrl(String qrData) {
     try {
@@ -94,6 +114,21 @@ class QRScannerController extends GetxController {
           uri.queryParameters['user_name'],
           uri.queryParameters['avatar_url'],
         );
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  /// Returns the opaque code when qrData is a `/chat/<code>` short link.
+  String? _shortLinkCode(String qrData) {
+    try {
+      final uri = Uri.tryParse(qrData);
+      if (uri == null) return null;
+      final segments = uri.pathSegments;
+      if (segments.length == 2 &&
+          segments[0] == 'chat' &&
+          segments[1].isNotEmpty) {
+        return segments[1];
       }
     } catch (_) {}
     return null;

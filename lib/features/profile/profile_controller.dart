@@ -4,7 +4,7 @@ import 'package:get/get.dart';
 import 'package:pear_messaging/core/constants/app_colors.dart';
 import '../../core/constants/app_strings.dart';
 import '../../core/services/api_service.dart';
-import '../../core/services/branch_service.dart';
+import '../../core/services/deep_link_service.dart';
 import '../../core/services/local_auth_service.dart';
 import '../../core/services/local_storage_service.dart';
 import '../../core/utils/string_utils.dart';
@@ -140,19 +140,18 @@ class ProfileController extends GetxController {
 
   void shareApp() async {
     try {
-      // Get or initialize Branch service
-      BranchService branchService;
+      // Get or initialize deep link service
+      DeepLinkService deepLinkService;
       try {
-        branchService = Get.find<BranchService>();
+        deepLinkService = Get.find<DeepLinkService>();
       } catch (e) {
-        // Branch service not initialized, create one
-        branchService = BranchService();
-        Get.put(branchService);
-        await branchService.init();
+        deepLinkService = DeepLinkService();
+        Get.put(deepLinkService);
+        await deepLinkService.init();
       }
 
       // Share the app
-      await branchService.shareApp();
+      await deepLinkService.shareApp();
     } catch (e) {
       debugPrint('❌ Error sharing app: $e');
       Get.snackbar(
