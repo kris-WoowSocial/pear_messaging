@@ -3077,15 +3077,9 @@ class CallController extends GetxController {
   /// Accept an incoming call
   Future<bool> acceptCall(Map<String, dynamic> callData) async {
     try {
-      // Trial-expired users can't take calls either — reject cleanly so the
-      // caller's screen stops ringing, then route to the paywall.
-      if (Get.isRegistered<MembershipService>() &&
-          !Get.find<MembershipService>().canMakeCalls) {
-        debugPrint('🔒 Incoming call blocked: premium required');
-        rejectCall(callData);
-        Get.toNamed(AppRoutes.stripeSubscription);
-        return false;
-      }
+      // Answering is free for everyone — the paywall only gates DIALING.
+      // A premium/trial caller paid for this call; the callee must always
+      // be able to pick up regardless of their own membership status.
 
       final callId = callData['callId'] as String;
       // Answering is explicit engagement — known contact for strict-mode
@@ -5984,19 +5978,8 @@ class CallController extends GetxController {
       _storageService.markContactKnown(callerId);
       if (Platform.isIOS) _nativePushCallIds.remove(callId);
       // Native accept paths (CallKit, lock screen, notification, socket
-      // resync) bypass acceptCall() — apply the same premium gate here.
-      if (Get.isRegistered<MembershipService>() &&
-          !Get.find<MembershipService>().canMakeCalls) {
-        debugPrint('🔒 Incoming call blocked: premium required');
-        _socketService.rejectCall(
-          callId: callId,
-          callerId: callerId,
-          reason: 'premium_required',
-        );
-        _resetCallState();
-        Get.toNamed(AppRoutes.stripeSubscription);
-        return;
-      }
+      // resync) bypass acceptCall() — no membership gate here either:
+      // answering is free; only dialing requires premium.
       if (_acceptInFlightCallId == callId || isInCall) {
         debugPrint('📞 Accept already in progress for $callId — skipping dup');
         return;
