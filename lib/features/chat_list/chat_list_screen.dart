@@ -105,7 +105,7 @@ class ChatListScreen extends GetView<ChatListController> {
       ),
       floatingActionButton: FloatingActionButton(
         onPressed: () => Get.toNamed(AppRoutes.createGroup),
-        backgroundColor: AppColors.primary,
+        backgroundColor: AppColors.chatAction,
         tooltip: 'New Group',
         child: const Icon(
           Icons.group_add,
