@@ -7,6 +7,7 @@ import '../../core/constants/app_sizes.dart';
 import '../../core/constants/network_constants.dart';
 import '../../core/services/review_service.dart';
 import '../../core/services/membership_service.dart';
+import '../../core/services/deep_link_service.dart';
 import '../../core/utils/string_utils.dart';
 import '../../routes/app_routes.dart';
 import 'profile_controller.dart';
@@ -21,6 +22,16 @@ class ProfileScreen extends GetView<ProfileController> {
 
   Future<String> _generateQRData() async {
     final deviceId = controller.deviceId.value;
+    // Prefer the opaque short link from DeepLinkService
+    // (https://vant.chat/chat/<code>) so the QR payload hides the invite
+    // params and carries influencer referral attribution. Falls back to the
+    // verbose URL when the service isn't up yet.
+    if (Get.isRegistered<DeepLinkService>()) {
+      try {
+        final link = await Get.find<DeepLinkService>().generateShareLink();
+        if (link.isNotEmpty) return link;
+      } catch (_) {}
+    }
     // First-party vant.chat link: the in-app scanner reads the device_id
     // query param directly so Vant users go straight to chat; outside the
     // app the same URL is a verified App Link / Universal Link that opens

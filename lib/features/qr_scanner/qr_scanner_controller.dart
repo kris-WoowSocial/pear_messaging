@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import '../../core/constants/app_colors.dart';
+import '../../core/services/api_service.dart';
 import '../../core/services/qr_service.dart';
 import '../chat_list/chat_list_controller.dart';
 
@@ -60,6 +61,25 @@ class QRScannerController extends GetxController {
         avatarUrl = urlParts?.$3;
       }
 
+      // 3. Opaque short link: https://vant.chat/chat/<code> — the params
+      //    live server-side so the QR doesn't expose them; resolve now.
+      if (deviceId == null) {
+        final code = _shortLinkCode(qrData);
+        if (code != null) {
+          try {
+            final payload =
+                await ApiService.to.resolveShortInviteLink(code);
+            if (payload != null) {
+              deviceId = payload['device_id'] as String?;
+              userName ??= payload['user_name'] as String?;
+              avatarUrl = payload['avatar_url'] as String?;
+            }
+          } catch (e) {
+            debugPrint('⚠️ Short invite link resolve failed: $e');
+          }
+        }
+      }
+
       if (deviceId != null) {
         // Valid QR code - initialize chat and navigate
         final chatListController = Get.find<ChatListController>();
@@ -94,6 +114,21 @@ class QRScannerController extends GetxController {
           uri.queryParameters['user_name'],
           uri.queryParameters['avatar_url'],
         );
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  /// Returns the opaque code when qrData is a `/chat/<code>` short link.
+  String? _shortLinkCode(String qrData) {
+    try {
+      final uri = Uri.tryParse(qrData);
+      if (uri == null) return null;
+      final segments = uri.pathSegments;
+      if (segments.length == 2 &&
+          segments[0] == 'chat' &&
+          segments[1].isNotEmpty) {
+        return segments[1];
       }
     } catch (_) {}
     return null;

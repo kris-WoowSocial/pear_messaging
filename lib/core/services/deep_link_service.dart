@@ -189,8 +189,31 @@ class DeepLinkService extends GetxService {
       return;
     }
 
-    final deviceId = uri.queryParameters['device_id']?.trim() ??
+    // Opaque short link: https://vant.chat/chat/<code> — the invite params
+    // live server-side, resolve them first.
+    var deviceId = uri.queryParameters['device_id']?.trim() ??
         uri.queryParameters['chat_device_id']?.trim();
+    String? userName = uri.queryParameters['user_name'];
+    String? avatarUrl = uri.queryParameters['avatar_url'] ??
+        uri.queryParameters['inviter_avatar_url'];
+    String? referralCode =
+        uri.queryParameters['referral_code'] ?? uri.queryParameters['code'];
+
+    if (deviceId == null || deviceId.isEmpty) {
+      final code = _shortLinkCode(uri);
+      if (code != null) {
+        final payload = await ApiService.to.resolveShortInviteLink(code);
+        if (payload == null) {
+          debugPrint('⚠️ Could not resolve short invite link: $code');
+          return;
+        }
+        deviceId = (payload['device_id'] as String?)?.trim();
+        userName ??= payload['user_name'] as String?;
+        avatarUrl ??= payload['avatar_url'] as String?;
+        referralCode ??= payload['referral_code'] as String?;
+      }
+    }
+
     if (deviceId == null || deviceId.isEmpty) {
       debugPrint('⚠️ Deep link carries no device_id: $url');
       return;
@@ -198,13 +221,23 @@ class DeepLinkService extends GetxService {
 
     await _processInviteParams(
       deviceId: deviceId,
-      userName: uri.queryParameters['user_name'],
-      avatarUrl: uri.queryParameters['avatar_url'] ??
-          uri.queryParameters['inviter_avatar_url'],
-      referralCode:
-          uri.queryParameters['referral_code'] ?? uri.queryParameters['code'],
+      userName: userName,
+      avatarUrl: avatarUrl,
+      referralCode: referralCode,
       isColdStart: isColdStart,
     );
+  }
+
+  /// Returns the opaque code from a `/chat/<code>` path, or null when the
+  /// path is anything else (e.g. `/chat` with query params, `/referral`).
+  String? _shortLinkCode(Uri uri) {
+    final segments = uri.pathSegments;
+    if (segments.length == 2 &&
+        segments[0] == 'chat' &&
+        segments[1].isNotEmpty) {
+      return segments[1];
+    }
+    return null;
   }
 
   /// Shared invite processing for links and the install referrer: avatar
@@ -448,13 +481,28 @@ class DeepLinkService extends GetxService {
     final inviterAvatarUrl =
         cachedAvatar.startsWith('https://') ? cachedAvatar : '';
 
-    return Uri.https('vant.chat', '/chat', {
+    final params = <String, String>{
       'device_id': deviceId,
       'user_name': friendlyName,
       if (inviterAvatarUrl.isNotEmpty) 'avatar_url': inviterAvatarUrl,
       if (influencerCode != null && influencerCode.isNotEmpty)
         'referral_code': influencerCode,
-    }).toString();
+    };
+
+    // Opaque short link (https://vant.chat/chat/<code>) keeps device_id and
+    // user_name out of the shared URL — Branch-style. Falls back to the
+    // verbose URL when the backend can't be reached.
+    try {
+      final shortUrl = await ApiService.to.createShortInviteLink(params);
+      if (shortUrl != null && shortUrl.isNotEmpty) {
+        debugPrint('🔗 Short invite link: $shortUrl');
+        return shortUrl;
+      }
+    } catch (e) {
+      debugPrint('⚠️ Short invite link failed, using verbose URL: $e');
+    }
+
+    return Uri.https('vant.chat', '/chat', params).toString();
   }
 
   /// Share app with the first-party link

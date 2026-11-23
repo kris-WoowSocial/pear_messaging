@@ -18,18 +18,30 @@ class ParsedInvite {
     this.userName,
     this.avatarUrl,
     this.referralCode,
-  }) : isLegacyLink = false;
+  })  : shortCode = null,
+        isLegacyLink = false;
   const ParsedInvite.legacyLink(this.deviceId)
       : userName = null,
         avatarUrl = null,
         referralCode = null,
+        shortCode = null,
         isLegacyLink = true;
+  const ParsedInvite.shortLink(this.shortCode)
+      : deviceId = null,
+        userName = null,
+        avatarUrl = null,
+        referralCode = null,
+        isLegacyLink = false;
 
   /// For [isLegacyLink] this holds the pasted URL instead of a device id.
   final String? deviceId;
   final String? userName;
   final String? avatarUrl;
   final String? referralCode;
+
+  /// Opaque `/chat/<code>` short link — must be resolved via
+  /// `ApiService.resolveShortInviteLink` before use.
+  final String? shortCode;
   final bool isLegacyLink;
 }
 
@@ -55,7 +67,19 @@ ParsedInvite? parseInviteLink(String input) {
     );
   }
 
+  // Opaque short link: https://vant.chat/chat/<code> — params are stored
+  // server-side; the caller resolves the code via the API.
   final host = uri.host.toLowerCase();
+  if ((uri.scheme == 'https' || uri.scheme == 'http') &&
+      (host == 'vant.chat' || host == 'www.vant.chat')) {
+    final segments = uri.pathSegments;
+    if (segments.length == 2 &&
+        segments[0] == 'chat' &&
+        segments[1].isNotEmpty) {
+      return ParsedInvite.shortLink(segments[1]);
+    }
+  }
+
   final isLegacyDomain =
       host == 'vantchatting.app.link' ||
       host == 'vantchatting-alternate.app.link' ||

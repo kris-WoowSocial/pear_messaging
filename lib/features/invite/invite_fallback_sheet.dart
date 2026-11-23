@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 
+import '../../core/services/api_service.dart';
 import '../../core/services/invite_link_parser.dart';
 import '../../core/services/invitation_storage_service.dart';
 import '../../features/chat_list/chat_list_controller.dart';
@@ -49,19 +50,41 @@ class InviteFallbackSheet {
               submitting = true;
             });
             try {
-              if (parsed.referralCode != null &&
+              // Opaque /chat/<code> short link — params live server-side.
+              String? deviceId = parsed.deviceId;
+              String? userName = parsed.userName;
+              String? avatarUrl = parsed.avatarUrl;
+              String? referralCode = parsed.referralCode;
+              if (parsed.shortCode != null) {
+                final payload = await ApiService.to
+                    .resolveShortInviteLink(parsed.shortCode!);
+                if (payload == null ||
+                    (payload['device_id'] as String?) == null) {
+                  setState(() {
+                    submitting = false;
+                    errorText =
+                        'That invite link could not be resolved. Ask your contact for a new link.';
+                  });
+                  return;
+                }
+                deviceId = payload['device_id'] as String;
+                userName = payload['user_name'] as String?;
+                avatarUrl = payload['avatar_url'] as String?;
+                referralCode = payload['referral_code'] as String?;
+              }
+              if (referralCode != null &&
                   Get.isRegistered<InvitationStorageService>()) {
                 await Get.find<InvitationStorageService>()
                     .storeReferralContext(
-                  inviterDeviceId: parsed.deviceId!,
-                  influencerCode: parsed.referralCode,
+                  inviterDeviceId: deviceId!,
+                  influencerCode: referralCode,
                 );
               }
               Get.back();
               await Get.find<ChatListController>().initializeChatFromQR(
-                parsed.deviceId!,
-                userName: parsed.userName,
-                avatarUrl: parsed.avatarUrl,
+                deviceId!,
+                userName: userName,
+                avatarUrl: avatarUrl,
               );
             } catch (e) {
               setState(() {
