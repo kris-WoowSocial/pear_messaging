@@ -14,6 +14,7 @@ import '../../core/services/socket_service.dart';
 import '../../core/services/local_storage_service.dart';
 import '../../core/services/user_profile_cache.dart';
 import '../../core/services/call_history_service.dart';
+import '../../core/services/profile_avatar_service.dart';
 import '../../widgets/vant_avatar.dart';
 import '../call/call_controller.dart';
 import '../../core/utils/device_utils.dart';
@@ -33,76 +34,6 @@ class ChatListScreen extends GetView<ChatListController> {
     final storageService = Get.find<LocalStorageService>();
 
     return Scaffold(
-      appBar: AppBar(
-        backgroundColor: AppColors.surface,
-        toolbarHeight: 70,
-        leadingWidth: 70,
-        leading: GestureDetector(
-          onTap: () => _showSelfDestructSheet(context),
-          child: Container(
-            height: 70,
-            width: 70,
-            margin: EdgeInsets.all(5),
-            decoration: BoxDecoration(
-              color: AppColors.error,
-              border: Border.all(color: AppColors.textPrimary, width: 2),
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: Center(
-              child: const Text(
-                'Self\nDestruct\n1 Click',
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 11,
-                  fontWeight: FontWeight.w900,
-                ),
-              ),
-            ),
-          ),
-        ),
-        title: Column(
-          crossAxisAlignment: CrossAxisAlignment.center,
-          children: [
-            const SizedBox(height: 8),
-            const Text(
-              'Vant Chat',
-              style: TextStyle(
-                color: AppColors.textPrimary,
-                fontSize: 18,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-            const SizedBox(height: 2),
-            const Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(
-                  Icons.lock,
-                  color: Colors.black,
-                  size: 12,
-                ),
-                SizedBox(width: 4),
-                Text(
-                  'End-to-end encrypted',
-                  style: TextStyle(
-                    color: AppColors.textPrimary,
-                    fontSize: 12,
-                    fontWeight: FontWeight.w400,
-                  ),
-                ),
-              ],
-            ),
-          ],
-        ),
-        centerTitle: true,
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.settings, color: AppColors.textPrimary),
-            onPressed: () => Get.toNamed(AppRoutes.profile),
-          ),
-        ],
-      ),
       floatingActionButton: FloatingActionButton(
         onPressed: () => Get.toNamed(AppRoutes.createGroup),
         backgroundColor: AppColors.chatAction,
@@ -114,109 +45,152 @@ class ChatListScreen extends GetView<ChatListController> {
       ),
       body: Column(
         children: [
-          // Current user row with connection indicator
+          // White header card: paints behind the status bar, rounded
+          // bottom corners with a divider line on the bottom edge.
           Container(
-            decoration: BoxDecoration(
+            decoration: const BoxDecoration(
               color: AppColors.surface,
-              borderRadius: BorderRadius.only(
-                bottomLeft: Radius.circular(10),
-                bottomRight: Radius.circular(10),
+              borderRadius: BorderRadius.vertical(
+                bottom: Radius.circular(20),
+              ),
+              border: Border(
+                bottom: BorderSide(color: AppColors.divider),
               ),
             ),
-            child: Column(
+            child: SafeArea(
+              bottom: false,
+              child: Column(
               children: [
-                SizedBox(height: 10),
-                Container(height: 1, color: Colors.grey),
                 Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
-                  child: Row(
+                  padding: const EdgeInsets.fromLTRB(10, 8, 10, 0),
+                  child: Stack(
                     children: [
-                      // Avatar with pencil edit badge (opens photo options)
-                      // + connection dot moved to top-right so they never clash
-                      Obx(
-                        () => Stack(
-                          clipBehavior: Clip.none,
-                          children: [
-                            VantAvatar(
-                              userId: storageService.deviceId,
-                              name: controller.userDisplayName,
-                              avatarUrl:
-                                  Get.isRegistered<UserProfileCache>()
-                                      ? Get.find<UserProfileCache>()
-                                          .myAvatarUrl
-                                          .value
-                                      : '',
-                              size: 40,
-                              showEditBadge: true,
-                             
+                      // Self Destruct — top-left corner
+                      Positioned(
+                        left: 0,
+                        top: 0,
+                        child: GestureDetector(
+                          onTap: () => _showSelfDestructSheet(context),
+                          child: Container(
+                            height: 50,
+                            width: 50,
+                            decoration: BoxDecoration(
+                              color: AppColors.error,
+                              border: Border.all(
+                                color: AppColors.textPrimary,
+                                width: 1,
+                              ),
+                              borderRadius: BorderRadius.circular(8),
                             ),
-                            // Green dot for socket connection
-                            Positioned(
-                              bottom: -2,
-                              right: -2,
-                              child: Obx(
-                                () => Container(
-                                  width: 12,
-                                  height: 12,
-                                  decoration: BoxDecoration(
+                            child: const Center(
+                              child: Text(
+                                'Self\nDestruct\n1 Click',
+                                textAlign: TextAlign.center,
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.w900,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                      // Avatar + name centered
+                      Center(
+                        child: Column(
+                          children: [
+                            // Green ring = live socket-connection indicator
+                            Obx(
+                              () => Container(
+                                padding: const EdgeInsets.all(3),
+                                decoration: BoxDecoration(
+                                  shape: BoxShape.circle,
+                                  border: Border.all(
                                     color: socketService.isConnected.value
                                         ? Colors.green
                                         : Colors.grey,
-                                    shape: BoxShape.circle,
-                                    border: Border.all(
-                                      color: AppColors.surface,
-                                      width: 2,
-                                    ),
+                                    width: 2,
                                   ),
                                 ),
+                                child: VantAvatar(
+                                  userId: storageService.deviceId,
+                                  name: controller.userDisplayName,
+                                  avatarUrl:
+                                      Get.isRegistered<UserProfileCache>()
+                                          ? Get.find<UserProfileCache>()
+                                              .myAvatarUrl
+                                              .value
+                                          : '',
+                                  size: 40,
+                                  showEditBadge: true,
+                                  onTap: () =>
+                                      Get.isRegistered<ProfileAvatarService>()
+                                          ? Get.find<ProfileAvatarService>()
+                                              .showAvatarOptions()
+                                          : Get.toNamed(AppRoutes.profile),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(height: 6),
+                            _buildNameRow(),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const Divider(
+                  height: 1,
+                  thickness: 1,
+                  color: AppColors.divider,
+                ),
+                // Title row: brand left, encryption label centered, settings right
+                Row(
+                  children: [
+                    const SizedBox(width: 16),
+                    const Text(
+                      'Vant Chat',
+                      style: TextStyle(
+                        color: AppColors.textPrimary,
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const Expanded(
+                      child: Center(
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              Icons.lock,
+                              color: Colors.black,
+                              size: 12,
+                            ),
+                            SizedBox(width: 4),
+                            Text(
+                              'End-to-end encrypted',
+                              style: TextStyle(
+                                color: AppColors.textPrimary,
+                                fontSize: 12,
+                                fontWeight: FontWeight.w400,
                               ),
                             ),
                           ],
                         ),
                       ),
-                      const SizedBox(width: 12),
-                      // User name - editable inline
-                      Expanded(
-                        child:  Text(
-                                  controller.userDisplayName,
-                                  style: const TextStyle(
-                                    color: AppColors.textPrimary,
-                                    fontSize: 16,
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                        
+                    ),
+                    IconButton(
+                      icon: const Icon(
+                        Icons.settings,
+                        color: AppColors.textPrimary,
                       ),
-                      // Edit/Save icon
-                 
-                    ],
-                  ),
+                      onPressed: () => Get.toNamed(AppRoutes.profile),
+                    ),
+                  ],
                 ),
-                SizedBox(height: 10),
+                const SizedBox(height: 10),
               ],
-            ),
-          ),
-
-          // Search bar
-          Container(
-            padding: const EdgeInsets.all(AppSizes.paddingM),
-            color: AppColors.primary,
-            child: TextField(
-              controller: controller.searchController,
-              onChanged: controller.searchChats,
-              decoration: InputDecoration(
-                hintText: AppStrings.searchChats,
-                prefixIcon: const Icon(
-                  Icons.search,
-                  color: AppColors.textPrimary,
-                ),
-                filled: true,
-                fillColor: AppColors.background,
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(AppSizes.radiusM),
-                  borderSide: BorderSide.none,
-                ),
               ),
             ),
           ),
@@ -228,8 +202,13 @@ class ChatListScreen extends GetView<ChatListController> {
               final hasConnectionRequests =
                   controller.pendingConnectionRequests.isNotEmpty;
               final showLockedRow = controller.hasLockedChats;
-              final hasItems =
-                  hasChats || hasConnectionRequests || showLockedRow;
+              // Search only exists once the user actually has chats —
+              // keys off the unfiltered list so it can't vanish mid-query.
+              final showSearch = controller.chats.isNotEmpty;
+              final hasItems = hasChats ||
+                  hasConnectionRequests ||
+                  showLockedRow ||
+                  showSearch;
 
               if (!hasItems) {
                 return EmptyState(
@@ -254,10 +233,16 @@ class ChatListScreen extends GetView<ChatListController> {
               );
 
               return ListView.builder(
-                itemCount: (showLockedRow ? 1 : 0) +
+                itemCount: (showSearch ? 1 : 0) +
+                    (showLockedRow ? 1 : 0) +
                     controller.pendingConnectionRequests.length +
                     controller.filteredChats.length,
                 itemBuilder: (context, index) {
+                  // Search is list item 0 — scrolls up with the chats.
+                  if (showSearch) {
+                    if (index == 0) return _buildSearchBar();
+                    index -= 1;
+                  }
                   // "Locked chats" entry row pinned above everything else
                   if (showLockedRow) {
                     if (index == 0) {
@@ -304,6 +289,101 @@ class ChatListScreen extends GetView<ChatListController> {
         ],
       ),
     );
+  }
+
+  /// Search field — lives on the green background as the first list item
+  /// so it scrolls away with the chats instead of staying pinned.
+  Widget _buildSearchBar() {
+    return Padding(
+      padding: const EdgeInsets.all(AppSizes.paddingM),
+      child: TextField(
+        controller: controller.searchController,
+        onChanged: controller.searchChats,
+        decoration: InputDecoration(
+          hintText: AppStrings.searchChats,
+          prefixIcon: const Icon(
+            Icons.search,
+            color: AppColors.textPrimary,
+          ),
+          filled: true,
+          fillColor: AppColors.background,
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(24),
+            borderSide: BorderSide.none,
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Centered display name with inline pencil edit (toggles a TextField
+  /// with save/cancel icons while editing).
+  Widget _buildNameRow() {
+    return Obx(() {
+      if (controller.isEditingName.value) {
+        return Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            SizedBox(
+              width: 180,
+              child: TextField(
+                controller: controller.userNameController,
+                autofocus: true,
+                style: const TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w600,
+                  color: AppColors.textPrimary,
+                ),
+                decoration: const InputDecoration(
+                  isDense: true,
+                  contentPadding: EdgeInsets.symmetric(vertical: 6),
+                ),
+                onSubmitted: (_) => controller.saveUserName(),
+              ),
+            ),
+            IconButton(
+              visualDensity: VisualDensity.compact,
+              icon: const Icon(Icons.check, color: Colors.green, size: 20),
+              onPressed: () => controller.saveUserName(),
+            ),
+            IconButton(
+              visualDensity: VisualDensity.compact,
+              icon: const Icon(Icons.close, size: 20),
+              onPressed: controller.cancelEditingName,
+            ),
+          ],
+        );
+      }
+      return Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Flexible(
+            child: Text(
+              controller.userDisplayName,
+              style: const TextStyle(
+                color: AppColors.textPrimary,
+                fontSize: 16,
+                fontWeight: FontWeight.w600,
+              ),
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          const SizedBox(width: 4),
+          InkWell(
+            onTap: controller.startEditingName,
+            borderRadius: BorderRadius.circular(12),
+            child: const Padding(
+              padding: EdgeInsets.all(4),
+              child: Icon(
+                Icons.edit,
+                size: 16,
+                color: AppColors.textPrimary,
+              ),
+            ),
+          ),
+        ],
+      );
+    });
   }
 
   /// "Locked chats" row pinned at the top of the list — biometric gate
