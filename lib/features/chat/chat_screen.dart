@@ -88,7 +88,7 @@ class ChatScreen extends GetView<ChatController> {
                             borderRadius: 18,
                           ),
                         ),
-                        const SizedBox(width: 10),
+                        const SizedBox(width: 5),
                         Expanded(
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
@@ -166,32 +166,48 @@ class ChatScreen extends GetView<ChatController> {
                     ),
                   ),
                   if (!controller.isGroup)
-                    IconButton(
-                      icon: const Icon(Icons.call, color: Colors.black),
-                      onPressed: () {
+                    // IconButton(
+                    //   icon: const Icon(Icons.call, color: Colors.black),
+                    //   onPressed: () {
+                    //     debugPrint('📞 Call button pressed');
+                    //     _startAudioCall();
+                    //   },
+                    //   tooltip: 'Audio Call',
+                    // ),
+                    InkWell(
+                      onTap: () {
                         debugPrint('📞 Call button pressed');
                         _startAudioCall();
                       },
-                      tooltip: 'Audio Call',
+                      child: SizedBox(
+                        height: 50,
+                        width: 40,
+                        child: const Icon(Icons.call_outlined, color: Colors.black,size: 28,),
+                      ),
                     ),
                   if (!controller.isGroup &&
                       Get.isRegistered<FeatureFlagService>())
                     Obx(
                       () => Get.find<FeatureFlagService>().videoCalling.value
-                          ? IconButton(
-                              icon: const Icon(Icons.videocam,
-                                  color: Colors.black),
-                              onPressed: () {
+                      
+                            ? InkWell(
+                              onTap: () {
                                 debugPrint('📞 Video call button pressed');
                                 _startVideoCall();
                               },
-                              tooltip: 'Video Call',
+                              child: SizedBox(
+                                height: 50,
+                                width: 40,
+                                child: Icon(Icons.video_call_outlined,
+                                        color: Colors.black, size: 28),
+                              ),
                             )
                           : const SizedBox.shrink(),
                     ),
-                  IconButton(
-                    icon: const Icon(Icons.settings, color: Colors.black),
-                    onPressed: () {
+
+                 
+                  InkWell(
+                    onTap: () {
                       debugPrint('🔧 DEBUG: settings button pressed');
                       if (controller.isGroup) {
                         Get.to(() => const GroupSettingsScreen());
@@ -199,8 +215,11 @@ class ChatScreen extends GetView<ChatController> {
                         Get.to(() => const ChatSettingsScreen());
                       }
                     },
-                    tooltip:
-                        controller.isGroup ? 'Group Settings' : 'Chat Settings',
+                    child: SizedBox(
+                      height: 50,
+                      width: 40,
+                      child: const Icon(Icons.more_vert_rounded, color: Colors.black, size: 26),
+                    ),
                   ),
                 ]),
               ),
