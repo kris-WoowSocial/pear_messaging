@@ -433,6 +433,8 @@ class ChatController extends GetxController with WidgetsBindingObserver {
   Function(Map<String, dynamic>)? _previousGroupMessageHandler;
   Function(Map<String, dynamic>)? _previousGroupTypingHandler;
   Function(Map<String, dynamic>)? _previousReactionHandler;
+  Function(Map<String, dynamic>)? _previousMessageDeletedHandler;
+  Function(Map<String, dynamic>)? _previousMessageEditedHandler;
   Function(Map<String, dynamic>)? _previousDisappearHandler;
   Function(Map<String, dynamic>)? _previousViewOnceHandler;
   Function(Map<String, dynamic>)? _previousTypingHandler;
@@ -641,6 +643,10 @@ class ChatController extends GetxController with WidgetsBindingObserver {
     _previousMessageHandler = _socketService.onMessageReceived;
     _previousReactionHandler = _socketService.onMessageReaction;
     _socketService.onMessageReaction = _handleIncomingReaction;
+    _previousMessageDeletedHandler = _socketService.onMessageDeleted;
+    _socketService.onMessageDeleted = _handleIncomingDeleted;
+    _previousMessageEditedHandler = _socketService.onMessageEdited;
+    _socketService.onMessageEdited = _handleIncomingEdited;
     _previousDisappearHandler = _socketService.onDisappearTimerSet;
     _socketService.onDisappearTimerSet = _handleDisappearTimerSet;
     _previousViewOnceHandler = _socketService.onViewOnceOpened;
@@ -656,6 +662,7 @@ class ChatController extends GetxController with WidgetsBindingObserver {
         _setupPresenceListeners();
         // Flush any messages that were queued while the socket was offline
         _flushOutbox();
+        _flushControlOutbox();
         // Safety net: refresh from storage after reconnect to catch any messages
         // that arrived via FCM or other paths while socket was disconnected.
         // Delay allows pending_messages to arrive and be processed first.
@@ -1334,6 +1341,12 @@ class ChatController extends GetxController with WidgetsBindingObserver {
   void sendMessage() {
     final text = messageController.text.trim();
     if (text.isEmpty) return;
+
+    // Edit mode: sendMessage() doubles as the edit-submit path.
+    if (editingMessage.value != null) {
+      submitEdit();
+      return;
+    }
 
     // Prevent sending if blocked (1-on-1 only)
     if (!isGroup && isBlocked.value) {
@@ -2549,6 +2562,8 @@ class ChatController extends GetxController with WidgetsBindingObserver {
       _socketService.onMessageReceived = _previousMessageHandler;
     }
     _socketService.onMessageReaction = _previousReactionHandler;
+    _socketService.onMessageDeleted = _previousMessageDeletedHandler;
+    _socketService.onMessageEdited = _previousMessageEditedHandler;
     _socketService.onDisappearTimerSet = _previousDisappearHandler;
     _socketService.onViewOnceOpened = _previousViewOnceHandler;
     _socketService.onTyping = _previousTypingHandler;
@@ -3057,6 +3072,364 @@ class ChatController extends GetxController with WidgetsBindingObserver {
       messages[listIdx] = ChatMessageModel.fromEntity(_allMessageEntities[idx]);
     }
     await _storageService.setMessageReactions(messageId, reactions);
+  }
+
+  // ---------- Delete for everyone / Edit sent messages ----------
+
+  /// The message currently being edited, or null — drives the composer's
+  /// "Edit message" preview bar and routes [sendMessage] into [submitEdit].
+  final Rx<ChatMessageModel?> editingMessage = Rx<ChatMessageModel?>(null);
+
+  /// Whether `msg` may still be edited (WhatsApp's 15-minute window, own
+  /// non-deleted plain-text messages only).
+  bool canEditMessage(ChatMessageModel msg) {
+    return msg.isMe &&
+        !msg.isDeletedForEveryone &&
+        msg.type == MessageType.text &&
+        DateTime.now().difference(msg.timestamp) <
+            const Duration(minutes: 15);
+  }
+
+  /// Enter edit mode — the composer pre-fills with the current text and an
+  /// "Edit message" bar replaces the reply preview.
+  void startEdit(ChatMessageModel msg) {
+    if (!canEditMessage(msg)) return;
+    editingMessage.value = msg;
+    messageController.text = msg.content;
+    messageController.selection = TextSelection.fromPosition(
+      TextPosition(offset: msg.content.length),
+    );
+  }
+
+  /// Leave edit mode without sending — clears the pre-filled text.
+  void cancelEdit() {
+    if (editingMessage.value != null) {
+      messageController.clear();
+      editingMessage.value = null;
+    }
+  }
+
+  /// Submit an edited message. Keeps the same messageId and original
+  /// timestamp; re-encrypts for the socket; marks the entity `isEdited`.
+  void submitEdit() {
+    final msg = editingMessage.value;
+    final newText = messageController.text.trim();
+    if (msg == null || newText.isEmpty) return;
+    if (!canEditMessage(msg)) {
+      cancelEdit();
+      return;
+    }
+    if (newText == msg.content) {
+      cancelEdit();
+      return;
+    }
+
+    final editedAt = DateTime.now().toUtc();
+    final idx = _allMessageEntities.indexWhere((m) => m.id == msg.id);
+    if (idx >= 0) {
+      _allMessageEntities[idx] = _allMessageEntities[idx].copyWith(
+        content: newText,
+        isEdited: true,
+        editedAt: editedAt,
+      );
+      final listIdx = messages.indexWhere((m) => m.id == msg.id);
+      if (listIdx >= 0) {
+        messages[listIdx] =
+            ChatMessageModel.fromEntity(_allMessageEntities[idx]);
+      }
+    }
+    unawaited(_storageService.setMessageEdited(msg.id, newText, editedAt));
+
+    // Keep the chat-list preview in sync when the edited message is the
+    // chat's last message.
+    if (messages.isNotEmpty && messages.last.id == msg.id) {
+      _updateChatListLastMessage(newText, msg.timestamp);
+    }
+
+    final encrypted = EncryptionService.encryptMessage(newText);
+    final payload = <String, dynamic>{
+      'eventType': 'edit_message',
+      'queueKey': 'edit:${msg.id}',
+      'messageId': msg.id,
+      'chatId': chatId,
+      if (isGroup) 'groupId': chatId,
+      'recipientId': recipientDeviceId,
+      'senderId': myDeviceId,
+      'encryptedText': encrypted,
+      'editedAt': editedAt.millisecondsSinceEpoch,
+    };
+    if (_socketService.isConnected.value) {
+      _socketService.sendEditMessage(
+        messageId: msg.id,
+        chatId: chatId,
+        recipientId: recipientDeviceId,
+        senderId: myDeviceId,
+        encryptedText: encrypted,
+        groupId: isGroup ? chatId : null,
+        editedAt: editedAt.millisecondsSinceEpoch,
+      );
+    } else {
+      unawaited(_storageService.enqueueControlEvent(payload));
+    }
+    cancelEdit();
+  }
+
+  /// Delete for everyone — tombstone locally right away (content/media/reply
+  /// stripped), then relay the event over the socket or queue it in the
+  /// persistent outbox while offline.
+  Future<void> deleteMessageForEveryone(String messageId) async {
+    final msg = messages.firstWhereOrNull((m) => m.id == messageId);
+    if (msg == null || !msg.isMe || msg.isDeletedForEveryone) return;
+
+    final deletedAt = DateTime.now().toUtc();
+    _applyTombstoneInMemory(messageId, deletedAt);
+    await _storageService.setMessageDeletedForEveryone(messageId, deletedAt);
+    await _updateChatListAfterDelete(msg, isMe: true);
+
+    final payload = <String, dynamic>{
+      'eventType': 'delete_message',
+      'queueKey': 'delete:$messageId',
+      'messageId': messageId,
+      'chatId': chatId,
+      if (isGroup) 'groupId': chatId,
+      'recipientId': recipientDeviceId,
+      'senderId': myDeviceId,
+      'deletedAt': deletedAt.millisecondsSinceEpoch,
+    };
+    if (_socketService.isConnected.value) {
+      _socketService.sendDeleteMessage(
+        messageId: messageId,
+        chatId: chatId,
+        recipientId: recipientDeviceId,
+        senderId: myDeviceId,
+        groupId: isGroup ? chatId : null,
+        deletedAt: deletedAt.millisecondsSinceEpoch,
+      );
+    } else {
+      await _storageService.enqueueControlEvent(payload);
+    }
+  }
+
+  /// Delete for me — hard-remove locally only; the peer keeps their copy.
+  Future<void> deleteMessageForMe(String messageId) async {
+    final idx = _allMessageEntities.indexWhere((m) => m.id == messageId);
+    final msg = idx >= 0 ? _allMessageEntities[idx] : null;
+    _allMessageEntities.removeWhere((m) => m.id == messageId);
+    messages.removeWhere((m) => m.id == messageId);
+    if (replyToMessage.value?.messageId == messageId) {
+      replyToMessage.value = null;
+    }
+    if (editingMessage.value?.id == messageId) cancelEdit();
+    await _storageService.deleteMessage(messageId);
+    if (msg != null) {
+      await _updateChatListAfterDelete(
+        ChatMessageModel.fromEntity(msg),
+        isMe: msg.isMe,
+      );
+    }
+  }
+
+  /// Shared tombstone write for in-memory state (entity + Rx list).
+  void _applyTombstoneInMemory(String messageId, DateTime deletedAt) {
+    final idx = _allMessageEntities.indexWhere((m) => m.id == messageId);
+    if (idx < 0) return;
+    _allMessageEntities[idx] =
+        _allMessageEntities[idx].toTombstone(deletedAt: deletedAt);
+    final listIdx = messages.indexWhere((m) => m.id == messageId);
+    if (listIdx >= 0) {
+      messages[listIdx] =
+          ChatMessageModel.fromEntity(_allMessageEntities[idx]);
+    }
+  }
+
+  /// Incoming `message_deleted` — sender tombstoned a message in this chat.
+  void _handleIncomingDeleted(Map<String, dynamic> data) {
+    final messageId = data['messageId'] as String?;
+    if (messageId == null) return;
+    final deletedAtMs = data['deletedAt'];
+    final deletedAt = deletedAtMs is int
+        ? DateTime.fromMillisecondsSinceEpoch(deletedAtMs, isUtc: true)
+        : DateTime.now().toUtc();
+    _applyTombstoneInMemory(messageId, deletedAt);
+    unawaited(() async {
+      await _storageService.setMessageDeletedForEveryone(
+          messageId, deletedAt);
+      final entityIdx =
+          _allMessageEntities.indexWhere((m) => m.id == messageId);
+      if (entityIdx >= 0) {
+        await _updateChatListAfterDelete(
+          ChatMessageModel.fromEntity(_allMessageEntities[entityIdx]),
+          isMe: false,
+        );
+      }
+    }());
+  }
+
+  /// Incoming `message_edited` — re-decrypt, mark Edited, refresh preview.
+  /// Silently ignored if the message was already deleted for everyone.
+  void _handleIncomingEdited(Map<String, dynamic> data) {
+    final messageId = data['messageId'] as String?;
+    final encryptedText = data['encryptedText'] as String?;
+    if (messageId == null || encryptedText == null) return;
+    final editedAtMs = data['editedAt'];
+    final editedAt = editedAtMs is int
+        ? DateTime.fromMillisecondsSinceEpoch(editedAtMs, isUtc: true)
+        : DateTime.now().toUtc();
+
+    final idx = _allMessageEntities.indexWhere((m) => m.id == messageId);
+    if (idx < 0) return;
+    if (_allMessageEntities[idx].isDeletedForEveryone) return;
+
+    String newText;
+    try {
+      newText = EncryptionService.decryptMessage(encryptedText);
+    } catch (_) {
+      newText = data['text'] as String? ?? '';
+    }
+    if (newText.isEmpty) return;
+
+    _allMessageEntities[idx] = _allMessageEntities[idx].copyWith(
+      content: newText,
+      isEdited: true,
+      editedAt: editedAt,
+    );
+    final listIdx = messages.indexWhere((m) => m.id == messageId);
+    if (listIdx >= 0) {
+      messages[listIdx] =
+          ChatMessageModel.fromEntity(_allMessageEntities[idx]);
+    }
+    unawaited(_storageService.setMessageEdited(messageId, newText, editedAt));
+    if (messages.isNotEmpty && messages.last.id == messageId) {
+      _updateChatListLastMessage(newText, _allMessageEntities[idx].timestamp);
+    }
+  }
+
+  /// Flush control events (delete-for-everyone / edit) queued while the
+  /// socket was offline — called on reconnect alongside [_flushOutbox].
+  Future<void> _flushControlOutbox() async {
+    final events = await _storageService.getControlOutboxEvents();
+    for (final event in events) {
+      if (_isDisposed || !_socketService.isConnected.value) return;
+      final type = event['eventType'];
+      final queueKey = event['queueKey'] as String? ??
+          '$type:${event['messageId']}';
+      try {
+        if (type == 'delete_message') {
+          _socketService.sendDeleteMessage(
+            messageId: event['messageId'],
+            chatId: event['chatId'] ?? chatId,
+            recipientId: event['recipientId'],
+            senderId: event['senderId'],
+            groupId: event['groupId'],
+            deletedAt: event['deletedAt'],
+          );
+        } else if (type == 'edit_message') {
+          _socketService.sendEditMessage(
+            messageId: event['messageId'],
+            chatId: event['chatId'] ?? chatId,
+            recipientId: event['recipientId'],
+            senderId: event['senderId'],
+            encryptedText: event['encryptedText'],
+            groupId: event['groupId'],
+            editedAt: event['editedAt'],
+          );
+        } else {
+          continue;
+        }
+        await _storageService.removeControlEvent(queueKey);
+      } catch (e) {
+        debugPrint('⚠️ Control outbox flush failed for $queueKey: $e');
+      }
+    }
+  }
+
+  /// Update the chat-list entry after a message in this chat was deleted.
+  /// `msg` is the (already tombstoned or pre-delete) message; `isMe`
+  /// controls which tombstone label the preview shows.
+  Future<void> _updateChatListAfterDelete(
+    ChatMessageModel msg, {
+    required bool isMe,
+  }) async {
+    final chatEntity = _storageService.getChat(chatId);
+    if (chatEntity == null) return;
+
+    final lastEntity =
+        _allMessageEntities.isNotEmpty ? _allMessageEntities.last : null;
+    final bool deletedWasLast = lastEntity == null ||
+        lastEntity.id == msg.id;
+    if (!deletedWasLast) return;
+
+    final String preview;
+    final DateTime previewTime;
+    if (lastEntity == null) {
+      // Delete-for-me removed the only message in the chat.
+      preview =
+          isMe ? 'You deleted this message' : 'This message was deleted';
+      previewTime = msg.timestamp;
+    } else if (lastEntity.isDeletedForEveryone) {
+      preview = lastEntity.isMe
+          ? 'You deleted this message'
+          : 'This message was deleted';
+      previewTime = lastEntity.timestamp;
+    } else {
+      preview = lastEntity.content;
+      previewTime = lastEntity.timestamp;
+    }
+
+    // Decrement unread when an unread incoming message was tombstoned.
+    int unreadDelta = 0;
+    if (!isMe &&
+        !msg.isMe &&
+        msg.status != MessageStatus.read &&
+        chatEntity.unreadCount > 0) {
+      unreadDelta = -1;
+    }
+
+    final updated = chatEntity.copyWith(
+      lastMessage: preview,
+      lastMessageTime: previewTime,
+      unreadCount: chatEntity.unreadCount + unreadDelta,
+    );
+    await _storageService.saveChat(updated);
+    _refreshChatListEntry(preview, previewTime, unreadDelta);
+  }
+
+  /// Keep the chat-list preview in sync after an edit of the last message.
+  void _updateChatListLastMessage(String text, DateTime timestamp) {
+    final chatEntity = _storageService.getChat(chatId);
+    if (chatEntity == null) return;
+    unawaited(_storageService.saveChat(chatEntity.copyWith(
+      lastMessage: text,
+      lastMessageTime: timestamp,
+    )));
+    _refreshChatListEntry(text, timestamp, 0);
+  }
+
+  /// Mirror a last-message change into the live chat list in place.
+  void _refreshChatListEntry(
+      String preview, DateTime time, int unreadDelta) {
+    try {
+      final clc = Get.find<ChatListController>();
+      final i = clc.chats.indexWhere((c) => c.id == chatId);
+      if (i == -1) return;
+      final old = clc.chats[i];
+      clc.chats.removeAt(i);
+      clc.chats.insert(
+        i,
+        ChatListModel(
+          id: old.id,
+          userName: old.userName,
+          lastMessage: preview,
+          lastMessageTime: time,
+          unreadCount: old.unreadCount + unreadDelta,
+          isGroup: old.isGroup,
+          isReply: old.isReply,
+          replyContent: old.replyContent,
+          avatarUrl: old.avatarUrl,
+          isLocked: old.isLocked,
+        ),
+      );
+    } catch (_) {}
   }
 
   // ---------- Disappearing messages ----------

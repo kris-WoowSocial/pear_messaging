@@ -1062,6 +1062,94 @@ class LocalStorageService extends GetxService {
     }
   }
 
+  /// Delete-for-everyone tombstone — identity + timestamp survive, every
+  /// content field (text, media, reply, file/audio metadata, reactions,
+  /// expiry, view-once) is stripped so nothing recoverable stays on disk.
+  /// The `saveMessage` write re-encrypts the (now empty) content blob.
+  Future<void> setMessageDeletedForEveryone(
+    String messageId,
+    DateTime deletedAt,
+  ) async {
+    final json = await getStoredMessageJson(messageId);
+    if (json == null) return;
+    json['content'] = '';
+    json['isDeletedForEveryone'] = true;
+    json['deletedAt'] = deletedAt.toUtc().toIso8601String();
+    json['mediaToken'] = null;
+    json['mediaExpiryTimestamp'] = null;
+    json['replyTo'] = null;
+    json['senderName'] = null;
+    json['fileName'] = null;
+    json['fileSize'] = null;
+    json['isCompressed'] = false;
+    json['audioDuration'] = null;
+    json['waveformData'] = null;
+    json['encryptedAudioData'] = null;
+    json['reactions'] = <String, String>{};
+    json['expiresAt'] = null;
+    json['isViewOnce'] = false;
+    await saveMessage(MessageEntity.fromJson(json));
+  }
+
+  /// Persist an edited message body — `content` arrives as plaintext and is
+  /// re-encrypted by `saveMessage`; `isEdited`/`editedAt` mark the bubble.
+  Future<void> setMessageEdited(
+    String messageId,
+    String newPlaintext,
+    DateTime editedAt,
+  ) async {
+    final json = await getStoredMessageJson(messageId);
+    if (json == null) return;
+    json['content'] = newPlaintext;
+    json['isEdited'] = true;
+    json['editedAt'] = editedAt.toUtc().toIso8601String();
+    await saveMessage(MessageEntity.fromJson(json));
+  }
+
+  /// Delete a single message locally (Delete for Me) and drop its index
+  /// entry so it no longer appears in this chat or any other.
+  Future<void> deleteMessage(String messageId) async {
+    await _ensureMessagesBoxOpen();
+    _chatMessageIndex.forEach((_, keys) => keys.remove(messageId));
+    await _messagesBox.delete(messageId);
+  }
+
+  /// Persistent outbox for control events (delete_for_everyone / edit) that
+  /// must survive an offline gap — the sender's device can't push the event
+  /// over the socket while disconnected, so it is queued here and flushed
+  /// when the socket reconnects (even across app restarts).
+  static const String _controlOutboxBoxName = 'control_outbox';
+
+  Future<Box> _ensureControlOutboxOpen() async {
+    if (Hive.isBoxOpen(_controlOutboxBoxName)) {
+      return Hive.box(_controlOutboxBoxName);
+    }
+    return Hive.openBox(_controlOutboxBoxName);
+  }
+
+  /// Append a control event to the persistent outbox. `event['eventType']`
+  /// is 'delete_message' | 'edit_message'; remaining keys form the payload.
+  Future<void> enqueueControlEvent(Map<String, dynamic> event) async {
+    final box = await _ensureControlOutboxOpen();
+    await box.put(event['queueKey'] ??
+        '${event['eventType']}:${event['messageId']}', event);
+  }
+
+  /// Read all queued control events in insertion order.
+  Future<List<Map<String, dynamic>>> getControlOutboxEvents() async {
+    final box = await _ensureControlOutboxOpen();
+    return box.values
+        .whereType<Map>()
+        .map((e) => Map<String, dynamic>.from(e))
+        .toList();
+  }
+
+  /// Remove a control event once it has been emitted successfully.
+  Future<void> removeControlEvent(String queueKey) async {
+    final box = await _ensureControlOutboxOpen();
+    await box.delete(queueKey);
+  }
+
   /// Check if a message with the given ID already exists in local storage
   bool messageExists(String messageId) {
     try {

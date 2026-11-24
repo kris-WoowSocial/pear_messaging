@@ -72,6 +72,16 @@ class MessageEntity {
   /// Set once the recipient has opened (and purged) a view-once item.
   final bool isViewOnceOpened;
 
+  /// Delete-for-everyone tombstone — content/media/reply are stripped at
+  /// write time; the bubble renders "… deleted this message" instead.
+  final bool isDeletedForEveryone;
+  final DateTime? deletedAt;
+
+  /// Edited-message marker — renders the muted "Edited" label next to the
+  /// timestamp. `editedAt` is the sender-stamped edit time.
+  final bool isEdited;
+  final DateTime? editedAt;
+
   MessageEntity({
     required this.id,
     required this.chatId,
@@ -98,6 +108,10 @@ class MessageEntity {
     this.expiresAt,
     this.isViewOnce = false,
     this.isViewOnceOpened = false,
+    this.isDeletedForEveryone = false,
+    this.deletedAt,
+    this.isEdited = false,
+    this.editedAt,
   });
 
   bool get isExpired =>
@@ -130,6 +144,10 @@ class MessageEntity {
       'expiresAt': expiresAt,
       'isViewOnce': isViewOnce,
       'isViewOnceOpened': isViewOnceOpened,
+      'isDeletedForEveryone': isDeletedForEveryone,
+      'deletedAt': deletedAt?.toIso8601String(),
+      'isEdited': isEdited,
+      'editedAt': editedAt?.toIso8601String(),
     };
   }
 
@@ -173,6 +191,14 @@ class MessageEntity {
       expiresAt: json['expiresAt'] as int?,
       isViewOnce: json['isViewOnce'] as bool? ?? false,
       isViewOnceOpened: json['isViewOnceOpened'] as bool? ?? false,
+      isDeletedForEveryone: json['isDeletedForEveryone'] as bool? ?? false,
+      deletedAt: json['deletedAt'] != null
+          ? DateTime.tryParse(json['deletedAt'] as String)
+          : null,
+      isEdited: json['isEdited'] as bool? ?? false,
+      editedAt: json['editedAt'] != null
+          ? DateTime.tryParse(json['editedAt'] as String)
+          : null,
     );
   }
 
@@ -202,6 +228,10 @@ class MessageEntity {
     int? expiresAt,
     bool? isViewOnce,
     bool? isViewOnceOpened,
+    bool? isDeletedForEveryone,
+    DateTime? deletedAt,
+    bool? isEdited,
+    DateTime? editedAt,
   }) {
     return MessageEntity(
       id: id ?? this.id,
@@ -229,6 +259,30 @@ class MessageEntity {
       expiresAt: expiresAt ?? this.expiresAt,
       isViewOnce: isViewOnce ?? this.isViewOnce,
       isViewOnceOpened: isViewOnceOpened ?? this.isViewOnceOpened,
+      isDeletedForEveryone:
+          isDeletedForEveryone ?? this.isDeletedForEveryone,
+      deletedAt: deletedAt ?? this.deletedAt,
+      isEdited: isEdited ?? this.isEdited,
+      editedAt: editedAt ?? this.editedAt,
+    );
+  }
+
+  /// Delete-for-everyone tombstone: identity + timing survive, every piece
+  /// of content (text, media, reply, file/audio metadata, reactions) is
+  /// stripped so nothing sensitive persists in the box or in memory.
+  MessageEntity toTombstone({DateTime? deletedAt}) {
+    return MessageEntity(
+      id: id,
+      chatId: chatId,
+      senderId: senderId,
+      receiverId: receiverId,
+      content: '',
+      timestamp: timestamp,
+      status: status,
+      type: type,
+      isMe: isMe,
+      isDeletedForEveryone: true,
+      deletedAt: deletedAt ?? DateTime.now().toUtc(),
     );
   }
 }

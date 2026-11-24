@@ -25,6 +25,10 @@ class ChatMessageModel {
   final int? expiresAt;
   final bool isViewOnce;
   final bool isViewOnceOpened;
+  final bool isDeletedForEveryone;
+  final DateTime? deletedAt;
+  final bool isEdited;
+  final DateTime? editedAt;
 
   ChatMessageModel({
     required this.id,
@@ -50,6 +54,10 @@ class ChatMessageModel {
     this.expiresAt,
     this.isViewOnce = false,
     this.isViewOnceOpened = false,
+    this.isDeletedForEveryone = false,
+    this.deletedAt,
+    this.isEdited = false,
+    this.editedAt,
   });
 
   /// Check if message is an image
@@ -103,6 +111,10 @@ class ChatMessageModel {
     int? expiresAt,
     bool? isViewOnce,
     bool? isViewOnceOpened,
+    bool? isDeletedForEveryone,
+    DateTime? deletedAt,
+    bool? isEdited,
+    DateTime? editedAt,
   }) {
     return ChatMessageModel(
       id: id ?? this.id,
@@ -128,6 +140,11 @@ class ChatMessageModel {
       expiresAt: expiresAt ?? this.expiresAt,
       isViewOnce: isViewOnce ?? this.isViewOnce,
       isViewOnceOpened: isViewOnceOpened ?? this.isViewOnceOpened,
+      isDeletedForEveryone:
+          isDeletedForEveryone ?? this.isDeletedForEveryone,
+      deletedAt: deletedAt ?? this.deletedAt,
+      isEdited: isEdited ?? this.isEdited,
+      editedAt: editedAt ?? this.editedAt,
     );
   }
 
@@ -156,6 +173,10 @@ class ChatMessageModel {
       expiresAt: entity.expiresAt,
       isViewOnce: entity.isViewOnce,
       isViewOnceOpened: entity.isViewOnceOpened,
+      isDeletedForEveryone: entity.isDeletedForEveryone,
+      deletedAt: entity.deletedAt,
+      isEdited: entity.isEdited,
+      editedAt: entity.editedAt,
     );
   }
 }

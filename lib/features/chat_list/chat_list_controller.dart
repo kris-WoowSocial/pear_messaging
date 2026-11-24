@@ -15,6 +15,7 @@ import '../../core/services/socket_service.dart';
 import '../../core/services/user_profile_cache.dart';
 import '../../core/services/badge_service.dart';
 import '../../core/services/caller_name_resolver.dart';
+import '../../core/services/encryption_service.dart';
 import '../../core/services/invitation_storage_service.dart';
 import '../../core/services/local_auth_service.dart';
 import '../../core/services/username_service.dart';
@@ -124,6 +125,11 @@ class ChatListController extends GetxController {
   /// Chat-list preview text for a stored message — mirrors the display
   /// transforms applied when messages arrive.
   static String _previewTextForMessage(MessageEntity message) {
+    if (message.isDeletedForEveryone) {
+      return message.isMe
+          ? 'You deleted this message'
+          : 'This message was deleted';
+    }
     switch (message.type) {
       case MessageType.audio:
         return '🎤 Voice message';
@@ -385,6 +391,8 @@ class ChatListController extends GetxController {
     // Listen for incoming messages to create/update conversations
     _socketService.onMessageReceived = _handleIncomingMessage;
     _socketService.onMessageReaction = _handleIncomingReaction;
+    _socketService.onMessageDeleted = _handleIncomingDeleted;
+    _socketService.onMessageEdited = _handleIncomingEdited;
     _socketService.onDisappearTimerSet = _handleDisappearTimerSet;
     _socketService.onViewOnceOpened = _handleViewOnceOpened;
     _socketService.onPendingMessages = _handlePendingMessages;
@@ -436,6 +444,78 @@ class ChatListController extends GetxController {
     final messageId = data['messageId'] as String?;
     if (messageId == null) return;
     unawaited(_storageService.setMessageViewOnceOpened(messageId));
+  }
+
+  /// Incoming `message_deleted` while no chat screen is open — tombstone the
+  /// stored message and refresh the chat's preview/unread badge. The
+  /// open-chat variant lives in ChatController (handler swap), so the two
+  /// never run together.
+  void _handleIncomingDeleted(Map<String, dynamic> data) {
+    final messageId = data['messageId'] as String?;
+    if (messageId == null) return;
+    final deletedAtMs = data['deletedAt'];
+    final deletedAt = deletedAtMs is int
+        ? DateTime.fromMillisecondsSinceEpoch(deletedAtMs, isUtc: true)
+        : DateTime.now().toUtc();
+    unawaited(() async {
+      final chatId =
+          (await _storageService.getStoredMessageJson(messageId))?['chatId']
+              as String?;
+      await _storageService.setMessageDeletedForEveryone(
+          messageId, deletedAt);
+      if (chatId != null) {
+        await _refreshChatPreview(chatId);
+      }
+    }());
+  }
+
+  /// Incoming `message_edited` while no chat screen is open — decrypt the
+  /// new text, mark the entity Edited, refresh the preview. Ignored when the
+  /// message was already tombstoned.
+  void _handleIncomingEdited(Map<String, dynamic> data) {
+    final messageId = data['messageId'] as String?;
+    final encryptedText = data['encryptedText'] as String?;
+    if (messageId == null || encryptedText == null) return;
+    final editedAtMs = data['editedAt'];
+    final editedAt = editedAtMs is int
+        ? DateTime.fromMillisecondsSinceEpoch(editedAtMs, isUtc: true)
+        : DateTime.now().toUtc();
+    unawaited(() async {
+      final json = await _storageService.getStoredMessageJson(messageId);
+      if (json == null) return;
+      if (json['isDeletedForEveryone'] == true) return;
+      String newText;
+      try {
+        newText = EncryptionService.decryptMessage(encryptedText);
+      } catch (_) {
+        newText = data['text'] as String? ?? '';
+      }
+      if (newText.isEmpty) return;
+      await _storageService.setMessageEdited(messageId, newText, editedAt);
+      final chatId = json['chatId'] as String?;
+      if (chatId != null) {
+        await _refreshChatPreview(chatId);
+      }
+    }());
+  }
+
+  /// Recompute one chat's lastMessage/lastMessageTime/unreadCount from the
+  /// real stored history after a delete/edit control event, then reload.
+  Future<void> _refreshChatPreview(String chatId) async {
+    final chat = _storageService.getChat(chatId);
+    if (chat == null) return;
+    final messages = await _storageService.getChatMessages(chatId);
+    if (messages.isEmpty) return;
+    final latest = messages.last;
+    final unread = messages
+        .where((m) => !m.isMe && m.status != MessageStatus.read)
+        .length;
+    await _storageService.saveChat(chat.copyWith(
+      lastMessage: _previewTextForMessage(latest),
+      lastMessageTime: latest.timestamp,
+      unreadCount: unread,
+    ));
+    loadChats();
   }
 
   void _handleDisappearTimerSet(Map<String, dynamic> data) {
@@ -874,6 +954,29 @@ class ChatListController extends GetxController {
     for (final message in messages) {
       final messageId = message['messageId'];
       if (messageId == null) continue;
+
+      // Control events (delete-for-everyone / edit) reference an EXISTING
+      // messageId, so route them before the dedup check — otherwise they
+      // would be dropped as "already in Hive". They get no delivery ack.
+      final eventType = message['eventType'];
+      if (eventType == 'message_deleted') {
+        final handler = _socketService.onMessageDeleted;
+        if (handler != null) {
+          handler(message);
+        } else {
+          _handleIncomingDeleted(message);
+        }
+        continue;
+      }
+      if (eventType == 'message_edited') {
+        final handler = _socketService.onMessageEdited;
+        if (handler != null) {
+          handler(message);
+        } else {
+          _handleIncomingEdited(message);
+        }
+        continue;
+      }
 
       // Always collect for delivery acknowledgment — FCM may have saved the
       // message while offline but never sent message_ack, so the sender never

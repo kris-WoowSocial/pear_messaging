@@ -75,6 +75,8 @@ class SocketService extends GetxService {
   Function(Map<String, dynamic>)? onCalleeConnecting;
   Function(Map<String, dynamic>)? onCallStatusResponse;
   Function(Map<String, dynamic>)? onMessageReaction;
+  Function(Map<String, dynamic>)? onMessageDeleted;
+  Function(Map<String, dynamic>)? onMessageEdited;
   Function(Map<String, dynamic>)? onDisappearTimerSet;
   Function(Map<String, dynamic>)? onViewOnceOpened;
   Function(Map<String, dynamic>)? onProfileUpdated;
@@ -701,6 +703,22 @@ class SocketService extends GetxService {
       debugPrint('👍 Message reaction: $data');
       if (onMessageReaction != null && data != null) {
         onMessageReaction!(Map<String, dynamic>.from(data));
+      }
+    });
+
+    // Chat: sender deleted a message for everyone — apply tombstone
+    _socket?.on('message_deleted', (data) {
+      debugPrint('🗑️ Message deleted: $data');
+      if (onMessageDeleted != null && data != null) {
+        onMessageDeleted!(Map<String, dynamic>.from(data));
+      }
+    });
+
+    // Chat: sender edited a message — apply new text + "Edited" label
+    _socket?.on('message_edited', (data) {
+      debugPrint('✏️ Message edited: $data');
+      if (onMessageEdited != null && data != null) {
+        onMessageEdited!(Map<String, dynamic>.from(data));
       }
     });
 
@@ -1967,6 +1985,58 @@ class SocketService extends GetxService {
       'recipientId': recipientId,
       'emoji': emoji,
       'action': action,
+    });
+  }
+
+  /// Delete a message for everyone — server tombstones it on the peer's
+  /// device (and queues the event if they are offline).
+  void sendDeleteMessage({
+    required String messageId,
+    required String chatId,
+    required String recipientId,
+    required String senderId,
+    String? groupId,
+    int? deletedAt,
+  }) {
+    if (!isConnected.value) {
+      debugPrint('❌ Cannot send delete_message: not connected');
+      return;
+    }
+    _socket?.emit('delete_message', {
+      'messageId': messageId,
+      'chatId': chatId,
+      if (groupId != null) 'groupId': groupId,
+      'recipientId': recipientId,
+      'senderId': senderId,
+      'deletedAt': deletedAt ?? DateTime.now().millisecondsSinceEpoch,
+    });
+  }
+
+  /// Edit a sent message — server validates the 15-minute window, relays the
+  /// updated text to the peer (or queues it while they are offline).
+  void sendEditMessage({
+    required String messageId,
+    required String chatId,
+    required String recipientId,
+    required String senderId,
+    required String encryptedText,
+    required int editedAt,
+    String? groupId,
+    String? text,
+  }) {
+    if (!isConnected.value) {
+      debugPrint('❌ Cannot send edit_message: not connected');
+      return;
+    }
+    _socket?.emit('edit_message', {
+      'messageId': messageId,
+      'chatId': chatId,
+      if (groupId != null) 'groupId': groupId,
+      'recipientId': recipientId,
+      'senderId': senderId,
+      'encryptedText': encryptedText,
+      if (text != null) 'text': text,
+      'editedAt': editedAt,
     });
   }
 
