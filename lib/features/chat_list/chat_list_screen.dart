@@ -64,6 +64,7 @@ class ChatListScreen extends GetView<ChatListController> {
                 Padding(
                   padding: const EdgeInsets.fromLTRB(10, 8, 10, 0),
                   child: Stack(
+                    alignment: Alignment.center,
                     children: [
                       // Self Destruct — top-left corner
                       Positioned(
@@ -72,8 +73,8 @@ class ChatListScreen extends GetView<ChatListController> {
                         child: GestureDetector(
                           onTap: () => _showSelfDestructSheet(context),
                           child: Container(
-                            height: 50,
-                            width: 50,
+                            height: 55,
+                            width: 60,
                             decoration: BoxDecoration(
                               color: AppColors.error,
                               border: Border.all(
@@ -103,7 +104,6 @@ class ChatListScreen extends GetView<ChatListController> {
                             // Green ring = live socket-connection indicator
                             Obx(
                               () => Container(
-                                padding: const EdgeInsets.all(3),
                                 decoration: BoxDecoration(
                                   shape: BoxShape.circle,
                                   border: Border.all(
@@ -122,7 +122,8 @@ class ChatListScreen extends GetView<ChatListController> {
                                               .myAvatarUrl
                                               .value
                                           : '',
-                                  size: 40,
+                                  size: 45,
+                                  borderRadius: 25,
                                   showEditBadge: true,
                                   onTap: () =>
                                       Get.isRegistered<ProfileAvatarService>()
@@ -146,50 +147,51 @@ class ChatListScreen extends GetView<ChatListController> {
                   color: AppColors.divider,
                 ),
                 // Title row: brand left, encryption label centered, settings right
-                Row(
+                Stack(
+                  alignment: Alignment.center,
                   children: [
-                    const SizedBox(width: 16),
-                    const Text(
-                      'Vant Chat',
-                      style: TextStyle(
-                        color: AppColors.textPrimary,
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                    const Expanded(
-                      child: Center(
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(
-                              Icons.lock,
-                              color: Colors.black,
-                              size: 12,
-                            ),
-                            SizedBox(width: 4),
-                            Text(
-                              'End-to-end encrypted',
-                              style: TextStyle(
-                                color: AppColors.textPrimary,
-                                fontSize: 12,
-                                fontWeight: FontWeight.w400,
-                              ),
-                            ),
-                          ],
+                    Positioned(
+                      left: 16,
+                      child: const Text(
+                        'Vant Chat',
+                        style: TextStyle(
+                          color: AppColors.textPrimary,
+                          fontSize: 18,
+                          fontWeight: FontWeight.w700,
                         ),
                       ),
                     ),
-                    IconButton(
-                      icon: const Icon(
-                        Icons.settings,
-                        color: AppColors.textPrimary,
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          Icons.lock,
+                          color: Colors.black,
+                          size: 14,
+                        ),
+                        SizedBox(width: 4),
+                        Text(
+                          'End-to-end encrypted',
+                          style: TextStyle(
+                            color: AppColors.textPrimary,
+                            fontSize: 14,
+                            fontWeight: FontWeight.w400,
+                          ),
+                        ),
+                      ],
+                    ),
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: IconButton(
+                        icon: const Icon(
+                          Icons.settings,
+                          color: AppColors.textPrimary,
+                        ),
+                        onPressed: () => Get.toNamed(AppRoutes.profile),
                       ),
-                      onPressed: () => Get.toNamed(AppRoutes.profile),
                     ),
                   ],
                 ),
-                const SizedBox(height: 10),
               ],
               ),
             ),
@@ -337,7 +339,7 @@ class ChatListScreen extends GetView<ChatListController> {
                 ),
                 decoration: const InputDecoration(
                   isDense: true,
-                  contentPadding: EdgeInsets.symmetric(vertical: 6),
+                  contentPadding: EdgeInsets.symmetric(vertical: 4,horizontal: 10),
                 ),
                 onSubmitted: (_) => controller.saveUserName(),
               ),
