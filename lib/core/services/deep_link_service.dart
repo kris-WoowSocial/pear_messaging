@@ -74,13 +74,10 @@ class DeepLinkService extends GetxService {
         debugPrint('⚠️ getInitialLink failed: $e');
       }
 
-      // Android deferred attribution: a fresh install that arrived via an
-      // invite link's Play Store redirect carries the invite params in the
-      // install referrer. One-time check — flag persisted so retries don't
-      // re-trigger invite processing on later launches.
-      if (Platform.isAndroid) {
-        await _checkInstallReferrer();
-      }
+      // Android deferred attribution + the iOS server-claim path do NOT run
+      // here — they must fire after onboarding registers this device's ID.
+      // ChatListController.onInit calls
+      // checkDeferredDeepLinkOnFirstLaunch() once the app is fully up.
 
       // Recovery pass: if a link raced ahead of the navigator it was stored
       // as a pending invitation — process it once the app is fully up.
@@ -121,32 +118,138 @@ class DeepLinkService extends GetxService {
     }
   }
 
-  /// First launch on Android: read the Play Install Referrer and feed any
-  /// invite params into the cold-start flow.
-  Future<void> _checkInstallReferrer() async {
-    if (_storageService.hasCheckedInstallReferrer) return;
-    await _storageService.setHasCheckedInstallReferrer(true);
+  /// Parse a Play Install Referrer string into query params. Google Play
+  /// may hand the string back still percent-encoded — decode up to two
+  /// passes until a `key=value&` structure emerges.
+  static Map<String, String> parseInstallReferrerParams(String? referrer) {
+    var s = (referrer ?? '').trim();
+    if (s.isEmpty) return const {};
+    for (var i = 0; i < 2; i++) {
+      if (!s.contains('%')) break;
+      try {
+        final decoded = Uri.decodeComponent(s);
+        if (decoded == s) break;
+        s = decoded;
+      } catch (_) {
+        break;
+      }
+    }
+    return Uri.parse('https://vant.chat/x?$s').queryParameters;
+  }
+
+  /// First-launch deferred intake — runs ONCE per fresh install, called by
+  /// ChatListController.onInit after onboarding has registered deviceId.
+  ///
+  /// Android: Play Install Referrer → `click_id` hydrates the full invite
+  ///   profile via /api/deeplink/click (device_id alone is the offline
+  ///   fallback).
+  /// iOS: the App Store strips all URL params → POST /api/deeplink/
+  ///   claim-deferred matches the most recent click on this client IP.
+  /// Android also falls through to the server claim when the referrer was
+  /// organic or hydration failed.
+  Future<void> checkDeferredDeepLinkOnFirstLaunch() async {
+    // Legacy installs already consumed their referrer — mark done, don't
+    // reopen a stale invite on upgrade.
+    if (_storageService.hasCheckedInstallReferrer) {
+      await _storageService.setHasCheckedDeferredDeepLink(true);
+      return;
+    }
+    if (_storageService.hasCheckedDeferredDeepLink) return;
+
+    // Registration isn't done yet — leave the flag unset so the next
+    // ChatListController init retries.
+    final myDeviceId = _storageService.deviceId;
+    if (myDeviceId == null || myDeviceId.isEmpty) {
+      debugPrint('🔗 Deferred deep-link check skipped: no deviceId yet');
+      return;
+    }
+
+    await _storageService.setHasCheckedDeferredDeepLink(true);
+
+    var handled = false;
+    if (Platform.isAndroid) {
+      handled = await _claimAndroidInstallReferrer(myDeviceId);
+    }
+    if (!handled) {
+      await _claimServerDeferred(
+        platform: Platform.isIOS ? 'ios' : 'android',
+        myDeviceId: myDeviceId,
+      );
+    }
+  }
+
+  /// Android deferred attribution. Returns true when an invite was found
+  /// and handed to the normal invite pipeline.
+  Future<bool> _claimAndroidInstallReferrer(String myDeviceId) async {
     try {
-      final details = await AndroidPlayInstallReferrer.installReferrer;
+      final details = await AndroidPlayInstallReferrer.installReferrer
+          .timeout(const Duration(seconds: 4));
       final referrer = details.installReferrer;
-      if (referrer == null || referrer.isEmpty) return;
+      if (referrer == null || referrer.isEmpty) return false;
 
       debugPrint('🔗 Install referrer: $referrer');
-      final params = Uri.parse('https://vant.chat/x?$referrer').queryParameters;
-      final deviceId =
+      final params = parseInstallReferrerParams(referrer);
+      String? deviceId =
           params['device_id']?.trim() ?? params['chat_device_id']?.trim();
-      if (deviceId == null || deviceId.isEmpty) return;
+      String? userName = params['user_name'];
+      String? avatarUrl = params['avatar_url'];
+      String? referralCode = params['referral_code'];
 
+      // Compact referrer → hydrate the full invite profile server-side.
+      final clickId = params['click_id'];
+      if (clickId != null && clickId.isNotEmpty) {
+        final payload = await ApiService.to.getDeferredClick(clickId);
+        if (payload != null) {
+          deviceId = (payload['device_id'] as String?)?.trim() ?? deviceId;
+          userName ??= payload['user_name'] as String?;
+          avatarUrl ??= payload['avatar_url'] as String?;
+          referralCode ??= payload['referral_code'] as String?;
+        }
+      }
+
+      if (deviceId == null || deviceId.isEmpty || deviceId == myDeviceId) {
+        return false;
+      }
       await _processInviteParams(
         deviceId: deviceId,
-        userName: params['user_name'],
-        avatarUrl: params['avatar_url'],
-        referralCode: params['referral_code'],
-        isColdStart: true,
+        userName: userName,
+        avatarUrl: avatarUrl,
+        referralCode: referralCode,
+        isColdStart: false,
+      );
+      return true;
+    } catch (e) {
+      // No Play Services / no referrer — normal for side-loads; the server
+      // claim below still gets a shot.
+      debugPrint('⚠️ Install referrer unavailable: $e');
+      return false;
+    }
+  }
+
+  /// Server-side deferred claim (iOS path / Android fallback).
+  Future<void> _claimServerDeferred({
+    required String platform,
+    required String myDeviceId,
+  }) async {
+    try {
+      final payload = await ApiService.to.claimDeferredDeepLink(
+        platform: platform,
+        timezone: DateTime.now().timeZoneName,
+      );
+      if (payload == null) return;
+      final deviceId = (payload['device_id'] as String?)?.trim();
+      if (deviceId == null || deviceId.isEmpty || deviceId == myDeviceId) {
+        return;
+      }
+      await _processInviteParams(
+        deviceId: deviceId,
+        userName: payload['user_name'] as String?,
+        avatarUrl: payload['avatar_url'] as String?,
+        referralCode: payload['referral_code'] as String?,
+        isColdStart: false,
       );
     } catch (e) {
-      // No Play Services / no referrer — normal for side-loads and iOS-parity.
-      debugPrint('⚠️ Install referrer unavailable: $e');
+      debugPrint('⚠️ Deferred claim failed: $e');
     }
   }
 
@@ -360,6 +463,9 @@ class DeepLinkService extends GetxService {
       debugPrint('🔗 Already in chat screen, skipping deep link navigation');
       return;
     }
+    // Deferred claims fire while the chat list is the current route —
+    // still create the request + snackbar, just skip re-navigation.
+    final alreadyOnChatList = currentRoute == AppRoutes.chatList;
 
     isGloballyNavigating = true;
     lastGlobalDeviceId = deviceId;
@@ -385,7 +491,7 @@ class DeepLinkService extends GetxService {
         });
       } else if (hasExistingRequest) {
         debugPrint('📱 Connection request already pending for: $linkUserName');
-        Get.offAllNamed(AppRoutes.chatList);
+        if (!alreadyOnChatList) Get.offAllNamed(AppRoutes.chatList);
         try {
           Get.find<ChatListController>().loadConnectionRequests();
         } catch (e) {
@@ -417,7 +523,7 @@ class DeepLinkService extends GetxService {
           chatListController.pendingConnectionRequests.add(connectionRequest);
           chatListController.loadChats();
 
-          Get.offAllNamed(AppRoutes.chatList);
+          if (!alreadyOnChatList) Get.offAllNamed(AppRoutes.chatList);
           Get.snackbar(
             'Connection Request',
             'New connection request from $linkUserName',
@@ -427,7 +533,7 @@ class DeepLinkService extends GetxService {
           );
         } catch (e) {
           debugPrint('⚠️ Error creating connection request: $e');
-          Get.offAllNamed(AppRoutes.chatList);
+          if (!alreadyOnChatList) Get.offAllNamed(AppRoutes.chatList);
         }
       }
     } catch (e) {

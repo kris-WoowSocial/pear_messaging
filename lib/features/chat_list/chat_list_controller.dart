@@ -9,6 +9,7 @@ import 'package:uuid/uuid.dart';
 
 import '../../core/constants/app_colors.dart';
 import '../../core/constants/app_sizes.dart';
+import '../../core/services/deep_link_service.dart';
 import '../../core/services/local_storage_service.dart';
 import '../../core/services/membership_service.dart';
 import '../../core/services/socket_service.dart';
@@ -64,6 +65,16 @@ class ChatListController extends GetxController {
     loadChats(); // This calls loadConnectionRequests internally
     loadConnectionRequests(); // Explicitly load connection requests before checking pending invitation
     _checkPendingInvitation();
+    // Deferred deep-link intake: fresh installs arriving via a store click
+    // claim their invite here — AFTER onboarding has registered deviceId.
+    unawaited(() async {
+      try {
+        await Get.find<DeepLinkService>()
+            .checkDeferredDeepLinkOnFirstLaunch();
+      } catch (e) {
+        debugPrint('⚠️ Deferred deep-link check failed: $e');
+      }
+    }());
     _setupSocketListeners();
     // Disappearing messages: purge expired rows every minute. The box-level
     // sweep is idempotent — safe alongside ChatController's purge, which

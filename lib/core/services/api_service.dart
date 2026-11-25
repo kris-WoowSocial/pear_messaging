@@ -94,6 +94,42 @@ class ApiService extends GetxService {
     }
   }
 
+  /// Hydrate a deferred click the Play Install Referrer handed us
+  /// (`click_id=<id>&device_id=<id>`). Single-use server-side. Returns the
+  /// payload map (`device_id`, `user_name`, `avatar_url`, `referral_code`)
+  /// or null when the click is unknown/expired or the request fails.
+  Future<Map<String, dynamic>?> getDeferredClick(String clickId) async {
+    try {
+      final res = await _get('/api/deeplink/click/$clickId')
+          .timeout(const Duration(seconds: 4));
+      if (res.statusCode != 200) return null;
+      final data = jsonDecode(res.body) as Map<String, dynamic>;
+      return data['found'] == true ? data : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  /// iOS-style fallback claim: the App Store strips all URL params, so the
+  /// server matches the most recent unconsumed click on this client IP
+  /// (30-minute window, single-use).
+  Future<Map<String, dynamic>?> claimDeferredDeepLink({
+    required String platform,
+    String? timezone,
+  }) async {
+    try {
+      final res = await _post('/api/deeplink/claim-deferred', {
+        'platform': platform,
+        if (timezone != null && timezone.isNotEmpty) 'timezone': timezone,
+      }).timeout(const Duration(seconds: 4));
+      if (res.statusCode != 200) return null;
+      final data = jsonDecode(res.body) as Map<String, dynamic>;
+      return data['found'] == true ? data : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
   // ── Region ──────────────────────────────────────────────────────────────────
 
   Future<Map<String, dynamic>> detectRegion() async {

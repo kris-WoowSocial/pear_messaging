@@ -35,6 +35,8 @@ class LocalStorageService extends GetxService {
       'strict_account_settings';
   static const String _prefsInstallReferrerCheckedKey =
       'install_referrer_checked';
+  static const String _prefsDeferredDeepLinkCheckedKey =
+      'deferred_deeplink_checked';
   static const String _prefsSilenceUnknownCallersKey =
       'silence_unknown_callers';
 
@@ -257,6 +259,15 @@ class LocalStorageService extends GetxService {
 
   Future<void> setHasCheckedInstallReferrer(bool checked) async {
     await _prefs.setBool(_prefsInstallReferrerCheckedKey, checked);
+  }
+
+  /// One-shot flag for the post-registration deferred deep-link claim
+  /// (Play Install Referrer on Android, IP claim on iOS).
+  bool get hasCheckedDeferredDeepLink =>
+      _prefs.getBool(_prefsDeferredDeepLinkCheckedKey) ?? false;
+
+  Future<void> setHasCheckedDeferredDeepLink(bool checked) async {
+    await _prefs.setBool(_prefsDeferredDeepLinkCheckedKey, checked);
   }
 
   // "Known contacts" allowlist — the peers we treat as real connections for
