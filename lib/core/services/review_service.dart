@@ -193,7 +193,7 @@ class ReviewService extends GetxService {
   /// Open App Store listing directly using url_launcher
   Future<void> _openAppStoreListing() async {
     try {
-      const String appId = '6478718953'; // Your App Store ID
+      const String appId = NetworkConstants.iosAppStoreId;
       final Uri url = Uri.parse(
         '${NetworkConstants.appStoreReviewUrl}$appId?action=write-review',
       );

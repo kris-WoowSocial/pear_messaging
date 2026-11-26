@@ -122,8 +122,8 @@ class ChatListScreen extends GetView<ChatListController> {
                                               .myAvatarUrl
                                               .value
                                           : '',
-                                  size: 45,
-                                  borderRadius: 25,
+                                  size: 55,
+                                  borderRadius: 30,
                                   showEditBadge: true,
                                   onTap: () =>
                                       Get.isRegistered<ProfileAvatarService>()
@@ -236,6 +236,9 @@ class ChatListScreen extends GetView<ChatListController> {
               );
 
               return ListView.builder(
+                // The header card already consumed the status-bar inset —
+                // without this the list re-applies it as a green gap.
+                padding: EdgeInsets.zero,
                 itemCount: (showSearch ? 1 : 0) +
                     (showLockedRow ? 1 : 0) +
                     controller.pendingConnectionRequests.length +

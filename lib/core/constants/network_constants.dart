@@ -22,6 +22,8 @@ class NetworkConstants {
   static const String chatShareUrl = 'https://vant.chat/chat';
 
   // App Store URLs
+  static const String iosAppStoreId = '6758916131';
+  static const String androidPackageId = 'com.vant.chat';
   static const String appStoreReviewUrl = 'https://apps.apple.com/app/id';
   static const String appStoreLookupUrl = 'https://itunes.apple.com/lookup';
   static const String playStoreUrl =

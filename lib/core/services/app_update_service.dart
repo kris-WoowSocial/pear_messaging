@@ -17,6 +17,8 @@ class AppUpdateService extends GetxService {
 
   /// Initialize the service
   Future<AppUpdateService> init() async {
+    
+
     // Get actual installed version
     await _loadPackageInfo();
 
@@ -64,7 +66,6 @@ class AppUpdateService extends GetxService {
   Future<void> _checkPlayStoreUpdate() async {
     try {
       final appInfo = await InAppUpdate.checkForUpdate();
-
       if (appInfo.updateAvailability == UpdateAvailability.updateAvailable) {
         debugPrint('🔄 Update available - showing custom update dialog');
         updateAvailable.value = true;
@@ -138,8 +139,8 @@ class AppUpdateService extends GetxService {
   /// Show custom update dialog (eye-catching with animations)
   void _showCustomUpdateDialog() {
     Get.dialog(
-      WillPopScope(
-        onWillPop: () async => false, // Prevent dialog dismissal
+      PopScope(
+        onPopInvokedWithResult: (didPop, result) {}, // Prevent dialog dismissal
         child: Container(
           width: double.infinity,
           height: double.infinity,
@@ -177,7 +178,7 @@ class AppUpdateService extends GetxService {
                 70,
                 Colors.white.withOpacity(0.07),
               ),
-
+        
               SafeArea(
                 child: Column(
                   children: [
@@ -257,7 +258,7 @@ class AppUpdateService extends GetxService {
                         ],
                       ),
                     ),
-
+        
                     // Content section with slide-up animation
                     Expanded(
                       child: TweenAnimationBuilder(
@@ -283,10 +284,22 @@ class AppUpdateService extends GetxService {
                                 ],
                               ),
                               child: Padding(
-                                padding: EdgeInsets.all(16),
+                                padding: EdgeInsets.all(10),
                                 child: Column(
                                   crossAxisAlignment: CrossAxisAlignment.center,
                                   children: [
+                                    // Scrollable content — on small screens or
+                                    // large text scales the feature cards
+                                    // scroll instead of pushing the Update
+                                    // button off-screen.
+                                    Expanded(
+                                      child: SingleChildScrollView(
+                                        physics:
+                                            const BouncingScrollPhysics(),
+                                        child: Column(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.center,
+                                          children: [
                                     SizedBox(height: 20),
 
                                     // Pulsing title
@@ -302,7 +315,7 @@ class AppUpdateService extends GetxService {
                                           child: Text(
                                             '🚀 Time to Update!',
                                             style: TextStyle(
-                                              fontSize: 26,
+                                              fontSize: 24,
                                               fontWeight: FontWeight.bold,
                                               color: AppColors.textPrimary,
                                               height: 1.2,
@@ -319,7 +332,7 @@ class AppUpdateService extends GetxService {
                                     Text(
                                       'Experience the best with new features\nand performance improvements',
                                       style: TextStyle(
-                                        fontSize: 16,
+                                        fontSize: 14,
                                         color: AppColors.textSecondary,
                                         height: 1.4,
                                         decoration: TextDecoration.none,
@@ -327,7 +340,7 @@ class AppUpdateService extends GetxService {
                                       textAlign: TextAlign.center,
                                     ),
 
-                                    SizedBox(height: 32),
+                                    SizedBox(height: 28),
 
                                     // Animated feature items
                                     Row(
@@ -379,10 +392,15 @@ class AppUpdateService extends GetxService {
                                         ),
                                       ],
                                     ),
+                                          ],
+                                        ),
+                                      ),
+                                    ),
 
-                                    Spacer(),
+                                    SizedBox(height: 16),
 
-                                    // Animated update button
+                                    // Animated update button — pinned at the
+                                    // bottom of the card, above the nav bar.
                                     TweenAnimationBuilder(
                                       duration: Duration(milliseconds: 1800),
                                       tween: Tween<double>(begin: 0, end: 1),
@@ -581,13 +599,16 @@ class AppUpdateService extends GetxService {
       Uri url;
 
       if (Platform.isAndroid) {
-        final bundleId = _packageInfo?.packageName ?? 'com.vant.chat';
-        url = Uri.parse('${NetworkConstants.playStoreUrl}?id=$bundleId');
+        // Always the published listing id — dev builds carry a .dev suffix
+        // that has no Play Store page.
+        url = Uri.parse(
+            '${NetworkConstants.playStoreUrl}?id=${NetworkConstants.androidPackageId}&hl=en');
         debugPrint('🔄 Opening Play Store for update...');
       } else if (Platform.isIOS) {
-        final bundleId = _packageInfo?.packageName ?? 'com.vant.chat';
+        // App Store pages are addressed by the numeric App ID, never by
+        // the bundle identifier.
         url = Uri.parse(
-            '${NetworkConstants.appStoreReviewUrl}?bundleId=$bundleId');
+            '${NetworkConstants.appStoreReviewUrl}${NetworkConstants.iosAppStoreId}');
         debugPrint('🔄 Opening App Store for update...');
       } else {
         debugPrint('❌ Unsupported platform');

@@ -33,14 +33,25 @@ class CallHistoryScreen extends GetView<CallHistoryController> {
               ),
             ),
             SizedBox(height: 2),
-            Text(
-              'Voice and video calls with end-to-end encryption when both contacts have verified keys.',
-              style: TextStyle(
-                color: AppColors.textPrimary,
-                fontSize: 10,
-                fontWeight: FontWeight.w400,
-              ),
-            ),
+           Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          Icons.lock,
+                          color: Colors.black,
+                          size: 14,
+                        ),
+                        SizedBox(width: 4),
+                        Text(
+                          'End-to-end encrypted',
+                          style: TextStyle(
+                            color: AppColors.textPrimary,
+                            fontSize: 14,
+                            fontWeight: FontWeight.w400,
+                          ),
+                        ),
+                      ],
+                    ),
           ],
         ),
         centerTitle: true,
