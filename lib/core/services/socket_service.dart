@@ -1150,9 +1150,19 @@ class SocketService extends GetxService {
         debugPrint('📤 Sealed message sent: $messageId to $recipientDeviceId');
         return true;
       }
-      // Sealing failed (session unavailable) — fall through to legacy so the
-      // message is never silently dropped.
-      debugPrint('⚠️ Seal failed for $recipientDeviceId — legacy send');
+      // Sealing failed for a peer who HAS advertised E2EE — silently
+      // falling back to legacy XOR would be a downgrade attack surface
+      // (a relay stripping announcements could push us to plaintext).
+      // Fail the send and warn instead; the user can retry.
+      debugPrint('⚠️ Seal failed for E2EE-capable peer $recipientDeviceId');
+      Get.snackbar(
+        'Encryption unavailable',
+        'Could not establish a secure channel with this contact. '
+            'The message was not sent.',
+        snackPosition: SnackPosition.TOP,
+        duration: const Duration(seconds: 4),
+      );
+      return false;
     }
 
     // ✅ Encrypt content using EncryptionService
@@ -1797,10 +1807,16 @@ class SocketService extends GetxService {
     ));
   }
 
-  /// Send a connection request to another device
+  /// Send a connection request to another device.
+  ///
+  /// Carries NO message body: first-contact requests predate any sealed
+  /// session, so a greeting could only ride the legacy XOR codec — a
+  /// plaintext-equivalent channel we've eliminated on the send side. Chat
+  /// messages unlock once the peer accepts and v3s:/v2s: keys are
+  /// exchanged. The receiver still decodes `encryptedPayload` read-only for
+  /// requests from older store clients.
   Future<bool> sendConnectionRequest(
     String targetDeviceId, {
-    String? messageContent,
     String? senderName,
     String? senderAvatarUrl,
   }) async {
@@ -1811,12 +1827,6 @@ class SocketService extends GetxService {
 
     final requestId = 'req_${DateTime.now().millisecondsSinceEpoch}';
     final timestamp = DateTime.now().millisecondsSinceEpoch;
-
-    // Encrypt message content if provided
-    String? encryptedContent;
-    if (messageContent != null && messageContent.isNotEmpty) {
-      encryptedContent = EncryptionService.encryptMessage(messageContent);
-    }
 
     final requestData = {
       'requestId': requestId,
@@ -1832,21 +1842,10 @@ class SocketService extends GetxService {
         'avatarUrl': senderAvatarUrl.trim(),
     };
 
-    // Add encrypted message content if provided. The notification body
-    // stays a generic label — plaintext never rides the wire or FCM.
-    if (encryptedContent != null) {
-      requestData['encryptedPayload'] = encryptedContent;
-      requestData['body'] = 'New connection request';
-    }
-
-    debugPrint('🤝 DEBUG: Emitting send_connection_request event');
-    debugPrint('🤝 DEBUG: Request data: $requestData');
-
     _socket?.emit('send_connection_request', requestData);
 
-    debugPrint('🤝 DEBUG: Connection request emitted successfully');
     debugPrint(
-      '🤝 Connection request sent: $requestId to $targetDeviceId with message: ${messageContent ?? "none"}',
+      '🤝 Connection request sent: $requestId to $targetDeviceId',
     );
     return true;
   }

@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:audio_session/audio_session.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
@@ -52,6 +53,13 @@ import 'core/services/callkit_service.dart';
 import 'features/call/call_controller.dart';
 
 void main() async {
+  // Release builds must never emit logcat/console output — decrypted
+  // messages, keys, tokens and device ids are logged all over the app via
+  // debugPrint. Neutering the global function disables every call site.
+  if (kReleaseMode) {
+    debugPrint = (String? message, {int? wrapWidth}) {};
+  }
+
   debugPrint('🚀 main() called - app starting fresh');
 
   // Initialize flavor config for dev

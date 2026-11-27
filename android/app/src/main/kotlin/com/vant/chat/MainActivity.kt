@@ -146,6 +146,10 @@ class MainActivity : FlutterFragmentActivity() {
         // Store the intent to handle later when Flutter engine is ready
         pendingIntent = intent
 
+        // Tapjacking defense: drop touches delivered while another app's
+        // overlay obscures this window (StrandHogg/overlay-attack class).
+        window.decorView.filterTouchesWhenObscured = true
+
         // Capture answer/decline notification actions (if any) before the engine is ready
         handleCallIntent(intent)
 

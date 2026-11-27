@@ -9,6 +9,7 @@ import 'local_storage_service.dart';
 import 'api_service.dart';
 import 'user_profile_cache.dart';
 import 'invitation_storage_service.dart';
+import '../utils/device_utils.dart';
 import '../../routes/app_routes.dart';
 import '../../storage/models/connection_request_entity.dart';
 import '../../storage/models/message_entity.dart';
@@ -356,6 +357,32 @@ class DeepLinkService extends GetxService {
     String? referralCode,
     required bool isColdStart,
   }) async {
+    // Strict input validation — deep-link params are attacker-controlled.
+    // A malformed device_id must never reach contact lists, connection
+    // requests, or cache keys; oversized display fields get dropped, not
+    // truncated into confusing output.
+    if (!DeviceUtils.isValidDeviceId(deviceId)) {
+      debugPrint('⚠️ Deep link rejected: invalid device_id format');
+      return;
+    }
+    if (userName != null &&
+        (userName.length > 60 || userName.contains(RegExp(r'[\x00-\x1f\x7f]')))
+    ) {
+      debugPrint('⚠️ Deep link: dropped malformed user_name');
+      userName = null;
+    }
+    if (avatarUrl != null &&
+        (avatarUrl.length > 500 || !avatarUrl.startsWith('https://'))) {
+      debugPrint('⚠️ Deep link: dropped non-https avatar_url');
+      avatarUrl = null;
+    }
+    if (referralCode != null &&
+        (referralCode.length > 64 ||
+            !RegExp(r'^[A-Za-z0-9_-]+$').hasMatch(referralCode))) {
+      debugPrint('⚠️ Deep link: dropped malformed referral_code');
+      referralCode = null;
+    }
+
     // Hydrate the inviter's avatar immediately — every surface renders it
     // before the chat even opens.
     if (avatarUrl != null &&

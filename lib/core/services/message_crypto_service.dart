@@ -571,6 +571,10 @@ class RatchetCore {
       if (w.brck == null) return null; // restored state without boot chain
       w.teb ??= eph;
       w.te ??= eph;
+      // Skip bound — the counter is attacker-controlled and this loop runs
+      // before AEAD verification. An unbounded claim (n=999999) would burn
+      // ~1M HMACs per forged frame: CPU exhaustion via one packet.
+      if (n - w.brn > maxSkippedKeys) return null;
       while (w.brn < n) {
         _cacheSkipped(w, ephStr, w.brn, await _mac(w.brck!, 0x01));
         w.brck = await _mac(w.brck!, 0x02);

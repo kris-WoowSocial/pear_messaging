@@ -37,8 +37,11 @@ android {
     defaultConfig {
         applicationId = "com.vant.chat"
         
-        // 3. Increased minSdk to 24 for Play automatic protection compatibility
-        minSdk = 24 
+        // minSdk 24 (Android 7): keeps the Play-update channel open for
+        // Android 7–10 devices. StrandHogg/task-hijacking is instead
+        // mitigated in the manifest via empty taskAffinity + singleTask/
+        // singleInstance launch modes on all activities.
+        minSdk = 24
         
         // 4. Target SDK should match or be lower than compileSdk
         targetSdk = 36 
@@ -76,6 +79,7 @@ android {
         release {
             signingConfig = signingConfigs.getByName("release")
             isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"

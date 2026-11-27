@@ -3,7 +3,7 @@ import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:firebase_messaging/firebase_messaging.dart';
-import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:get/get.dart';
 import 'package:hive_flutter/hive_flutter.dart';
@@ -182,6 +182,11 @@ Future<void> checkPendingNotificationNavigation() async {
 /// the message is persisted to local storage before the user even opens the app.
 @pragma('vm:entry-point')
 Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
+  // This runs in its own isolate — the main-isolate debugPrint neuter
+  // doesn't reach here, so suppress release logging locally.
+  if (kReleaseMode) {
+    debugPrint = (String? message, {int? wrapWidth}) {};
+  }
   debugPrint('📱 Background FCM message received: ${message.data}');
   debugPrint('📱 Message notification: ${message.notification}');
   debugPrint('📱 Platform: ${Platform.isIOS ? "iOS" : "Android"}');

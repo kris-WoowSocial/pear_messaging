@@ -155,16 +155,15 @@ class ConnectionRequestService extends GetxService {
         _handleConnectionRequestResponse;
   }
 
-  /// Send a connection request to another device
+  /// Send a connection request to another device. Carries no message body —
+  /// chat unlocks after acceptance + sealed-session bootstrap.
   Future<void> sendConnectionRequest(
-    String targetDeviceId, {
-    String? messageContent,
-  }) async {
+    String targetDeviceId,
+  ) async {
     final myDeviceId = _storageService.deviceId;
     debugPrint('🚀 SENDER LOG: sendConnectionRequest called');
     debugPrint('  - myDeviceId (sender): $myDeviceId');
     debugPrint('  - targetDeviceId (recipient): $targetDeviceId');
-    debugPrint('  - messageContent: $messageContent');
 
     if (myDeviceId == null) {
       debugPrint('❌ Cannot send connection request: Device ID is null');
@@ -203,10 +202,10 @@ class ConnectionRequestService extends GetxService {
       return;
     }
 
-    // Send connection request via socket with message content
+    // Send connection request via socket (no body — sealed session isn't
+    // bootstrapped until the peer accepts).
     final success = await _socketService.sendConnectionRequest(
       targetDeviceId,
-      messageContent: messageContent,
       senderName: _storageService.getDisplayName(myDeviceId),
       senderAvatarUrl: Get.isRegistered<UserProfileCache>()
           ? Get.find<UserProfileCache>().myAvatarUrl.value
@@ -293,7 +292,7 @@ class ConnectionRequestService extends GetxService {
     final encryptedPayload = data['encryptedPayload'] as String?;
     if (encryptedPayload != null && encryptedPayload.isNotEmpty) {
       messageContent = SocketService.decryptMessage(encryptedPayload);
-      debugPrint('🔍 DEBUG: Decrypted message content: $messageContent');
+      debugPrint('🔍 Connection request carries an encrypted first message');
     }
 
     // Check if we already have a chat with this user

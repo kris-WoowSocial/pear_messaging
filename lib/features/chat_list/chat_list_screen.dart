@@ -507,6 +507,7 @@ class _SelfDestructSheetState extends State<_SelfDestructSheet> {
         'connection_requests',
         'call_history',
         'image_cache',
+        'peer_identities',
       ];
       for (final boxName in hiveBoxNames) {
         try {
@@ -535,17 +536,54 @@ class _SelfDestructSheetState extends State<_SelfDestructSheet> {
         debugPrint('⚠️ Failed to delete secure images: $e');
       }
 
-      // 4. Delete all encryption keys from Flutter Secure Storage
+      // 4. Delete all encryption keys from Flutter Secure Storage.
+      // Every keychain service the app uses must be wiped — iOS scopes
+      // deleteAll() to accountName, so each store is cleared explicitly:
+      // identity keys (X25519/Ed25519/ML-KEM-768), peer-pin cipher key,
+      // ratchet sessions, group sender keys, and the media-encryption
+      // master key. Missing one would leave keys behind after "wipe".
       debugPrint('🗑️ Clearing Flutter Secure Storage...');
-      try {
-        const secureStorage = FlutterSecureStorage(
+      const secureStores = [
+        FlutterSecureStorage(
           aOptions: AndroidOptions(encryptedSharedPreferences: true),
           iOptions: IOSOptions(accountName: 'PearMessagingSecureKey'),
-        );
-        await secureStorage.deleteAll();
-        debugPrint('✅ Flutter Secure Storage cleared');
+        ),
+        FlutterSecureStorage(
+          aOptions: AndroidOptions(encryptedSharedPreferences: true),
+          iOptions: IOSOptions(accountName: 'VantIdentityKeys'),
+        ),
+        FlutterSecureStorage(
+          aOptions: AndroidOptions(encryptedSharedPreferences: true),
+          iOptions: IOSOptions(accountName: 'VantPeerIdentityKeys'),
+        ),
+        FlutterSecureStorage(
+          aOptions: AndroidOptions(encryptedSharedPreferences: true),
+          iOptions: IOSOptions(accountName: 'VantRatchetStore'),
+        ),
+        FlutterSecureStorage(
+          aOptions: AndroidOptions(encryptedSharedPreferences: true),
+          iOptions: IOSOptions(accountName: 'VantGroupKeyStore'),
+        ),
+      ];
+      for (final store in secureStores) {
+        try {
+          await store.deleteAll();
+        } catch (e) {
+          debugPrint('⚠️ Failed to clear a secure store: $e');
+        }
+      }
+      debugPrint('✅ Flutter Secure Storage cleared');
+
+      // 4b. Decrypted media temp files (FILE:/AUDIO: downloads) live in the
+      // system temp dir — wipe them too.
+      try {
+        final tempDir = await getTemporaryDirectory();
+        if (await tempDir.exists()) {
+          await tempDir.delete(recursive: true);
+          debugPrint('✅ Temp directory wiped');
+        }
       } catch (e) {
-        debugPrint('⚠️ Failed to clear secure storage: $e');
+        debugPrint('⚠️ Failed to wipe temp dir: $e');
       }
 
       // 5. Close all Hive boxes and delete Hive data from disk

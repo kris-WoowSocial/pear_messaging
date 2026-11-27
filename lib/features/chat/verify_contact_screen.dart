@@ -1,6 +1,8 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:get/get.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:qr_flutter/qr_flutter.dart';
@@ -30,9 +32,18 @@ class _VerifyContactScreenState extends State<VerifyContactScreen> {
   Timer? _rotateTimer;
   bool _scanned = false;
 
+  // The QR + safety digits are identity-proof material — screenshots and
+  // screen recording are blocked while this screen is visible.
+  static const _securityChannel = MethodChannel('com.vant.chat/security');
+
   @override
   void initState() {
     super.initState();
+    if (Platform.isAndroid) {
+      _securityChannel
+          .invokeMethod('setSecureFlag', {'enable': true})
+          .catchError((_) {});
+    }
     _service.openVerification(widget.peerId);
     // Keep the QR secret fresh while the screen is open.
     _rotateTimer = Timer.periodic(const Duration(seconds: 5), (_) {
@@ -47,6 +58,11 @@ class _VerifyContactScreenState extends State<VerifyContactScreen> {
 
   @override
   void dispose() {
+    if (Platform.isAndroid) {
+      _securityChannel
+          .invokeMethod('setSecureFlag', {'enable': false})
+          .catchError((_) {});
+    }
     _rotateTimer?.cancel();
     _scanner.dispose();
     _service.closeVerification();

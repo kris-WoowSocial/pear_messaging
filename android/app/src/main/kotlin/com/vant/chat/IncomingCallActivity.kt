@@ -45,6 +45,9 @@ class IncomingCallActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         activeInstance = WeakReference(this)
         setupLockScreen()
+        // Tapjacking defense on answer/decline: reject touches that arrive
+        // while a hostile overlay obscures this window.
+        window.decorView.filterTouchesWhenObscured = true
         setContentView(R.layout.activity_incoming_call)
         readExtras()
         bindViews()
