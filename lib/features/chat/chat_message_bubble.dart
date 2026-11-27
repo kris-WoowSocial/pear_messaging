@@ -287,10 +287,11 @@ class _ChatMessageBubbleState extends State<ChatMessageBubble> {
         // Check if it's a horizontal swipe
         if (details.velocity.pixelsPerSecond.dx.abs() > 300) {
           // Swipe right for received messages, swipe left for sent messages
-          if ((widget.message.isMe &&
-                  details.velocity.pixelsPerSecond.dx < -300) ||
-              (!widget.message.isMe &&
-                  details.velocity.pixelsPerSecond.dx > 300)) {
+          if (!widget.message.isDeletedForEveryone &&
+              ((widget.message.isMe &&
+                      details.velocity.pixelsPerSecond.dx < -300) ||
+                  (!widget.message.isMe &&
+                      details.velocity.pixelsPerSecond.dx > 300))) {
             try {
               final chatController = Get.find<ChatController>();
               chatController.startReply(widget.message);
@@ -461,6 +462,9 @@ class _ChatMessageBubbleState extends State<ChatMessageBubble> {
                     ),
                     const SizedBox(width: 3),
                   ],
+                  if (widget.message.isEdited &&
+                      !widget.message.isDeletedForEveryone)
+                    _buildEditedLabel(),
                   Text(
                     TimeUtils.formatMessageTime(widget.message.timestamp),
                     style: TextStyle(
@@ -475,7 +479,8 @@ class _ChatMessageBubbleState extends State<ChatMessageBubble> {
                     _buildStatusIcon(widget.message.status),
                   ],
                   // Reply icon (not on call cards — there's nothing to quote)
-                  if (!widget.message.isCall)
+                  if (!widget.message.isCall &&
+                      !widget.message.isDeletedForEveryone)
                     GestureDetector(
                       onTap: () {
                         try {
@@ -554,6 +559,9 @@ class _ChatMessageBubbleState extends State<ChatMessageBubble> {
                       ),
                       const SizedBox(width: 3),
                     ],
+                    if (widget.message.isEdited &&
+                        !widget.message.isDeletedForEveryone)
+                      _buildEditedLabel(),
                     Text(
                       TimeUtils.formatMessageTime(widget.message.timestamp),
                       style: TextStyle(
@@ -568,7 +576,8 @@ class _ChatMessageBubbleState extends State<ChatMessageBubble> {
                       _buildStatusIcon(widget.message.status),
                     ],
                     // Reply icon (not on call cards — there's nothing to quote)
-                    if (!widget.message.isCall)
+                    if (!widget.message.isCall &&
+                        !widget.message.isDeletedForEveryone)
                       GestureDetector(
                         onTap: () {
                           try {
@@ -598,7 +607,54 @@ class _ChatMessageBubbleState extends State<ChatMessageBubble> {
     );
   }
 
+  /// WhatsApp-style tombstone — muted italic text with a ban icon that
+  /// replaces every content path (text/media/reply/reactions are already
+  /// stripped from the entity).
+  Widget _buildTombstone() {
+    final muted = Colors.grey.shade600;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(Icons.block, size: 15, color: muted),
+        const SizedBox(width: 5),
+        Flexible(
+          child: Text(
+            widget.message.isMe
+                ? 'You deleted this message'
+                : 'This message was deleted',
+            style: TextStyle(
+              color: muted,
+              fontSize: AppSizes.fontM,
+              fontStyle: FontStyle.italic,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// Muted "Edited" label that sits left of the timestamp (WhatsApp style).
+  Widget _buildEditedLabel() {
+    return Padding(
+      padding: const EdgeInsets.only(right: 3),
+      child: Text(
+        'Edited',
+        style: TextStyle(
+          color: widget.message.isMe
+              ? Colors.black.withValues(alpha: 0.4)
+              : Colors.black.withValues(alpha: 0.45),
+          fontSize: AppSizes.fontXS,
+        ),
+      ),
+    );
+  }
+
   Widget _buildMessageContent() {
+    // Delete-for-everyone tombstone — no media, reply, link or reactions UI.
+    if (widget.message.isDeletedForEveryone) {
+      return _buildTombstone();
+    }
+
     // Check if this is a call log card
     if (widget.message.isCall) {
       return _buildCallCard();
@@ -2262,8 +2318,53 @@ class _ChatMessageBubbleState extends State<ChatMessageBubble> {
     );
   }
 
+  /// Resolve the owning ChatController if the chat screen is mounted —
+  /// delete/edit actions need it; reactions/reply tolerate its absence.
+  ChatController? _tryFindChatController() {
+    try {
+      return Get.find<ChatController>();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// WhatsApp-style confirm for the irreversible "Delete for Everyone".
+  void _confirmDeleteForEveryone(BuildContext context) {
+    final controller = _tryFindChatController();
+    if (controller == null) return;
+    Get.dialog(
+      AlertDialog(
+        title: const Text('Delete message?'),
+        content: const Text(
+          'This message will be deleted for everyone in this chat.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Get.back(),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () {
+              Get.back();
+              controller.deleteMessageForEveryone(widget.message.id);
+            },
+            child: const Text(
+              'Delete for Everyone',
+              style: TextStyle(color: Colors.red),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   void _showMessageOptions(BuildContext context, bool hasLinks) {
     final links = _extractLinks(widget.message.content);
+    final isDeleted = widget.message.isDeletedForEveryone;
+    final chatController = _tryFindChatController();
+    final canEdit = !isDeleted &&
+        chatController != null &&
+        chatController.canEditMessage(widget.message);
 
     Get.bottomSheet(
       Container(
@@ -2278,7 +2379,8 @@ class _ChatMessageBubbleState extends State<ChatMessageBubble> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               // Emoji reaction bar (WhatsApp-style)
-              if (!widget.message.isCall &&
+              if (!isDeleted &&
+                  !widget.message.isCall &&
                   widget.message.type != MessageType.system) ...[
                 Center(child: _buildReactionBar()),
                 const SizedBox(height: 16),
@@ -2308,7 +2410,7 @@ class _ChatMessageBubbleState extends State<ChatMessageBubble> {
               // const SizedBox(height: 20),
 
               // Reply button - not on call cards (nothing meaningful to quote)
-              if (!widget.message.isCall) ...[
+              if (!isDeleted && !widget.message.isCall) ...[
                 SizedBox(
                   width: double.infinity,
                   child: ElevatedButton.icon(
@@ -2343,8 +2445,8 @@ class _ChatMessageBubbleState extends State<ChatMessageBubble> {
                 const SizedBox(height: 12),
               ],
 
-              // Action buttons
-              if (hasLinks && links.isNotEmpty) ...[
+              // Action buttons — hidden once the message is tombstoned
+              if (!isDeleted && hasLinks && links.isNotEmpty) ...[
                 // Link actions only
                 Row(
                   children: [
@@ -2381,7 +2483,7 @@ class _ChatMessageBubbleState extends State<ChatMessageBubble> {
                     ),
                   ],
                 ),
-              ] else ...[
+              ] else if (!isDeleted) ...[
                 // Text copy only (when no links)
                 SizedBox(
                   width: double.infinity,
@@ -2405,8 +2507,82 @@ class _ChatMessageBubbleState extends State<ChatMessageBubble> {
               ],
               const SizedBox(height: 8),
 
+              // Edit — own text messages inside the 15-minute window only
+              if (canEdit) ...[
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton.icon(
+                    onPressed: () {
+                      Get.back();
+                      chatController.startEdit(widget.message);
+                    },
+                    icon: const Icon(
+                      Icons.edit_outlined,
+                      size: 18,
+                      color: Colors.white,
+                    ),
+                    label: const Text('Edit'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppColors.primary,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 8),
+              ],
+
+              // Delete for Everyone — own, non-deleted messages only
+              if (widget.message.isMe && !isDeleted) ...[
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton.icon(
+                    onPressed: () {
+                      Get.back();
+                      _confirmDeleteForEveryone(context);
+                    },
+                    icon: const Icon(
+                      Icons.delete_forever_outlined,
+                      size: 18,
+                      color: Colors.white,
+                    ),
+                    label: const Text('Delete for Everyone'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.red.shade600,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 8),
+              ],
+
+              // Delete for Me — always available (including tombstones)
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton.icon(
+                  onPressed: () {
+                    Get.back();
+                    chatController
+                        ?.deleteMessageForMe(widget.message.id);
+                  },
+                  icon: const Icon(
+                    Icons.delete_outline,
+                    size: 18,
+                    color: Colors.red,
+                  ),
+                  label: const Text('Delete for Me'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.red.shade50,
+                    foregroundColor: Colors.red.shade700,
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                    elevation: 0,
+                  ),
+                ),
+              ),
+
               // Report message button
-              if (!widget.message.isMe) ...[
+              if (!isDeleted && !widget.message.isMe) ...[
                 const SizedBox(height: 4),
                 SizedBox(
                   width: double.infinity,

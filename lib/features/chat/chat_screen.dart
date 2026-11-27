@@ -12,6 +12,7 @@ import 'package:pear_messaging/core/widgets/url_preview_widget.dart';
 import 'package:pear_messaging/features/chat/chat_controller.dart';
 import 'package:pear_messaging/features/chat/chat_message_bubble.dart';
 import 'package:pear_messaging/features/chat/widgets/reply_preview_bar.dart';
+import 'package:pear_messaging/features/chat/widgets/edit_preview_bar.dart';
 import 'package:pear_messaging/features/call/call_controller.dart';
 import 'package:pear_messaging/widgets/vant_avatar.dart';
 import '../../core/services/feature_flag_service.dart';
@@ -483,9 +484,24 @@ class ChatScreen extends GetView<ChatController> {
                         child: Column(
                           mainAxisSize: MainAxisSize.min,
                           children: [
+                            // Edit preview bar — shown instead of the reply
+                            // bar while a message is being edited.
+                            Obx(() {
+                              final editing =
+                                  controller.editingMessage.value;
+                              if (editing != null) {
+                                return EditPreviewBar(
+                                  message: editing,
+                                  onCancel: controller.cancelEdit,
+                                );
+                              }
+                              return const SizedBox.shrink();
+                            }),
+
                             // Reply preview bar
                             Obx(() {
-                              if (controller.isReplying &&
+                              if (controller.editingMessage.value == null &&
+                                  controller.isReplying &&
                                   controller.replyToMessage.value != null) {
                                 return ReplyPreviewBar(
                                   replyTo: controller.replyToMessage.value!,
