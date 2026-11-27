@@ -1372,6 +1372,15 @@ class LocalStorageService extends GetxService {
     return capabilities is List && capabilities.contains('encrypted_call');
   }
 
+  /// Generic signed-capability check against the pinned peer record.
+  bool peerHasCapability(String peerDeviceId, String capability) {
+    if (_peerIdentitiesBox?.isOpen != true) return false;
+    final entry = _peerIdentitiesBox!.get(peerDeviceId);
+    if (entry is! Map) return false;
+    final capabilities = entry['capabilities'];
+    return capabilities is List && capabilities.contains(capability);
+  }
+
   /// True when this device completed an encrypted call with the peer.
   bool peerHasEncryptedCallHistory(String peerDeviceId) {
     if (_peerIdentitiesBox?.isOpen != true) return false;
@@ -1440,6 +1449,35 @@ class LocalStorageService extends GetxService {
     if (_peerIdentitiesBox?.isOpen != true) return null;
     final entry = _peerIdentitiesBox!.get(peerDeviceId);
     return entry is Map ? entry['bundle'] as String? : null;
+  }
+
+  /// Signature-verified ML-KEM-768 encapsulation key for a peer (raw bytes),
+  /// or null when the peer never announced a valid one.
+  Uint8List? getPeerPqPublicKey(String peerDeviceId) {
+    if (_peerIdentitiesBox?.isOpen != true) return null;
+    final entry = _peerIdentitiesBox!.get(peerDeviceId);
+    if (entry is! Map) return null;
+    final b64 = entry['pqPublicKey'] as String?;
+    if (b64 == null) return null;
+    try {
+      final bytes = base64Decode(b64);
+      return bytes.isEmpty ? null : Uint8List.fromList(bytes);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Cache/remove a peer's verified ML-KEM-768 public key. Only the caller's
+  /// signature verification decides — this method performs no crypto checks.
+  Future<void> setPeerPqKey(
+      String peerDeviceId, String? pqPublicKeyB64) async {
+    if (_peerIdentitiesBox?.isOpen != true) return;
+    final entry = _peerIdentitiesBox!.get(peerDeviceId);
+    if (entry is! Map) return;
+    await _peerIdentitiesBox!.put(peerDeviceId, {
+      ...Map<String, dynamic>.from(entry),
+      'pqPublicKey': pqPublicKeyB64,
+    });
   }
 
   /// Verification status ('verified' | 'unverified' | null when unpinned).
@@ -1519,6 +1557,19 @@ class LocalStorageService extends GetxService {
     if (_peerIdentitiesBox?.isOpen != true) return [];
     return getAllChats()
         .where((c) => !c.isGroupChat && getPeerBundle(c.id) == null)
+        .map((c) => c.id)
+        .toList();
+  }
+
+  /// Pinned 1:1 contacts whose recorded signed capabilities lack
+  /// [capability] — targets for a capability-refresh announcement.
+  List<String> contactsMissingCapability(String capability) {
+    if (_peerIdentitiesBox?.isOpen != true) return [];
+    return getAllChats()
+        .where((c) =>
+            !c.isGroupChat &&
+            getPeerBundle(c.id) != null &&
+            !peerHasCapability(c.id, capability))
         .map((c) => c.id)
         .toList();
   }

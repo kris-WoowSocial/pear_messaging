@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- No cleartext anywhere; platform trust anchors only. -->
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+
+    <!-- SPKI pinning for the first-party API/socket host. Pins are the
+         ISRG (Let's Encrypt) root CAs — leaf certs rotate every ~90 days,
+         so pinning the trust anchor keeps pinning intact across renewals:
+           primary : ISRG Root X1
+           backup  : ISRG Root X2 (alternate issuance path)
+           backup  : Root YR (intermediate-chain signer seen in live chain)
+         expiration : 2028-11-27 — pinning auto-drops after this date so an
+         un-updated build can never brick itself against rotated roots. -->
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="true">vant.chat</domain>
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+        <pin-set expiration="2028-11-27">
+            <pin digest="SHA-256">C5+lpZ7tcVwmwQIMcRtPbsQtWLABXhQzejna0wHFr8M=</pin>
+            <pin digest="SHA-256">diGVwiVYbubAI3RW4hB9xU8e/CH2GnkuvVFZE8zmgzI=</pin>
+            <pin digest="SHA-256">nWN7PSep5XDQdge5zK24CnCRXHr3KvzhKEGxsdqCX9E=</pin>
+        </pin-set>
+    </domain-config>
+</network-security-config>

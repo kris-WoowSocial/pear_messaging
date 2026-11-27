@@ -13,7 +13,7 @@ import 'package:open_filex/open_filex.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../core/constants/app_colors.dart';
 import '../../core/constants/app_sizes.dart';
-import '../../core/services/encryption_service.dart';
+import '../../core/crypto/media_crypto.dart';
 import '../../core/services/image_cache_service.dart';
 import '../../core/services/image_download_service.dart';
 import '../../core/services/media_upload_service.dart';
@@ -979,12 +979,20 @@ class _ChatMessageBubbleState extends State<ChatMessageBubble> {
           return;
         }
 
-        final token = content.substring(5);
+        final ref = MediaCrypto.extractRef(content);
+        if (ref == null) {
+          Get.snackbar(
+            'Unavailable',
+            'This file is no longer available.',
+            snackPosition: SnackPosition.TOP,
+          );
+          return;
+        }
         _isDownloadingFile.value = true;
         _fileDownloadProgress.value = 0.0;
 
         final encryptedBlob = await MediaUploadService.downloadImage(
-          token,
+          ref.token,
           onProgress: (progress) {
             _fileDownloadProgress.value = progress;
           },
@@ -1000,8 +1008,17 @@ class _ChatMessageBubbleState extends State<ChatMessageBubble> {
           return;
         }
 
-        final base64Data = EncryptionService.decryptMessage(encryptedBlob);
-        var decodedBytes = await compute(_decodeBase64File, base64Data);
+        final decrypted = await MediaCrypto.decryptForRef(encryptedBlob, ref);
+        if (decrypted == null) {
+          _isDownloadingFile.value = false;
+          Get.snackbar(
+            'Unavailable',
+            'Could not decrypt this file.',
+            snackPosition: SnackPosition.TOP,
+          );
+          return;
+        }
+        var decodedBytes = decrypted;
 
         if (widget.message.isCompressed == true) {
           decodedBytes = await compute(_gunzipBytes, decodedBytes);
@@ -1651,11 +1668,15 @@ class _ChatMessageBubbleState extends State<ChatMessageBubble> {
 
       // --- New MEDIA: token path ---
       if (widget.message.content.startsWith('MEDIA:')) {
-        final token = widget.message.content.substring(6);
-        debugPrint('📥 Downloading media token: $token');
+        final ref = MediaCrypto.extractRef(widget.message.content);
+        if (ref == null) {
+          debugPrint('❌ Malformed media ref: ${widget.message.id}');
+          return null;
+        }
+        debugPrint('📥 Downloading media token: ${ref.token}');
 
         final encryptedBlob = await MediaUploadService.downloadImage(
-          token,
+          ref.token,
           onProgress: (progress) {
             _downloadProgress.value = progress;
           },
@@ -1663,17 +1684,18 @@ class _ChatMessageBubbleState extends State<ChatMessageBubble> {
 
         if (encryptedBlob == null) {
           // 410 Gone — server deleted after first download or TTL expired
-          debugPrint('⚠️ Media expired or already downloaded: $token');
+          debugPrint('⚠️ Media expired or already downloaded: ${ref.token}');
           _isExpired.value = true;
           return null;
         }
 
-        // Decrypt (XOR) → base64 string → image bytes
-        final base64Image = EncryptionService.decryptMessage(encryptedBlob);
-        final imageBytes = await compute(_decodeBase64Image, base64Image);
+        // AES-256-GCM (digest-verified) or legacy XOR for old blobs
+        final imageBytes =
+            await MediaCrypto.decryptForRef(encryptedBlob, ref) ??
+                Uint8List(0);
 
         if (imageBytes.isEmpty) {
-          debugPrint('❌ Decoded image is empty for token: $token');
+          debugPrint('❌ Decoded image is empty for token: ${ref.token}');
           return null;
         }
 
@@ -2538,16 +2560,6 @@ class _ChatMessageBubbleState extends State<ChatMessageBubble> {
         chatController.scrollToMessage(widget.message.replyTo!.messageId);
       },
     );
-  }
-}
-
-/// Decodes a base64 string to raw bytes. Runs in a background isolate via
-/// [compute] so decoding large files doesn't block the UI thread.
-Uint8List _decodeBase64File(String base64String) {
-  try {
-    return base64Decode(base64String);
-  } catch (_) {
-    return Uint8List(0);
   }
 }
 

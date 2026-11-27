@@ -19,6 +19,9 @@ import 'connection_request_service.dart';
 import 'ice_servers_cache.dart';
 import 'identity_service.dart';
 import 'local_storage_service.dart';
+import 'message_crypto_service.dart';
+import 'group_crypto_service.dart';
+import '../crypto/media_crypto.dart';
 import 'unknown_sender_guard.dart';
 import 'user_profile_cache.dart';
 import '../../storage/models/message_entity.dart';
@@ -1092,6 +1095,66 @@ class SocketService extends GetxService {
 
     final timestamp = DateTime.now().millisecondsSinceEpoch;
 
+    // Sealed-sender path (v2s/v3s): ratcheted X25519 (+ML-KEM-768 hybrid
+    // when the peer advertises pq_mlkem768) + AES-256-GCM envelope with all
+    // metadata inside the ciphertext. The relay sees only recipient +
+    // opaque blob — sender id travels inside the sealed payload.
+    if (Get.isRegistered<MessageCryptoService>() &&
+        Get.isRegistered<LocalStorageService>() &&
+        Get.find<MessageCryptoService>().canSealTo(recipientDeviceId)) {
+      final disablePreviews =
+          Get.find<LocalStorageService>().disableLinkPreviews;
+      final sealed = await Get.find<MessageCryptoService>().sealForPeer(
+        recipientDeviceId,
+        {
+          't': content,
+          'ts': timestamp,
+          if (replyTo != null) 'rt': replyTo,
+          if (fileName != null) 'fn': fileName,
+          if (fileSize != null) 'fs': fileSize,
+          if (isCompressed != null) 'c': isCompressed ? 1 : 0,
+          if (duration != null) 'd': duration,
+          if (waveformData != null) 'w': waveformData,
+          if (expiresAt != null) 'ex': expiresAt,
+          if (isViewOnce == true) 'vo': 1,
+          if (disablePreviews) 'np': 1,
+        },
+      );
+      if (sealed != null) {
+        // Media lifecycle hint: the opaque download token travels outside
+        // the ciphertext so the server can keep its download-count
+        // tracking; it reveals nothing about the content. Only the raw
+        // token — the per-file key/digest stay inside the sealed payload.
+        final mediaRef = MediaCrypto.extractRef(content);
+        // No senderDeviceId is claimed — the registered socket authenticates
+        // the sender to the server, and the real id travels inside the
+        // signed sealed envelope to the recipient.
+        _socket?.emit('send_message', {
+          'messageId': messageId,
+          'receiverDeviceId': recipientDeviceId,
+          'encryptedPayload': sealed,
+          'sealed': true,
+          'timestamp': timestamp,
+          // Generic notification label — never plaintext.
+          'body': 'New message',
+          if (mediaRef != null) ...{
+            'mediaKind': content.substring(0, content.indexOf(':'))
+                .toLowerCase(),
+            'mediaToken': mediaRef.token,
+          },
+        });
+        if (Get.isRegistered<LocalStorageService>()) {
+          Get.find<LocalStorageService>()
+              .markContactKnown(recipientDeviceId);
+        }
+        debugPrint('📤 Sealed message sent: $messageId to $recipientDeviceId');
+        return true;
+      }
+      // Sealing failed (session unavailable) — fall through to legacy so the
+      // message is never silently dropped.
+      debugPrint('⚠️ Seal failed for $recipientDeviceId — legacy send');
+    }
+
     // ✅ Encrypt content using EncryptionService
     final encryptedContent = EncryptionService.encryptMessage(content);
 
@@ -1284,12 +1347,18 @@ class SocketService extends GetxService {
   }
 
   /// Send a message to a group.
-  /// [encryptedPayload] is the encrypted message content.
+  ///
+  /// [payload] is the PLAINTEXT message content — it is sealed here under
+  /// the caller's rotating group sender key (`v2g:`/`v3g:`), never XOR.
+  /// When membership changed since the last send, the fresh key is first
+  /// pushed to every member over their pairwise sealed channel (`VGK1:`)
+  /// so the group frame is decryptable on arrival.
   Future<bool> sendGroupMessage({
     required String groupId,
     required String messageId,
-    required String encryptedPayload,
+    required String payload,
     required String messageType,
+    required List<String> memberIds,
     Map<String, dynamic>? replyTo,
     String? fileName,
     int? fileSize,
@@ -1302,13 +1371,39 @@ class SocketService extends GetxService {
       return false;
     }
 
+    final plan = await Get.find<GroupCryptoService>().encryptForGroup(
+      groupId: groupId,
+      memberIds: memberIds,
+      plaintext: payload,
+    );
+    if (plan == null) {
+      debugPrint('❌ Group crypto unavailable for $groupId — not sent');
+      return false;
+    }
+
+    // Key distribution must reach members BEFORE the group frame —
+    // pairwise sends queue ahead of the group emit on the same socket.
+    if (plan.keyMessage != null) {
+      for (final memberId in plan.distributeTo) {
+        await _sendGroupKeyTo(memberId, plan.keyMessage!);
+      }
+    }
+
     final timestamp = DateTime.now().millisecondsSinceEpoch;
-    final payload = {
+    // Media lifecycle hint: raw S3 token only — the per-file key/digest
+    // stay inside the group ciphertext.
+    final mediaRef = MediaCrypto.extractRef(payload);
+    final wirePayload = {
       'groupId': groupId,
       'messageId': messageId,
-      'encryptedPayload': encryptedPayload,
+      'encryptedPayload': plan.ciphertext,
       'messageType': messageType,
       'timestamp': timestamp,
+      if (mediaRef != null) ...{
+        'mediaKind': payload.substring(0, payload.indexOf(':'))
+            .toLowerCase(),
+        'mediaToken': mediaRef.token,
+      },
       if (replyTo != null) 'replyTo': replyTo,
       if (fileName != null) 'fileName': fileName,
       if (fileSize != null) 'fileSize': fileSize,
@@ -1317,23 +1412,65 @@ class SocketService extends GetxService {
       if (waveformData != null) 'waveformData': waveformData,
     };
 
-    _socket?.emit('group_send_message', payload);
+    _socket?.emit('group_send_message', wirePayload);
     debugPrint('👥 Group message sent: $messageId to $groupId');
     return true;
   }
 
+  /// Push a `VGK1:` group-key control payload to one member over their
+  /// pairwise E2E channel. Sealed (`v3s:`/`v2s:`) when the peer advertises
+  /// e2e_msg; plain ratchet (`v3:`/`v2:`) when only identity is pinned.
+  /// Members with no pinned identity are skipped — a group key never
+  /// travels over the legacy XOR channel.
+  Future<void> _sendGroupKeyTo(String memberId, String keyMessage) async {
+    try {
+      final mcs = Get.find<MessageCryptoService>();
+      final ts = DateTime.now().millisecondsSinceEpoch;
+      final inner = {'t': keyMessage, 'ts': ts};
+      String? wire;
+      var sealed = false;
+      if (mcs.canSealTo(memberId)) {
+        wire = await mcs.sealForPeer(memberId, inner);
+        sealed = wire != null;
+      } else {
+        wire = await mcs.encryptForPeer(memberId, inner);
+      }
+      if (wire == null) {
+        debugPrint(
+            '⚠️ No pairwise E2E channel to $memberId — group key not delivered');
+        return;
+      }
+      _socket?.emit('send_message', {
+        'messageId':
+            'gk_${ts.toRadixString(36)}_${DateTime.now().microsecond}',
+        if (!sealed) 'senderDeviceId': _deviceId,
+        'receiverDeviceId': memberId,
+        'encryptedPayload': wire,
+        if (sealed) 'sealed': true,
+        'timestamp': ts,
+        'body': 'New message',
+      });
+    } catch (e) {
+      debugPrint('⚠️ Group key distribution to $memberId failed: $e');
+    }
+  }
+
   /// Send media message to a group.
+  /// [mediaToken] is the encoded ref (`token|key|digest`); the key
+  /// material stays inside the group ciphertext.
   Future<bool> sendGroupMediaMessage({
     required String groupId,
     required String messageId,
     required String mediaToken,
+    required List<String> memberIds,
     Map<String, dynamic>? replyTo,
   }) async {
     return sendGroupMessage(
       groupId: groupId,
       messageId: messageId,
-      encryptedPayload: 'MEDIA:$mediaToken',
+      payload: 'MEDIA:$mediaToken',
       messageType: 'image',
+      memberIds: memberIds,
       replyTo: replyTo,
     );
   }
@@ -1345,14 +1482,16 @@ class SocketService extends GetxService {
     required String mediaToken,
     required String fileName,
     required int fileSize,
+    required List<String> memberIds,
     Map<String, dynamic>? replyTo,
     bool isCompressed = false,
   }) async {
     return sendGroupMessage(
       groupId: groupId,
       messageId: messageId,
-      encryptedPayload: 'FILE:$mediaToken',
+      payload: 'FILE:$mediaToken',
       messageType: 'file',
+      memberIds: memberIds,
       replyTo: replyTo,
       fileName: fileName,
       fileSize: fileSize,
@@ -1366,6 +1505,7 @@ class SocketService extends GetxService {
     required String messageId,
     required String mediaToken,
     required int duration,
+    required List<String> memberIds,
     String? waveformData,
   }) async {
     debugPrint(
@@ -1379,8 +1519,9 @@ class SocketService extends GetxService {
     return sendGroupMessage(
       groupId: groupId,
       messageId: messageId,
-      encryptedPayload: 'AUDIO:$mediaToken',
+      payload: 'AUDIO:$mediaToken',
       messageType: 'audio',
+      memberIds: memberIds,
       fileName: 'audio.m4a',
       fileSize: duration,
       duration: duration,
@@ -1631,6 +1772,31 @@ class SocketService extends GetxService {
     return EncryptionService.decryptMessage(content);
   }
 
+  /// Unified incoming envelope decrypt: `v2:`/`v2s:` via
+  /// [MessageCryptoService] (ratchet + sealed-sender verify), legacy XOR
+  /// read-only for history and un-upgraded peers. Returns null when the
+  /// envelope can't be opened — callers must skip the message.
+  static Future<DecryptedEnvelope?> decryptIncomingEnvelope({
+    String? claimedSenderId,
+    required String payload,
+  }) {
+    if (Get.isRegistered<MessageCryptoService>()) {
+      return Get.find<MessageCryptoService>().decryptIncoming(
+        claimedSenderId: claimedSenderId,
+        payload: payload,
+      );
+    }
+    if (payload.startsWith(kV2Prefix) || payload.startsWith(kV2sPrefix)) {
+      // No crypto engine in this context (e.g. FCM bg isolate) — caller
+      // falls back to its placeholder path.
+      return Future.value(null);
+    }
+    return Future.value(DecryptedEnvelope(
+      senderId: claimedSenderId ?? '',
+      payload: {'t': EncryptionService.decryptMessage(payload)},
+    ));
+  }
+
   /// Send a connection request to another device
   Future<bool> sendConnectionRequest(
     String targetDeviceId, {
@@ -1666,10 +1832,11 @@ class SocketService extends GetxService {
         'avatarUrl': senderAvatarUrl.trim(),
     };
 
-    // Add encrypted message content if provided
+    // Add encrypted message content if provided. The notification body
+    // stays a generic label — plaintext never rides the wire or FCM.
     if (encryptedContent != null) {
       requestData['encryptedPayload'] = encryptedContent;
-      requestData['body'] = messageContent;
+      requestData['body'] = 'New connection request';
     }
 
     debugPrint('🤝 DEBUG: Emitting send_connection_request event');
@@ -2137,6 +2304,8 @@ class SocketService extends GetxService {
     List<String>? capabilities,
     int? capabilitySeq,
     String? capabilitySig,
+    String? pqPublicKey,
+    String? pqKeySignature,
   }) async {
     if (_socket == null || !_socket!.connected) return false;
     final completer = Completer<bool>();
@@ -2158,6 +2327,10 @@ class SocketService extends GetxService {
             capabilitySeq != null &&
             capabilitySig != null)
           'capabilitySig': capabilitySig,
+        if (pqPublicKey != null && pqKeySignature != null)
+          'pqPublicKey': pqPublicKey,
+        if (pqPublicKey != null && pqKeySignature != null)
+          'pqKeySignature': pqKeySignature,
       },
       ack: (data) {
         completer.complete(data is Map && data['delivered'] == true);

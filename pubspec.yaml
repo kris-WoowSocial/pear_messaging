@@ -109,6 +109,7 @@ dependencies:
   open_filex: ^4.7.0
   saver_gallery: 4.1.2
   firebase_remote_config: ^6.7.0
+  cipherlib: ^0.7.2
 
   # Encryption handled internally (XOR) - Now using proper cryptography
 

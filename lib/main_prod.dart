@@ -45,6 +45,8 @@ import 'core/services/webrtc_call_service.dart';
 import 'core/services/call_foreground_service.dart';
 import 'core/services/callkit_service.dart';
 import 'core/services/identity_service.dart';
+import 'core/services/message_crypto_service.dart';
+import 'core/services/group_crypto_service.dart';
 import 'core/services/identity_announcement_service.dart';
 import 'core/services/identity_verification_service.dart';
 import 'core/services/feature_flag_service.dart';
@@ -150,6 +152,11 @@ Future<void> initializeCriticalServices() async {
   // still runs in non-critical startup, but the reactive OFF state lets
   // screens subscribe and update as soon as remote values arrive.
   Get.put(FeatureFlagService(), permanent: true);
+
+  // Ratcheted/sealed message crypto — depends on IdentityService +
+  // LocalStorageService, used by SocketService send/intake paths.
+  Get.put(MessageCryptoService());
+  Get.put(GroupCryptoService());
 
   final earlySocketService = Get.put(SocketService());
   earlySocketService.init(deviceId);

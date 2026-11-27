@@ -545,7 +545,11 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
           debugPrint(
             '📱 Background: Attempting to decrypt encrypted content...',
           );
-          contentToStore = SocketService.decryptMessage(encryptedContent);
+          final env = await SocketService.decryptIncomingEnvelope(
+            claimedSenderId: senderId,
+            payload: encryptedContent,
+          );
+          contentToStore = env?.text ?? 'New message';
           debugPrint(
             '📱 Background: Decryption successful, content length: ${contentToStore.length}',
           );
@@ -1217,7 +1221,11 @@ class FCMService extends GetxService {
             debugPrint(
               '📱 Foreground: Attempting to decrypt encrypted content...',
             );
-            contentToStore = SocketService.decryptMessage(encryptedContent);
+            final env = await SocketService.decryptIncomingEnvelope(
+              claimedSenderId: senderId,
+              payload: encryptedContent,
+            );
+            contentToStore = env?.text ?? 'New message';
             debugPrint(
               '📱 Foreground: Decryption successful, content length: ${contentToStore.length}',
             );
@@ -1235,9 +1243,13 @@ class FCMService extends GetxService {
               msgType = MessageType.image;
               debugPrint('📱 Foreground: Detected as media message');
             } else {
-              // For text messages, we can use notification body if it's more readable
+              // For text messages, we can use notification body if it's more readable.
+              // Never for v2 envelopes — their notification body is a generic
+              // label that must not overwrite the decrypted content.
               final notificationBody = message.notification?.body;
-              if (notificationBody != null && notificationBody.isNotEmpty) {
+              if (!encryptedContent.startsWith('v2') &&
+                  notificationBody != null &&
+                  notificationBody.isNotEmpty) {
                 debugPrint(
                   '📱 Foreground: Using notification body as content for text message',
                 );

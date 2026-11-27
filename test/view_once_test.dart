@@ -172,7 +172,8 @@ void main() {
     test('incoming socket + FCM paths parse the flag', () {
       expect(
         controller,
-        contains("isViewOnce: data['isViewOnce'] == true"),
+        contains(
+            "isViewOnce: envelope.isViewOnce || data['isViewOnce'] == true"),
       );
       // Both FCM MessageEntity constructions carry the flag
       expect(

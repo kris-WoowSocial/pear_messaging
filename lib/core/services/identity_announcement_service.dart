@@ -8,6 +8,7 @@ import 'package:get/get.dart';
 import 'feature_flag_service.dart';
 import 'identity_service.dart';
 import 'local_storage_service.dart';
+import 'message_crypto_service.dart';
 import 'socket_service.dart';
 
 /// Identity Announcement Service — spreads our identity bundle to existing
@@ -120,6 +121,21 @@ class IdentityAnnouncementService extends GetxService {
     for (final id in _storage.contactsWithoutPin()) {
       _targets.putIfAbsent(id, _AnnounceTarget.new);
     }
+    // Pinned contacts that never recorded our e2e_msg capability (pinned
+    // before this build shipped) get one paced re-announce so the signed
+    // capability record converges — ack'd 'unchanged' and dequeued.
+    for (final id in _storage.contactsMissingCapability(
+        MessageCryptoService.capabilityE2eMsg)) {
+      _targets.putIfAbsent(id, _AnnounceTarget.new);
+    }
+    // Same convergence for the post-quantum capability — installs pinned
+    // before ML-KEM-768 shipped need one signed re-announce.
+    if (_identity.hasPqIdentity) {
+      for (final id in _storage.contactsMissingCapability(
+          MessageCryptoService.capabilityPqMlKem)) {
+        _targets.putIfAbsent(id, _AnnounceTarget.new);
+      }
+    }
     await _flushPending();
   }
 
@@ -142,10 +158,22 @@ class IdentityAnnouncementService extends GetxService {
     final encryptedAvailable =
         flags?.encryptedSignaling.value == true && _identity.hasIdentity.value;
     final capabilities = IdentityService.canonicalCapabilities([
+      if (_identity.hasIdentity.value) MessageCryptoService.capabilityE2eMsg,
+      if (_identity.hasPqIdentity) MessageCryptoService.capabilityPqMlKem,
       if (encryptedAvailable) 'encrypted_call',
       if (encryptedAvailable && flags?.videoCalling.value == true) 'video_call',
     ]);
     final capabilitySeq = await _identity.nextCapabilitySequence();
+
+    // Certify our ML-KEM-768 key under the Ed25519 identity — the signature
+    // is over domainPqKey || myDeviceId || pqPublicKey, so a MITM relay
+    // can't strip or substitute the post-quantum key.
+    final pqPubBytes = _identity.mlkemPublicKey;
+    final pqPub = pqPubBytes == null ? null : base64Encode(pqPubBytes);
+    final pqSigBytes =
+        pqPub == null ? null : await _identity.signPqKey(myId);
+    final pqSig =
+        pqSigBytes == null ? null : base64Encode(pqSigBytes);
 
     final now = DateTime.now();
     var sent = 0;
@@ -171,6 +199,8 @@ class IdentityAnnouncementService extends GetxService {
           capabilities: capabilities,
           capabilitySeq: capabilitySeq,
           capabilitySig: capabilitySig,
+          pqPublicKey: pqPub,
+          pqKeySignature: pqSig,
         );
         state.attempts += 1;
         state.nextDue = now.add(_backoffFor(state.attempts));
@@ -319,6 +349,31 @@ class IdentityAnnouncementService extends GetxService {
       }
     }
 
+    // Post-quantum key certification: when 'pq_mlkem768' is advertised the
+    // announce MUST carry a pqPublicKey (1184B) plus its Ed25519 signature
+    // over domainPqKey || senderId || key — a MITM relay can't substitute it.
+    final pqCapable = capabilities.contains(
+        MessageCryptoService.capabilityPqMlKem);
+    String? verifiedPqKey;
+    if (pqCapable) {
+      final pqPub = data['pqPublicKey'];
+      final pqSig = data['pqKeySignature'];
+      final valid = pqPub is String &&
+          pqSig is String &&
+          await _identity.verifyPeerPqKey(
+            peerDeviceId: from,
+            peerBundleBase64: bundle,
+            pqPublicKeyB64: pqPub,
+            signatureBase64: pqSig,
+          );
+      if (!valid) {
+        debugPrint('⚠️ Invalid/missing ML-KEM-768 key signature from $from');
+        await ack('rejected');
+        return;
+      }
+      verifiedPqKey = pqPub;
+    }
+
     final result = await _storage.pinPeerBundle(from, bundle);
     if (hasCapabilityField &&
         (result == LocalStorageService.pinResultPinned ||
@@ -329,6 +384,11 @@ class IdentityAnnouncementService extends GetxService {
         capabilitySeq,
         bundleBase64: bundle,
       );
+      if (accepted) {
+        // Cache the verified key (or clear it when the peer stopped
+        // advertising pq_mlkem768 — honest downgrade bookkeeping).
+        await _storage.setPeerPqKey(from, verifiedPqKey);
+      }
       if (!accepted) {
         if (_storage.hasPeerCapabilityReset(from) &&
             capabilityResetContacts.add(from)) {

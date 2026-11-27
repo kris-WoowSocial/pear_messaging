@@ -7,6 +7,8 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:get/get.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../crypto/pq_kem_service.dart';
+
 /// Identity Service — per-device cryptographic identity for E2EE calls/messages.
 ///
 /// Each device holds an X25519 key pair (key agreement) and an Ed25519 key pair
@@ -28,6 +30,8 @@ class IdentityService extends GetxService {
   static const String _kX25519Private = 'vant_identity_x25519_sk';
   static const String _kEd25519Private = 'vant_identity_ed25519_sk';
   static const String _kIdentityBundle = 'vant_identity_bundle';
+  static const String _kMlKemPublic = 'vant_identity_mlkem768_pub';
+  static const String _kMlKemPrivate = 'vant_identity_mlkem768_sk';
 
   /// Flag in SharedPreferences (NOT secure storage) so we can tell
   /// "never generated" from "generated then lost".
@@ -48,10 +52,14 @@ class IdentityService extends GetxService {
   static const String domainCall = 'vant-call';
   static const String domainCallFingerprintCaller = 'vant-call-fp-caller';
   static const String domainCallFingerprintCallee = 'vant-call-fp-callee';
+  static const String domainMsgSeal = 'vant-msg';
+  static const String domainPqKey = 'vant-pqkey';
   static const Set<String> signingDomainAllowList = {
     domainCapabilities,
     domainCallFingerprintCaller,
     domainCallFingerprintCallee,
+    domainMsgSeal,
+    domainPqKey,
   };
 
   /// Canonical domain-bound signing bytes: 4-byte domain length, domain, then
@@ -96,6 +104,10 @@ class IdentityService extends GetxService {
   // In-memory private key pairs. Loaded lazily; never logged or serialized out.
   KeyPair? _x25519KeyPair;
   KeyPair? _ed25519KeyPair;
+
+  // Long-term ML-KEM-768 post-quantum identity (FIPS 203).
+  Uint8List? _mlkemPublicKey; // 1184B encapsulation key
+  Uint8List? _mlkemSecretKey; // 2400B decapsulation key
 
   /// Public identity bundle (65 bytes) as base64 — safe to transmit.
   String? _bundleBase64;
@@ -159,6 +171,7 @@ class IdentityService extends GetxService {
         hasIdentity.value = false;
         return;
       }
+      await _loadOrMigratePqIdentity();
       storageState.value = IdentityStorageState.loaded;
       hasIdentity.value = true;
       return;
@@ -250,8 +263,49 @@ class IdentityService extends GetxService {
     await _storage.write(key: _kIdentityBundle, value: _bundleBase64);
     await prefs.setBool(_prefsIdentityInitialized, true);
 
+    await _generateAndStorePqIdentity();
+
     hasIdentity.value = true;
     requiresNewDeviceId.value = false;
+  }
+
+  /// Long-term ML-KEM-768 identity — generated alongside the classical keys
+  /// on fresh installs and lazily migrated on upgrade for existing installs.
+  /// PQ material missing while the classical identity is intact is NOT an
+  /// unreadable state: it just means the install predates PQ support.
+  Future<void> _loadOrMigratePqIdentity() async {
+    try {
+      final pubB64 = await _storage.read(key: _kMlKemPublic);
+      final skB64 = await _storage.read(key: _kMlKemPrivate);
+      if (pubB64 != null && skB64 != null) {
+        final pub = base64Decode(pubB64);
+        final sk = base64Decode(skB64);
+        if (pub.length == PqKemService.publicKeyBytes &&
+            sk.length == PqKemService.secretKeyBytes) {
+          _mlkemPublicKey = Uint8List.fromList(pub);
+          _mlkemSecretKey = Uint8List.fromList(sk);
+          return;
+        }
+        debugPrint('⚠️ IdentityService: corrupt ML-KEM keys — regenerating');
+      }
+      // Missing or partial → (re)generate the pair. The PQ key is certified
+      // by the Ed25519 identity key at announce time, so regenerating here is
+      // safe even if only one half survived.
+      await _generateAndStorePqIdentity();
+    } catch (e) {
+      // Read failure is non-fatal: PQ capability simply stays unannounced.
+      debugPrint('⚠️ IdentityService: ML-KEM load failed: $e');
+    }
+  }
+
+  Future<void> _generateAndStorePqIdentity() async {
+    final kp = await PqKemService.generateKeyPair();
+    _mlkemPublicKey = kp.publicKey;
+    _mlkemSecretKey = kp.secretKey;
+    await _storage.write(
+        key: _kMlKemPublic, value: base64Encode(kp.publicKey));
+    await _storage.write(
+        key: _kMlKemPrivate, value: base64Encode(kp.secretKey));
   }
 
   /// Generates a brand-new identity AND signals the caller to mint a new
@@ -260,6 +314,10 @@ class IdentityService extends GetxService {
     await _storage.delete(key: _kX25519Private);
     await _storage.delete(key: _kEd25519Private);
     await _storage.delete(key: _kIdentityBundle);
+    await _storage.delete(key: _kMlKemPublic);
+    await _storage.delete(key: _kMlKemPrivate);
+    _mlkemPublicKey = null;
+    _mlkemSecretKey = null;
     await _generateAndStoreIdentity();
   }
 
@@ -496,6 +554,32 @@ class IdentityService extends GetxService {
     }
   }
 
+  /// Verify a domain-bound signature against the Ed25519 key inside a
+  /// claimed peer bundle. Used by sealed-sender verification — the message
+  /// bytes must already be framed by the caller (recipient binding included).
+  Future<bool> verifyDomainSignature({
+    required String domain,
+    required String peerBundleBase64,
+    required List<int> message,
+    required String signatureBase64,
+  }) async {
+    if (!signingDomainAllowList.contains(domain)) return false;
+    final parsed = parseBundle(peerBundleBase64);
+    if (parsed == null) return false;
+    try {
+      return await _ed25519.verify(
+        domainBoundMessage(domain, message),
+        signature: Signature(
+          base64Decode(signatureBase64),
+          publicKey:
+              SimplePublicKey(parsed.ed25519Pub, type: KeyPairType.ed25519),
+        ),
+      );
+    } catch (_) {
+      return false;
+    }
+  }
+
   /// Verify a peer's call signature: Ed25519("vant-call"|peerId|material)
   /// against the ed25519 key inside their pinned bundle.
   Future<bool> verifyCallSignature({
@@ -550,6 +634,64 @@ class IdentityService extends GetxService {
       myKeyPair: _x25519KeyPair!,
       peerPublicKey: peerPublicKey,
     );
+  }
+
+  /// Our ML-KEM-768 encapsulation key (1184B) — safe to transmit once
+  /// signed under the Ed25519 identity key.
+  Uint8List? get mlkemPublicKey =>
+      _mlkemPublicKey == null ? null : Uint8List.fromList(_mlkemPublicKey!);
+
+  /// Our ML-KEM-768 decapsulation key (2400B) — stays in-process for
+  /// inbound epoch decapsulation; never serialized out of this service.
+  Uint8List? get mlkemSecretKey =>
+      _mlkemSecretKey == null ? null : Uint8List.fromList(_mlkemSecretKey!);
+
+  /// True when the long-term post-quantum identity is available — gates the
+  /// `pq_mlkem768` capability announcement.
+  bool get hasPqIdentity =>
+      _mlkemPublicKey != null && _mlkemSecretKey != null;
+
+  /// Ed25519 signature certifying our ML-KEM-768 public key:
+  /// domainBoundMessage(domainPqKey, deviceId || pqPublicKey).
+  /// Peers verify it against the ed25519 half of our pinned identity bundle.
+  Future<Uint8List?> signPqKey(String deviceId) async {
+    final pub = _mlkemPublicKey;
+    if (pub == null) return null;
+    final message = BytesBuilder()
+      ..add(utf8.encode(deviceId))
+      ..add(pub);
+    return signBytes(domainPqKey, message.toBytes());
+  }
+
+  /// Verify a peer's ML-KEM-768 key certification against the Ed25519 key in
+  /// their pinned identity bundle. [pqPublicKeyB64] must decode to exactly
+  /// [PqKemService.publicKeyBytes] bytes.
+  Future<bool> verifyPeerPqKey({
+    required String peerDeviceId,
+    required String peerBundleBase64,
+    required String pqPublicKeyB64,
+    required String signatureBase64,
+  }) async {
+    try {
+      final pub = base64Decode(pqPublicKeyB64);
+      if (pub.length != PqKemService.publicKeyBytes) return false;
+      var acc = 0;
+      for (final b in pub) {
+        acc |= b;
+      }
+      if (acc == 0) return false; // zero key
+      final message = BytesBuilder()
+        ..add(utf8.encode(peerDeviceId))
+        ..add(pub);
+      return await verifyDomainSignature(
+        domain: domainPqKey,
+        peerBundleBase64: peerBundleBase64,
+        message: message.toBytes(),
+        signatureBase64: signatureBase64,
+      );
+    } catch (_) {
+      return false;
+    }
   }
 
   /// Only these server rejections may trigger the new-ID recovery flow —

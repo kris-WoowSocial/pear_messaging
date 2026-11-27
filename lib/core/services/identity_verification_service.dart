@@ -8,6 +8,7 @@ import '../utils/safety_code.dart';
 import 'identity_announcement_service.dart';
 import 'identity_service.dart';
 import 'local_storage_service.dart';
+import 'message_crypto_service.dart';
 import 'socket_service.dart';
 
 /// Contact verification (Phase 1) — QR + safety-code key verification.
@@ -87,6 +88,8 @@ class IdentityVerificationService extends GetxService {
         bundleA: myBundle,
         idB: peerId,
         bundleB: peerBundle,
+        pqPubA: _identity.mlkemPublicKey,
+        pqPubB: peerPqKey(peerId),
       );
     } else {
       safetyCode.value = null; // no pin yet — QR scan will pin it
@@ -278,8 +281,30 @@ class IdentityVerificationService extends GetxService {
       bundleA: myBundle,
       idB: scannedId,
       bundleB: scannedBundle,
+      pqPubA: _identity.mlkemPublicKey,
+      pqPubB: peerPqKey(scannedId),
     );
   }
+
+  /// Peer's verified ML-KEM-768 key — only when they actually announced
+  /// the pq_mlkem768 capability and we hold PQ identity, so mixed-version
+  /// pairs stay on the classical formula both sides can compute.
+  Uint8List? peerPqKey(String peerId) {
+    if (!_identity.hasPqIdentity) return null;
+    if (!_storage.peerHasCapability(
+        peerId, MessageCryptoService.capabilityPqMlKem)) {
+      return null;
+    }
+    return _storage.getPeerPqPublicKey(peerId);
+  }
+
+  /// True when this peer's sessions run the hybrid post-quantum suite —
+  /// drives the "Post-Quantum Hybrid" badge in Contact Info / chat header.
+  bool peerIsPostQuantum(String peerId) =>
+      _identity.hasPqIdentity &&
+      _storage.peerHasCapability(
+          peerId, MessageCryptoService.capabilityE2eMsg) &&
+      peerPqKey(peerId) != null;
 
   Future<void> _sendEcho(
       {required String to, required Uint8List secret}) async {

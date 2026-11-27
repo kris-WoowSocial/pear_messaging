@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -10,7 +9,7 @@ import 'package:just_audio/just_audio.dart';
 import 'package:path_provider/path_provider.dart';
 
 import '../../../core/constants/app_colors.dart';
-import '../../../core/services/encryption_service.dart';
+import '../../../core/crypto/media_crypto.dart';
 import '../../../core/services/image_cache_service.dart';
 import '../../../core/services/local_storage_service.dart';
 import '../../../core/services/media_upload_service.dart';
@@ -208,8 +207,15 @@ class _AudioMessageBubbleState extends State<AudioMessageBubble> {
         return;
       }
 
-      final base64Data = EncryptionService.decryptMessage(encryptedBlob);
-      final decodedBytes = base64Decode(base64Data);
+      final ref = _extractRef();
+      final decodedBytes = ref != null
+          ? await MediaCrypto.decryptForRef(encryptedBlob, ref)
+          : MediaCrypto.decryptLegacyBlob(encryptedBlob);
+      if (decodedBytes == null) {
+        _hasError.value = true;
+        _statusText.value = 'Voice message unavailable';
+        return;
+      }
 
       _audioBytes = decodedBytes;
       _lastToken = token;
@@ -348,13 +354,11 @@ class _AudioMessageBubbleState extends State<AudioMessageBubble> {
     return 'audio/aac';
   }
 
-  String? _extractToken() {
-    final content = widget.message.content;
-    if (content.startsWith('AUDIO:')) {
-      return content.substring(6);
-    }
-    return null;
-  }
+  String? _extractToken() =>
+      MediaCrypto.extractRef(widget.message.content)?.token;
+
+  MediaRef? _extractRef() =>
+      MediaCrypto.extractRef(widget.message.content);
 
   Future<void> _togglePlay() async {
     if (!_isReady.value || _audioBytes == null) return;

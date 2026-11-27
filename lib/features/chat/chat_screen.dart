@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -21,8 +20,10 @@ import '../../routes/app_routes.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:file_picker/file_picker.dart';
-import '../../core/services/encryption_service.dart';
+import '../../core/crypto/media_crypto.dart';
+import '../../core/services/identity_verification_service.dart';
 import '../../core/services/media_upload_service.dart';
+import '../../core/services/message_crypto_service.dart';
 import 'package:social_media_recorder/audio_encoder_type.dart';
 import 'package:social_media_recorder/screen/social_media_recorder.dart';
 import '../../core/utils/string_utils.dart';
@@ -724,10 +725,10 @@ class ChatScreen extends GetView<ChatController> {
       }
 
       // Encrypt off the main thread to avoid UI jank on large files.
-      final encryptedBlob = await compute(_encryptFileBlob, dataToSend);
+      final media = await compute(MediaCrypto.encryptBlob, dataToSend);
 
       final token = await MediaUploadService.uploadImage(
-        encryptedBlob,
+        media.blob,
         onProgress: (progress) {
           controller.uploadProgressMap[pendingMsgId]?.value = progress;
         },
@@ -735,7 +736,7 @@ class ChatScreen extends GetView<ChatController> {
 
       await controller.finalizeFileMessage(
         messageId: pendingMsgId,
-        token: token,
+        token: media.refFor(token),
         fileName: fileName,
         fileSize: fileSize,
         isCompressed: isCompressed,
@@ -868,12 +869,12 @@ class ChatScreen extends GetView<ChatController> {
       );
       if (pendingMsgId == null) return;
 
-      // Step 4: Encrypt + upload; progress goes directly into the bubble overlay
-      final base64Image = base64Encode(sendBytes);
-      final encryptedBlob = EncryptionService.encryptMessage(base64Image);
+      // Step 4: Encrypt (fresh AES-256-GCM key per file) + upload; the key
+      // and ciphertext digest ride inside the sealed message payload.
+      final media = await compute(MediaCrypto.encryptBlob, sendBytes);
 
       final token = await MediaUploadService.uploadImage(
-        encryptedBlob,
+        media.blob,
         onProgress: (progress) {
           ctrl.uploadProgressMap[pendingMsgId]?.value = progress;
         },
@@ -881,7 +882,7 @@ class ChatScreen extends GetView<ChatController> {
       );
 
       // Step 4: Finalize bubble content + send token via socket
-      await ctrl.finalizeImageMessage(pendingMsgId, token);
+      await ctrl.finalizeImageMessage(pendingMsgId, media.refFor(token));
       debugPrint('✅ Image sent via media server, token=$token');
     } catch (e) {
       debugPrint('❌ Error sending image: $e');
@@ -1400,18 +1401,56 @@ class ChatScreen extends GetView<ChatController> {
       ),
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-        child: Text(
-          controller.isGroup
-              ? '🔒 Messages and photos in this chat are end- to-end encrypted and peer-to-peer, with no servers in between. Only the people in this chat can read or share them. We are physically incapable of complying with data requests from third parties or government agencies. Our answer to every request is simple: The data does not exist.'
-              : '🔒 Messages and photos in this chat are end- to-end encrypted and peer-to-peer, with no servers in between. Only the people in this chat can read or share them. We are physically incapable of complying with data requests from third parties or government agencies. Our answer to every request is simple: The data does not exist.',
-          style: TextStyle(
-            fontSize: 12,
-            color: Colors.black,
-            fontWeight: FontWeight.w500,
-          ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              controller.isGroup
+                  ? '🔒 Messages and photos in this chat are end- to-end encrypted and peer-to-peer, with no servers in between. Only the people in this chat can read or share them. We are physically incapable of complying with data requests from third parties or government agencies. Our answer to every request is simple: The data does not exist.'
+                  : '🔒 Messages and photos in this chat are end- to-end encrypted and peer-to-peer, with no servers in between. Only the people in this chat can read or share them. We are physically incapable of complying with data requests from third parties or government agencies. Our answer to every request is simple: The data does not exist.',
+              style: TextStyle(
+                fontSize: 12,
+                color: Colors.black,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+            if (!controller.isGroup && _encryptionSuiteLabel() != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 6),
+                child: Text(
+                  _encryptionSuiteLabel()!,
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: Colors.black.withValues(alpha: 0.55),
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+          ],
         ),
       ),
     );
+  }
+
+  /// Encryption-suite badge for 1:1 chats — reflects the negotiated
+  /// capability set (hybrid post-quantum when both sides announced
+  /// pq_mlkem768, classical sealed-sender otherwise).
+  String? _encryptionSuiteLabel() {
+    final peerId = controller.recipientDeviceId;
+    if (peerId.isEmpty ||
+        !Get.isRegistered<IdentityVerificationService>() ||
+        !Get.isRegistered<MessageCryptoService>()) {
+      return null;
+    }
+    final verification = Get.find<IdentityVerificationService>();
+    if (verification.peerIsPostQuantum(peerId)) {
+      return 'Post-Quantum Hybrid (X25519 + ML-KEM-768)';
+    }
+    if (Get.find<MessageCryptoService>().canSealTo(peerId)) {
+      return 'End-to-End Encrypted (X25519)';
+    }
+    return null;
   }
 
   /// Start an audio call
@@ -1524,11 +1563,10 @@ class ChatScreen extends GetView<ChatController> {
         return;
       }
 
-      final base64Audio = base64Encode(bytes);
-      final encryptedBlob = EncryptionService.encryptMessage(base64Audio);
+      final media = await compute(MediaCrypto.encryptBlob, bytes);
 
       final token = await MediaUploadService.uploadImage(
-        encryptedBlob,
+        media.blob,
         onProgress: (progress) {
           controller.uploadProgressMap[pendingMsgId]?.value = progress;
         },
@@ -1536,7 +1574,7 @@ class ChatScreen extends GetView<ChatController> {
 
       await controller.finalizeAudioMessage(
         messageId: pendingMsgId,
-        token: token,
+        token: media.refFor(token),
         duration: durationMs,
         waveformData: waveform,
       );
@@ -1571,14 +1609,6 @@ Uint8List? _gzipIfBeneficial(Uint8List bytes) {
   return compressed.length < bytes.length
       ? Uint8List.fromList(compressed)
       : null;
-}
-
-/// Base64-encodes and XOR-encrypts [bytes] for upload.
-/// Runs in a background isolate via [compute] so encrypting large files
-/// doesn't jank the UI thread.
-String _encryptFileBlob(Uint8List bytes) {
-  final base64Data = base64Encode(bytes);
-  return EncryptionService.encryptMessage(base64Data);
 }
 
 /// Compresses image at [filePath] targeting ≤ 150 KB binary output (reduced from 250KB).

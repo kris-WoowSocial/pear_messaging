@@ -165,6 +165,9 @@ class DeepLinkService extends GetxService {
     }
 
     await _storageService.setHasCheckedDeferredDeepLink(true);
+    // The install-referrer question is definitively answered by this
+    // one-shot intake — mark the legacy flag so no other path re-reads it.
+    await _storageService.setHasCheckedInstallReferrer(true);
 
     var handled = false;
     if (Platform.isAndroid) {

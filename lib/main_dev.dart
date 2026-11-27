@@ -18,6 +18,8 @@ import 'package:pear_messaging/storage/models/message_entity.dart';
 import 'core/services/fcm_service.dart';
 import 'core/services/url_preview_service.dart';
 import 'core/services/local_storage_service.dart';
+import 'core/services/message_crypto_service.dart';
+import 'core/services/group_crypto_service.dart';
 import 'core/services/socket_service.dart';
 import 'core/services/local_auth_service.dart';
 import 'core/services/block_service.dart';
@@ -118,6 +120,11 @@ Future<void> initializeCriticalServices() async {
   // Feature flags must be registered before the socket connects so the first
   // capability announcement can wait for the first Remote Config fetch.
   Get.put(FeatureFlagService(), permanent: true);
+
+  // Ratcheted/sealed message crypto — depends on IdentityService +
+  // LocalStorageService, used by SocketService send/intake paths.
+  Get.put(MessageCryptoService());
+  Get.put(GroupCryptoService());
 
   final earlySocketService = Get.put(SocketService());
   earlySocketService.init(deviceId);

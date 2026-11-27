@@ -10,6 +10,7 @@ import 'package:uuid/uuid.dart';
 import '../../core/constants/app_colors.dart';
 import '../../core/constants/app_sizes.dart';
 import '../../core/services/deep_link_service.dart';
+import '../../core/services/group_crypto_service.dart';
 import '../../core/services/local_storage_service.dart';
 import '../../core/services/membership_service.dart';
 import '../../core/services/socket_service.dart';
@@ -499,39 +500,12 @@ class ChatListController extends GetxController {
     );
 
     // Match backend field names: messageId, senderDeviceId, encryptedPayload, timestamp
-    final senderId = data['senderDeviceId'] as String;
-
-    // First contact from this sender — pull their live profile so the new
-    // chat row and chat screen render their photo/name immediately.
-    if (Get.isRegistered<UserProfileCache>() &&
-        (Get.find<UserProfileCache>().avatarByDeviceId[senderId] ?? '')
-            .isEmpty) {
-      unawaited(Get.find<UserProfileCache>().fetchAndCacheProfile(senderId));
-    }
-
+    // Sealed (v2s) packets omit senderDeviceId — the real sender is inside
+    // the signed inner envelope, so decrypt before attributing the chat.
     final messageId = data['messageId'] as String? ?? _uuid.v4();
     final cipherText = data['encryptedPayload'] as String? ?? '';
     final timestamp =
         data['timestamp'] as int? ?? DateTime.now().millisecondsSinceEpoch;
-
-    // Parse reply metadata if present
-    ReplyToEntity? replyToEntity;
-    if (data['replyTo'] != null) {
-      try {
-        final replyTo = data['replyTo'] as Map<String, dynamic>;
-        replyToEntity = ReplyToEntity.fromJson(replyTo);
-        debugPrint(
-          '🔁 CHAT LIST LOG: Reply metadata parsed - content: ${replyToEntity.content}',
-        );
-      } catch (e) {
-        debugPrint('⚠️ CHAT LIST LOG: Failed to parse reply metadata: $e');
-      }
-    }
-
-    debugPrint('📋 CHAT LIST LOG: Parsed message data:');
-    debugPrint('  - senderId: $senderId');
-    debugPrint('  - messageId: $messageId');
-    debugPrint('  - timestamp: $timestamp');
 
     // Check if this message has already been processed (in-memory)
     if (_processedMessageIds.contains(messageId)) {
@@ -553,8 +527,58 @@ class ChatListController extends GetxController {
     // Mark message as processed
     _processedMessageIds.add(messageId);
 
+    // Decrypt the envelope — handles v2/v2s ratchet+seal and legacy XOR.
+    final envelope = await SocketService.decryptIncomingEnvelope(
+      claimedSenderId: data['senderDeviceId'] as String?,
+      payload: cipherText,
+    );
+    if (envelope == null) {
+      debugPrint('⚠️ Dropping undecryptable message $messageId');
+      return;
+    }
+    final senderId = envelope.senderId;
+    if (senderId.isEmpty) return;
+
+    // Group sender-key distribution rides the pairwise channel as a
+    // VGK1: control payload — store the key, never show a chat preview.
+    if (Get.isRegistered<GroupCryptoService>() &&
+        await Get.find<GroupCryptoService>()
+            .maybeHandleKeyDistribution(senderId, envelope.text)) {
+      debugPrint('🔑 CHAT LIST LOG: consumed VGK1 key payload from $senderId');
+      return;
+    }
+
+    // First contact from this sender — pull their live profile so the new
+    // chat row and chat screen render their photo/name immediately.
+    if (Get.isRegistered<UserProfileCache>() &&
+        (Get.find<UserProfileCache>().avatarByDeviceId[senderId] ?? '')
+            .isEmpty) {
+      unawaited(Get.find<UserProfileCache>().fetchAndCacheProfile(senderId));
+    }
+
+    // Parse reply metadata if present — sealed payloads carry it inside the
+    // ciphertext, legacy packets on the wire map.
+    ReplyToEntity? replyToEntity;
+    final replyToJson = envelope.replyTo ?? data['replyTo'];
+    if (replyToJson != null) {
+      try {
+        final replyTo = replyToJson as Map<String, dynamic>;
+        replyToEntity = ReplyToEntity.fromJson(replyTo);
+        debugPrint(
+          '🔁 CHAT LIST LOG: Reply metadata parsed - content: ${replyToEntity.content}',
+        );
+      } catch (e) {
+        debugPrint('⚠️ CHAT LIST LOG: Failed to parse reply metadata: $e');
+      }
+    }
+
+    debugPrint('📋 CHAT LIST LOG: Parsed message data:');
+    debugPrint('  - senderId: $senderId');
+    debugPrint('  - messageId: $messageId');
+    debugPrint('  - timestamp: $timestamp');
+
     // Decrypt message content
-    final decryptedContent = SocketService.decryptMessage(cipherText);
+    final decryptedContent = envelope.text;
     final messageTime = DateTime.fromMillisecondsSinceEpoch(timestamp);
 
     // Check if this is an image/audio/file message
@@ -591,7 +615,7 @@ class ChatListController extends GetxController {
       replyTo: replyToEntity,
       // View-once flag — the "[1] Photo" tile must render (and never
       // pre-fetch) even when this message is saved outside an open chat.
-      isViewOnce: data['isViewOnce'] == true,
+      isViewOnce: envelope.isViewOnce || data['isViewOnce'] == true,
     );
 
     // Save message to storage
@@ -608,7 +632,8 @@ class ChatListController extends GetxController {
         debugPrint('📝 Found existing chat in storage for sender: $senderId');
 
         final actualUnreadCount = await _calculateUnreadCount(senderId);
-        final isViewOnceMessage = data['isViewOnce'] == true;
+        final isViewOnceMessage =
+            envelope.isViewOnce || data['isViewOnce'] == true;
         final displayMessage = isAudioMessage
             ? '🎤 Voice message'
             : (isImageMessage
@@ -957,7 +982,17 @@ class ChatListController extends GetxController {
       }
     }
 
-    final decryptedContent = SocketService.decryptMessage(cipherText);
+    // v2g:/v3g: group sender-key frames → AES-256-GCM under the sender's
+    // group key; anything else is a legacy XOR payload handled inside
+    // decryptForGroup.
+    final decryptedContent = Get.isRegistered<GroupCryptoService>()
+        ? await Get.find<GroupCryptoService>().decryptForGroup(
+              groupId: groupId,
+              senderDeviceId: senderId,
+              payload: cipherText,
+            ) ??
+            '🔒 Encrypted message'
+        : SocketService.decryptMessage(cipherText);
     final messageTime = DateTime.fromMillisecondsSinceEpoch(timestamp);
     final isImageMessage = decryptedContent.startsWith('MEDIA:') ||
         decryptedContent.startsWith('IMAGE:');
@@ -1051,6 +1086,9 @@ class ChatListController extends GetxController {
     debugPrint('👥 CHAT LIST LOG: group_dissolved: $data');
     final groupId = data['groupId']?.toString();
     if (groupId == null) return;
+    if (Get.isRegistered<GroupCryptoService>()) {
+      unawaited(Get.find<GroupCryptoService>().clearGroup(groupId));
+    }
     await _storageService.deleteChat(groupId);
     loadChats();
   }

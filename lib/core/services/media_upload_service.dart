@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
+import 'pinned_http_client.dart';
 import '../constants/network_constants.dart';
 
 /// HTTP-based media upload / download-once service.
@@ -88,7 +89,7 @@ class MediaUploadService {
     }));
     request.bodyBytes = bodyBytes;
 
-    final client = http.Client();
+    final client = PinnedHttpClient.newClient();
     try {
       debugPrint('📤 MediaUploadService: starting upload to $_baseUrl');
       final streamedResponse = await client.send(request).timeout(_timeout);
@@ -133,7 +134,7 @@ class MediaUploadService {
         'GET',
         Uri.parse('$_baseUrl/api/media/$token'),
       );
-      final client = http.Client();
+      final client = PinnedHttpClient.newClient();
 
       try {
         final streamedResponse = await client.send(request).timeout(_timeout);
@@ -196,7 +197,7 @@ class MediaUploadService {
         'GET',
         Uri.parse('$_baseUrl/api/media/$token/download'),
       );
-      final client = http.Client();
+      final client = PinnedHttpClient.newClient();
 
       try {
         final streamedResponse = await client.send(request).timeout(_timeout);

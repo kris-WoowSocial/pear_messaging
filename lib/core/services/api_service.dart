@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:get/get.dart';
 import 'package:http/http.dart' as http;
+import 'pinned_http_client.dart';
 
 import '../constants/network_constants.dart';
 import 'local_storage_service.dart';
@@ -38,22 +39,25 @@ class ApiService extends GetxService {
     return headers;
   }
 
+  /// Pinned TLS client — vant.chat REST only resolves to ISRG roots.
+  http.Client _client() => PinnedHttpClient.newClient();
+
   Uri _uri(String path) => Uri.parse('$_base$path');
 
   Future<http.Response> _get(String path) =>
-      http.get(_uri(path), headers: _headers).timeout(_timeout);
+      _client().get(_uri(path), headers: _headers).timeout(_timeout);
 
-  Future<http.Response> _post(String path, Map<String, dynamic> body) => http
+  Future<http.Response> _post(String path, Map<String, dynamic> body) => _client()
       .post(_uri(path), headers: _headers, body: jsonEncode(body))
       .timeout(_timeout);
 
   Future<http.Response> _delete(String path, {Map<String, dynamic>? body}) =>
-      http
+      _client()
           .delete(_uri(path),
               headers: _headers, body: body != null ? jsonEncode(body) : null)
           .timeout(_timeout);
 
-  Future<http.Response> _patch(String path, Map<String, dynamic> body) => http
+  Future<http.Response> _patch(String path, Map<String, dynamic> body) => _client()
       .patch(_uri(path), headers: _headers, body: jsonEncode(body))
       .timeout(_timeout);
 

@@ -33,25 +33,25 @@ class CallHistoryScreen extends GetView<CallHistoryController> {
               ),
             ),
             SizedBox(height: 2),
-           Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(
-                          Icons.lock,
-                          color: Colors.black,
-                          size: 14,
-                        ),
-                        SizedBox(width: 4),
-                        Text(
-                          'End-to-end encrypted',
-                          style: TextStyle(
-                            color: AppColors.textPrimary,
-                            fontSize: 14,
-                            fontWeight: FontWeight.w400,
-                          ),
-                        ),
-                      ],
-                    ),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  Icons.lock,
+                  color: Colors.black,
+                  size: 14,
+                ),
+                SizedBox(width: 4),
+                Text(
+                  'End-to-end encrypted',
+                  style: TextStyle(
+                    color: AppColors.textPrimary,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w400,
+                  ),
+                ),
+              ],
+            ),
           ],
         ),
         centerTitle: true,
@@ -248,8 +248,8 @@ class CallHistoryScreen extends GetView<CallHistoryController> {
                   ),
                   child: Row(
                     children: [
-                      _buildAvatar(entry.remoteDeviceId, displayName,
-                          avatarUrl, isMissed),
+                      _buildAvatar(entry.remoteDeviceId, displayName, avatarUrl,
+                          isMissed),
                       const SizedBox(width: AppSizes.paddingM),
                       Expanded(
                         child: Column(

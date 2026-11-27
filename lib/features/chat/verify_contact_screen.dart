@@ -139,6 +139,17 @@ class _VerifyContactScreenState extends State<VerifyContactScreen> {
                 letterSpacing: 0.5,
               ),
             ),
+            const SizedBox(height: 12),
+            Text(
+              _service.peerIsPostQuantum(widget.peerId)
+                  ? 'Post-Quantum Hybrid (X25519 + ML-KEM-768)'
+                  : 'End-to-End Encrypted (X25519)',
+              style: TextStyle(
+                fontSize: 11,
+                color: Colors.grey.shade600,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
           ],
         ),
       );

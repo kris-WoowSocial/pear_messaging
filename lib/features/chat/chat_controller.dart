@@ -14,7 +14,8 @@ import '../../core/services/local_storage_service.dart';
 import '../../core/services/socket_service.dart';
 import '../../core/services/block_service.dart';
 import '../../core/services/caller_name_resolver.dart';
-import '../../core/services/encryption_service.dart';
+import '../../core/crypto/media_crypto.dart';
+import '../../core/services/group_crypto_service.dart';
 import '../../core/services/image_cache_service.dart';
 import '../../core/services/media_upload_service.dart';
 import '../../core/services/url_preview_service.dart';
@@ -59,6 +60,12 @@ class ChatController extends GetxController with WidgetsBindingObserver {
   late String myDeviceId;
   late bool isGroup;
   final RxList<GroupMemberEntity> groupMembers = <GroupMemberEntity>[].obs;
+
+  /// Current member deviceIds for group sender-key rotation/distribution.
+  List<String> get _groupMemberIds => groupMembers
+      .map((m) => m.deviceId)
+      .where((id) => id.isNotEmpty)
+      .toList();
   final RxInt groupMemberCount = 0.obs;
 
   final TextEditingController messageController = TextEditingController();
@@ -764,7 +771,29 @@ class ChatController extends GetxController with WidgetsBindingObserver {
       if (previousResult is Future) await previousResult;
 
       // Match backend field names: messageId, senderDeviceId, encryptedPayload, timestamp
-      final senderId = data['senderDeviceId'] as String;
+      // Sealed (v2s) packets omit senderDeviceId — the real sender lives in
+      // the signed inner envelope, so decrypt first.
+      final envelope = await SocketService.decryptIncomingEnvelope(
+        claimedSenderId: data['senderDeviceId'] as String?,
+        payload: data['encryptedPayload']?.toString() ?? '',
+      );
+      if (envelope == null) {
+        debugPrint(
+            '⚠️ Dropping undecryptable message ${data['messageId']}');
+        return;
+      }
+      final senderId = envelope.senderId;
+      if (senderId.isEmpty) return;
+
+      // Group sender-key distribution rides the pairwise channel as a
+      // VGK1: control payload — store the key, never render a bubble.
+      if (Get.isRegistered<GroupCryptoService>() &&
+          await Get.find<GroupCryptoService>()
+              .maybeHandleKeyDistribution(senderId, envelope.text)) {
+        debugPrint('🔑 Consumed VGK1 key payload from $senderId');
+        return;
+      }
+
       // Only add to UI if message is from the current chat recipient
       if (senderId == recipientDeviceId) {
         // Check if sender is blocked by current user
@@ -773,8 +802,7 @@ class ChatController extends GetxController with WidgetsBindingObserver {
           return;
         }
 
-        var decryptedContent =
-            SocketService.decryptMessage(data['encryptedPayload'] ?? '');
+        var decryptedContent = envelope.text;
         final timestamp =
             DateTime.fromMillisecondsSinceEpoch(data['timestamp'] ?? 0);
 
@@ -829,12 +857,14 @@ class ChatController extends GetxController with WidgetsBindingObserver {
           messageType = MessageType.audio;
         }
 
-        // Parse reply metadata if present
+        // Parse reply metadata if present — the sealed payload carries it
+        // inside the ciphertext, legacy packets on the wire map.
         ReplyToEntity? replyTo;
-        if (data['replyTo'] != null) {
+        final replyToJson = envelope.replyTo ?? data['replyTo'];
+        if (replyToJson != null) {
           try {
             replyTo =
-                ReplyToEntity.fromJson(data['replyTo'] as Map<String, dynamic>);
+                ReplyToEntity.fromJson(replyToJson as Map<String, dynamic>);
             debugPrint('🔁 Reply metadata parsed: ${replyTo.messageId}');
           } catch (e) {
             debugPrint('⚠️ Failed to parse reply metadata: $e');
@@ -866,16 +896,18 @@ class ChatController extends GetxController with WidgetsBindingObserver {
           isMe: false,
           type: messageType,
           replyTo: replyTo,
-          fileName: data['fileName'] as String?,
-          fileSize: data['fileSize'] as int?,
-          isCompressed: data['compressed'] as bool?,
-          audioDuration: data['duration'] as int?,
-          waveformData: data['waveformData'] as String?,
+          fileName: envelope.fileName ?? data['fileName'] as String?,
+          fileSize: envelope.fileSize ?? data['fileSize'] as int?,
+          isCompressed:
+              envelope.compressed ?? data['compressed'] as bool?,
+          audioDuration: envelope.duration ?? data['duration'] as int?,
+          waveformData:
+              envelope.waveformData ?? data['waveformData'] as String?,
           // Sender-stamped expiry wins; saveMessage stamps one from the
           // chat timer when the payload doesn't carry it.
-          expiresAt: (data['expiresAt'] as num?)?.toInt(),
+          expiresAt: envelope.expiresAt ?? (data['expiresAt'] as num?)?.toInt(),
           // View-once: render "[1] Photo" tile; media is fetched only on tap.
-          isViewOnce: data['isViewOnce'] == true,
+          isViewOnce: envelope.isViewOnce || data['isViewOnce'] == true,
         );
 
         await _storageService.saveMessage(message);
@@ -1031,7 +1063,15 @@ class ChatController extends GetxController with WidgetsBindingObserver {
       }
 
       final cipherText = data['encryptedPayload']?.toString() ?? '';
-      final decryptedContent = SocketService.decryptMessage(cipherText);
+      // v2g:/v3g: group sender-key frames → AES-256-GCM; anything else is
+      // a legacy XOR payload handled inside decryptForGroup.
+      final decryptedContent =
+          await Get.find<GroupCryptoService>().decryptForGroup(
+                groupId: groupId,
+                senderDeviceId: senderId ?? '',
+                payload: cipherText,
+              ) ??
+              '🔒 Encrypted message';
       final timestamp = DateTime.fromMillisecondsSinceEpoch(
           data['timestamp'] ?? DateTime.now().millisecondsSinceEpoch);
 
@@ -1172,7 +1212,10 @@ class ChatController extends GetxController with WidgetsBindingObserver {
       if (groupId != chatId) return;
       final removedDeviceId = data['deviceId']?.toString();
       if (removedDeviceId == myDeviceId) {
-        // Current user was removed from the group
+        // Current user was removed from the group — wipe group keys.
+        if (Get.isRegistered<GroupCryptoService>()) {
+          unawaited(Get.find<GroupCryptoService>().clearGroup(groupId!));
+        }
         Get.offAllNamed('/main');
         Get.snackbar('Removed', 'You were removed from the group');
         return;
@@ -1191,6 +1234,9 @@ class ChatController extends GetxController with WidgetsBindingObserver {
       debugPrint('👥 ChatController group dissolved: $data');
       final groupId = data['groupId']?.toString();
       if (groupId != chatId) return;
+      if (Get.isRegistered<GroupCryptoService>()) {
+        unawaited(Get.find<GroupCryptoService>().clearGroup(groupId!));
+      }
       Get.offAllNamed('/main');
       Get.snackbar('Group dissolved', 'This group has been dissolved');
     };
@@ -1386,8 +1432,9 @@ class ChatController extends GetxController with WidgetsBindingObserver {
           .sendGroupMessage(
         groupId: chatId,
         messageId: messageId,
-        encryptedPayload: EncryptionService.encryptMessage(text),
+        payload: text,
         messageType: 'text',
+        memberIds: _groupMemberIds,
         replyTo: replyToData,
       )
           .then((success) {
@@ -1694,6 +1741,7 @@ class ChatController extends GetxController with WidgetsBindingObserver {
               groupId: chatId,
               messageId: messageId,
               mediaToken: token,
+              memberIds: _groupMemberIds,
             )
           : await _socketService.sendMediaMessage(
               messageId: messageId,
@@ -1745,14 +1793,15 @@ class ChatController extends GetxController with WidgetsBindingObserver {
       final isViewOnce =
           messages.firstWhereOrNull((m) => m.id == messageId)?.isViewOnce ??
               false;
+      final media = await MediaCrypto.encryptBlob(bytes);
       final token = await MediaUploadService.uploadImage(
-        EncryptionService.encryptMessage(base64Encode(bytes)),
+        media.blob,
         onProgress: (progress) {
           uploadProgressMap[messageId]?.value = progress;
         },
         isViewOnce: isViewOnce,
       );
-      return finalizeImageMessage(messageId, token);
+      return finalizeImageMessage(messageId, media.refFor(token));
     } catch (e) {
       debugPrint('❌ Image upload failed for $messageId: $e');
       uploadProgressMap.remove(messageId);
@@ -1880,6 +1929,7 @@ class ChatController extends GetxController with WidgetsBindingObserver {
               mediaToken: token,
               fileName: fileName,
               fileSize: fileSize,
+              memberIds: _groupMemberIds,
               isCompressed: isCompressed,
             )
           : await _socketService.sendFileMessage(
@@ -2000,6 +2050,7 @@ class ChatController extends GetxController with WidgetsBindingObserver {
               messageId: messageId,
               mediaToken: token,
               duration: duration,
+              memberIds: _groupMemberIds,
               waveformData: waveformData,
             )
           : await _socketService.sendAudioMessage(
@@ -2272,6 +2323,7 @@ class ChatController extends GetxController with WidgetsBindingObserver {
             groupId: chatId,
             messageId: msg.id,
             mediaToken: token,
+            memberIds: _groupMemberIds,
           );
         } else {
           success = await _socketService.sendMediaMessage(
@@ -2286,8 +2338,9 @@ class ChatController extends GetxController with WidgetsBindingObserver {
           success = await _socketService.sendGroupMessage(
             groupId: chatId,
             messageId: msg.id,
-            encryptedPayload: EncryptionService.encryptMessage(msg.content),
+            payload: msg.content,
             messageType: 'text',
+            memberIds: _groupMemberIds,
           );
         } else {
           success = await _socketService.sendMessage(
@@ -3162,20 +3215,14 @@ class ChatController extends GetxController with WidgetsBindingObserver {
         : '$name turned disappearing messages off'));
   }
 
-  /// Extract the media token from `MEDIA:`/`IMAGE:` message content.
-  String? _mediaTokenFromContent(String content) {
-    if (content.startsWith('MEDIA:')) return content.substring(6);
-    if (content.startsWith('IMAGE:')) return content.substring(6);
-    return null;
-  }
-
   /// Recipient tapped the "[1] Photo" tile: fetch the one-time blob, show it
   /// in the full-screen secure viewer, then mark + purge + notify the sender.
   Future<void> openViewOncePhoto(ChatMessageModel message) async {
     if (message.isMe || !message.isViewOnce || message.isViewOnceOpened) {
       return;
     }
-    final token = message.mediaToken ?? _mediaTokenFromContent(message.content);
+    final ref = MediaCrypto.extractRef(message.content);
+    final token = message.mediaToken ?? ref?.token;
     if (token == null || token == 'pending') return;
 
     try {
@@ -3190,7 +3237,17 @@ class ChatController extends GetxController with WidgetsBindingObserver {
         );
         return;
       }
-      final bytes = base64Decode(EncryptionService.decryptMessage(blob));
+      final bytes = ref != null
+          ? await MediaCrypto.decryptForRef(blob, ref)
+          : MediaCrypto.decryptLegacyBlob(blob);
+      if (bytes == null) {
+        Get.snackbar(
+          'Photo',
+          'Could not open this photo',
+          snackPosition: SnackPosition.TOP,
+        );
+        return;
+      }
 
       // Full-screen viewer — returns when the user exits/dismisses.
       await Get.to(() => ViewOnceViewerScreen(imageBytes: bytes));
